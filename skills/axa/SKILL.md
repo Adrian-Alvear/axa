@@ -27,8 +27,6 @@ For each subtask pick a role from `roster.md` by matching the work to the role's
 - which skill(s), if any, the agent should invoke first (e.g. `wrangler` before deploy commands, `cloudflare` for Workers work, `dataviz` before charts)
 - whether it needs `isolation: "worktree"` — required when two or more agents edit the same repo at the same time, so they don't overwrite each other
 
-Long autonomous coding (hours, "while I sleep") goes to **gnhf**, not a subagent — load the `gnhf` skill for that piece.
-
 ## 3. Show the plan (briefly), then go
 
 Post a compact table, then launch immediately — don't wait for approval unless something is destructive or outward-facing (pushing, deploying, deleting, writing to a database):
