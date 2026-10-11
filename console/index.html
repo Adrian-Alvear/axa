@@ -34,6 +34,31 @@
   #cv.drag { cursor: grabbing; }
   #empty { position: absolute; inset: 0; display: grid; place-items: center; color: var(--dim); text-align: center; pointer-events: none; padding: 16px; letter-spacing: .2em; font-size: 10px; text-transform: uppercase; }
 
+  #dock { position: absolute; left: 0; right: 0; bottom: 0; padding: 10px 16px 14px; background: linear-gradient(to top, rgba(4,7,11,.96) 70%, rgba(4,7,11,0)); display: none; }
+  #dock.on { display: block; }
+  .mission { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; font-size: 9px; letter-spacing: .25em; text-transform: uppercase; color: var(--dim); }
+  .mission .bar { flex: 1; height: 2px; background: var(--line); position: relative; overflow: hidden; }
+  .mission .bar i { position: absolute; inset: 0 auto 0 0; background: var(--accent); box-shadow: 0 0 8px var(--accent); transition: width .6s ease; }
+  .mission b { color: var(--text); font-weight: 400; }
+  #cards { display: flex; gap: 10px; overflow-x: auto; padding-bottom: 2px; }
+  .card { flex: 0 0 236px; border: 1px solid var(--line); border-top: 2px solid var(--c); background: var(--panel); padding: 8px 10px 9px; cursor: pointer; transition: opacity .8s, border-color .3s; backdrop-filter: blur(4px); }
+  .card:hover { border-color: var(--line2); border-top-color: var(--c); }
+  .card .top { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+  .card .role { color: var(--c); font-size: 10px; letter-spacing: .25em; text-transform: uppercase; }
+  .card .time { color: var(--dim); font-variant-numeric: tabular-nums; font-size: 10px; }
+  .card .task { color: #e3f6fc; margin: 3px 0 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .card .bar { height: 2px; background: var(--line); position: relative; overflow: hidden; margin-bottom: 6px; }
+  .card .bar i { position: absolute; top: 0; bottom: 0; width: 35%; background: var(--c); box-shadow: 0 0 6px var(--c); animation: scan 1.4s ease-in-out infinite; }
+  @keyframes scan { from { left: -35%; } to { left: 100%; } }
+  .card.done .bar i { animation: none; left: 0; width: 100%; opacity: .5; }
+  .card.perm .bar i { background: var(--amber); box-shadow: 0 0 6px var(--amber); animation-duration: .7s; }
+  .card .now { display: flex; justify-content: space-between; gap: 8px; font-size: 10px; color: var(--dim); }
+  .card .now span:first-child { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .card .now b { color: var(--text); font-weight: 400; }
+  .card .st { white-space: nowrap; letter-spacing: .15em; text-transform: uppercase; font-size: 9px; }
+  .card.perm .st { color: var(--amber); } .card.fail .st { color: var(--red); } .card.done .st { color: var(--c); }
+  .card.fading { opacity: .35; }
+
   aside { border-left: 1px solid var(--line); display: grid; grid-template-rows: auto 1fr; min-height: 0; }
   .title { color: var(--dim); font-size: 9px; letter-spacing: .3em; text-transform: uppercase; margin: 0 0 8px; }
   #detail { border-bottom: 1px solid var(--line); padding: 16px 18px; max-height: 50vh; overflow: auto; }
@@ -61,7 +86,32 @@
 
   @media (max-width: 860px) {
     body { grid-template-columns: 1fr; grid-template-rows: auto 60vh 1fr; overflow: auto; height: auto; }
-    aside { border-left: 0; border-top: 1px solid var(--line); }
+    #dock { position: absolute; left: 0; right: 0; bottom: 0; padding: 10px 16px 14px; background: linear-gradient(to top, rgba(4,7,11,.96) 70%, rgba(4,7,11,0)); display: none; }
+  #dock.on { display: block; }
+  .mission { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; font-size: 9px; letter-spacing: .25em; text-transform: uppercase; color: var(--dim); }
+  .mission .bar { flex: 1; height: 2px; background: var(--line); position: relative; overflow: hidden; }
+  .mission .bar i { position: absolute; inset: 0 auto 0 0; background: var(--accent); box-shadow: 0 0 8px var(--accent); transition: width .6s ease; }
+  .mission b { color: var(--text); font-weight: 400; }
+  #cards { display: flex; gap: 10px; overflow-x: auto; padding-bottom: 2px; }
+  .card { flex: 0 0 236px; border: 1px solid var(--line); border-top: 2px solid var(--c); background: var(--panel); padding: 8px 10px 9px; cursor: pointer; transition: opacity .8s, border-color .3s; backdrop-filter: blur(4px); }
+  .card:hover { border-color: var(--line2); border-top-color: var(--c); }
+  .card .top { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+  .card .role { color: var(--c); font-size: 10px; letter-spacing: .25em; text-transform: uppercase; }
+  .card .time { color: var(--dim); font-variant-numeric: tabular-nums; font-size: 10px; }
+  .card .task { color: #e3f6fc; margin: 3px 0 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .card .bar { height: 2px; background: var(--line); position: relative; overflow: hidden; margin-bottom: 6px; }
+  .card .bar i { position: absolute; top: 0; bottom: 0; width: 35%; background: var(--c); box-shadow: 0 0 6px var(--c); animation: scan 1.4s ease-in-out infinite; }
+  @keyframes scan { from { left: -35%; } to { left: 100%; } }
+  .card.done .bar i { animation: none; left: 0; width: 100%; opacity: .5; }
+  .card.perm .bar i { background: var(--amber); box-shadow: 0 0 6px var(--amber); animation-duration: .7s; }
+  .card .now { display: flex; justify-content: space-between; gap: 8px; font-size: 10px; color: var(--dim); }
+  .card .now span:first-child { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .card .now b { color: var(--text); font-weight: 400; }
+  .card .st { white-space: nowrap; letter-spacing: .15em; text-transform: uppercase; font-size: 9px; }
+  .card.perm .st { color: var(--amber); } .card.fail .st { color: var(--red); } .card.done .st { color: var(--c); }
+  .card.fading { opacity: .35; }
+
+  aside { border-left: 0; border-top: 1px solid var(--line); }
     select { max-width: 60vw; }
   }
 </style>
@@ -80,6 +130,7 @@
 </header>
 <main id="stage">
   <canvas id="cv"></canvas>
+  <div id="dock"><div class="mission"><span>Mission</span><span class="bar"><i id="mbar"></i></span><span id="mtext"></span></div><div id="cards"></div></div>
   <div id="empty">Standing by<br><br>Start a Claude Code session with AXA enabled — or run the demo</div>
 </main>
 <aside>
@@ -183,6 +234,7 @@ function ingest(e) {
         break;
       }
       const name = e.skill ? e.skill : e.tool;
+      if (owner.kind === "inst") { owner.steps = (owner.steps || 0) + 1; owner.now = (e.skill ? "◆ " + e.skill : e.tool) + (e.summary && !e.skill ? " " + e.summary : ""); owner.fail = false; }
       const leaf = ensureLeaf(g, owner, name, e.skill ? "skill" : "tool");
       if (leaf) { leaf.count++; leaf.hotUntil = now + 1100; leaf.fail = false; leaf.recent.unshift(e.summary || ""); leaf.recent.length = Math.min(leaf.recent.length, 5); }
       break;
@@ -191,6 +243,7 @@ function ingest(e) {
     case "PostToolUseFailure": {
       const leaf = g.nodes.get(owner.id + "|" + (e.skill || e.tool));
       if (leaf) { leaf.fail = true; leaf.hotUntil = 0; leaf.error = e.error; }
+      if (owner.kind === "inst") owner.fail = e.error || true;
       owner.perm = null;
       break;
     }
@@ -266,9 +319,10 @@ const toWorld = (sx, sy) => [(sx - Wd / 2) / cam.k + cam.x, (sy - Ht / 2) / cam.
 function fit(g, instant) {
   let x0 = -160, y0 = -160, x1 = 160, y1 = 160; // keep AXA's rings in frame even when alone
   for (const n of g.nodes.values()) if (!n.hide) { x0 = Math.min(x0, n.x); y0 = Math.min(y0, n.y); x1 = Math.max(x1, n.x); y1 = Math.max(y1, n.y); }
-  const k = Math.min(1.5, Math.min(Wd / (x1 - x0 + 260), Ht / (y1 - y0 + 220)));
+  const dockH = $("dock").classList.contains("on") ? $("dock").offsetHeight : 0;
+  const k = Math.min(1.5, Math.min(Wd / (x1 - x0 + 260), (Ht - dockH) / (y1 - y0 + 220)));
   const t = instant ? 1 : 0.05;
-  cam.x += ((x0 + x1) / 2 - cam.x) * t; cam.y += ((y0 + y1) / 2 - cam.y) * t; cam.k += (k - cam.k) * t;
+  cam.x += ((x0 + x1) / 2 - cam.x) * t; cam.y += ((y0 + y1) / 2 + dockH / 2 / k - cam.y) * t; cam.k += (k - cam.k) * t;
 }
 
 function rgba(hex, a) { const n = parseInt(hex.slice(1), 16); return `rgba(${n >> 16},${(n >> 8) & 255},${n & 255},${a})`; }
@@ -553,7 +607,43 @@ function renderFeed(g) {
   while (feed.childElementCount > 800) feed.lastChild.remove();
 }
 
+// bottom dock: one card per job that is running or finished recently
+const DOCK_KEEP_MS = 20000;
+const cardEls = new Map();
+function renderDock(g) {
+  const dock = $("dock"), wrap = $("cards");
+  const jobs = g ? [...g.nodes.values()].filter((n) => n.kind === "inst" && (n.status === "running" || Date.now() - n.end < DOCK_KEEP_MS)).sort((a, b) => (a.status === "running") - (b.status === "running") || (a.end || a.start) - (b.end || b.start)).reverse() : [];
+  dock.classList.toggle("on", jobs.length > 0);
+  const all = g ? [...g.nodes.values()].filter((n) => n.kind === "inst") : [];
+  const done = all.filter((n) => n.status === "done").length;
+  $("mbar").style.width = all.length ? (done / all.length) * 100 + "%" : "0";
+  $("mtext").innerHTML = `<b>${done}</b> / ${all.length} jobs complete`;
+  const keep = new Set(jobs.map((j) => j.id));
+  for (const [id, el] of cardEls) if (!keep.has(id) || !wrap.contains(el)) { el.remove(); cardEls.delete(id); }
+  for (const j of jobs) {
+    let el = cardEls.get(j.id);
+    if (!el) {
+      el = document.createElement("div");
+      el.className = "card";
+      el.innerHTML = `<div class="top"><span class="role"></span><span class="time"></span></div><div class="task"></div><div class="bar"><i></i></div><div class="now"><span></span><span class="st"></span></div>`;
+      el.onclick = () => { selectedId = j.id; dirty = true; };
+      wrap.appendChild(el); cardEls.set(j.id, el);
+    }
+    wrap.appendChild(el);
+    const state = j.status === "done" ? "done" : j.perm ? "perm" : j.fail ? "fail" : "run";
+    el.className = `card ${state}${j.status === "done" && Date.now() - j.end > DOCK_KEEP_MS / 2 ? " fading" : ""}`;
+    el.style.setProperty("--c", j.color);
+    el.querySelector(".role").textContent = j.role;
+    el.querySelector(".time").textContent = dur((j.end || Date.now()) - j.start);
+    el.querySelector(".task").textContent = j.desc || "working…";
+    el.querySelector(".task").title = j.desc || "";
+    el.querySelector(".now span").innerHTML = j.status === "done" ? `<b>${j.steps || 0}</b> steps` : j.perm ? `needs ok: <b>${esc(j.perm === true ? "tool" : j.perm)}</b>` : `<b>${esc(j.now || "starting")}</b>`;
+    el.querySelector(".st").textContent = { done: "✓ done", perm: "approval", fail: "retrying", run: `${j.steps || 0} steps` }[state];
+  }
+}
+
 function renderChrome(g) {
+  renderDock(g);
   $("empty").style.display = g ? "none" : "grid";
   const roles = g ? [...g.nodes.values()].filter((n) => n.kind === "role") : [];
   $("s-agents").textContent = roles.length;
