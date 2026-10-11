@@ -18,7 +18,7 @@ live console shows you every agent, skill and tool call as it happens.
 | `skills/axa` | The orchestrator playbook: decompose → assign from your roster → run in parallel → verify → short report. Triggers on `/axa`, "split this up", "use agents", etc. |
 | `agents/` | `axa:builder`, `axa:reviewer` (read-only), `axa:researcher` (web). |
 | `hooks/` | Logs every prompt, tool, skill and subagent event to `~/.axa/events.jsonl`. Async — never slows Claude down. |
-| `console/` | Zero-dependency local web UI: AXA in the center, agents in orbit, tool/skill calls pulsing as satellites, plus a live feed. |
+| `console/` | Local web UI: AXA in the center, agents appearing as they're dispatched, a live progress dock, and embedded Claude Code terminals for any project. |
 | `roster.example.md` | The config you customize: roles, models, house rules, your projects. |
 
 ## Install
@@ -30,7 +30,7 @@ live console shows you every agent, skill and tool call as it happens.
 
 Or try it from a local clone without installing: `claude --plugin-dir ./axa`.
 
-Needs Node 18+ (for the hooks and console).
+Needs Node 18+. The console installs its own dependencies (`node-pty`, `xterm`) on first launch.
 
 ## Make it yours
 
@@ -72,7 +72,15 @@ or run it yourself: `node console/server.mjs --open` → http://localhost:4747
 - **Click a node** to see the prompt it was given and what it reported back.
 - **Session picker** follows your most recent session automatically.
 
+- **Terminals:** press **Terminals → +** to launch Claude Code (or a plain shell) in any project, right inside the dashboard. Run several projects side by side; the map follows whichever tab you're in. Terminals keep running if you reload the page.
+
 Env: `AXA_PORT` (default 4747), `AXA_HOME` (default `~/.axa`).
+
+### Security
+
+The console can open terminals, so it is locked down: it listens on `127.0.0.1` only, rejects
+requests from other hosts or websites, and needs a secret token (stored in `~/.axa/console-token`)
+that the server's unlock link exchanges for a strict same-site cookie. Don't share the unlock link.
 
 ## Privacy
 

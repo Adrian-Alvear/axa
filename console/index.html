@@ -4,6 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>AXA Console</title>
+<link rel="stylesheet" href="/vendor/xterm.css">
+<script src="/vendor/xterm.js"></script>
+<script src="/vendor/addon-fit.js"></script>
 <style>
   :root {
     --bg: #04070b; --panel: rgba(10, 20, 28, .72); --line: rgba(79, 216, 255, .14); --line2: rgba(79, 216, 255, .28);
@@ -11,7 +14,35 @@
   }
   * { box-sizing: border-box; }
   html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font: 12px/1.5 ui-monospace, "SF Mono", Menlo, monospace; }
-  body { display: grid; grid-template-columns: 1fr 360px; grid-template-rows: auto 1fr; height: 100vh; overflow: hidden; }
+  body { --tw: 0px; --aw: 360px; display: grid; grid-template-columns: var(--tw) minmax(0, 1fr) var(--aw); grid-template-rows: auto 1fr; height: 100vh; overflow: hidden; }
+  body.with-terms { --tw: 46vw; }
+  body.no-intel { --aw: 0px; } body.no-intel aside { display: none; }
+  button.on { border-color: var(--accent); color: var(--accent); }
+
+  #terms { grid-column: 1; grid-row: 2; display: none; grid-template-rows: auto 1fr; min-width: 0; min-height: 0; border-right: 1px solid var(--line); position: relative; background: #03060a; }
+  body.with-terms #terms { display: grid; }
+  #main-stage { grid-column: 2; }
+  .tabs { display: flex; align-items: stretch; border-bottom: 1px solid var(--line); min-height: 34px; overflow-x: auto; }
+  .tab { display: flex; align-items: center; gap: 8px; padding: 0 10px 0 14px; border-right: 1px solid var(--line); color: var(--dim); cursor: pointer; white-space: nowrap; font-size: 11px; letter-spacing: .08em; border-bottom: 2px solid transparent; }
+  .tab:hover { color: var(--text); }
+  .tab.active { color: var(--text); border-bottom-color: var(--accent); background: rgba(79,216,255,.05); }
+  .tab .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 6px var(--accent); }
+  .tab.dead .dot { background: var(--dim); box-shadow: none; }
+  .tab .mode { color: var(--dim); font-size: 9px; letter-spacing: .2em; text-transform: uppercase; }
+  .tab .x { color: var(--dim); padding: 2px 4px; } .tab .x:hover { color: var(--red); }
+  #newterm { border: 0; border-right: 1px solid var(--line); border-radius: 0; padding: 0 14px; font-size: 14px; letter-spacing: 0; }
+  #termhost { position: relative; min-height: 0; }
+  #termhost .xt { position: absolute; inset: 8px 4px 4px 10px; display: none; }
+  #termhost .xt.active { display: block; }
+  #termmsg { position: absolute; inset: 0; display: grid; place-items: center; text-align: center; color: var(--dim); font-size: 10px; letter-spacing: .2em; text-transform: uppercase; padding: 24px; pointer-events: none; }
+  #picker { position: absolute; top: 36px; left: 8px; z-index: 5; width: min(420px, calc(100% - 16px)); max-height: 70%; overflow: auto; background: #07111a; border: 1px solid var(--line2); box-shadow: 0 12px 40px rgba(0,0,0,.6); padding: 10px; }
+  #picker[hidden] { display: none; }
+  #picker .proj { display: grid; grid-template-columns: 1fr auto auto; gap: 6px; align-items: center; padding: 6px 4px; border-bottom: 1px solid var(--line); }
+  #picker .proj div b { display: block; font-weight: 500; color: var(--text); }
+  #picker .proj div small { color: var(--dim); font-size: 10px; }
+  #picker input { width: 100%; background: transparent; border: 1px solid var(--line2); color: var(--text); font: inherit; padding: 6px 8px; margin-top: 8px; }
+  #splitter { position: absolute; top: 0; right: -4px; bottom: 0; width: 8px; cursor: col-resize; z-index: 4; }
+  #splitter:hover, #splitter.drag { background: linear-gradient(to right, transparent 3px, var(--accent) 3px, var(--accent) 4px, transparent 4px); }
 
   header { grid-column: 1 / -1; display: flex; align-items: center; gap: 22px; padding: 12px 20px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
   .brand { display: flex; align-items: baseline; gap: 12px; }
@@ -29,7 +60,7 @@
   select { max-width: 300px; letter-spacing: .05em; text-transform: none; font-size: 11px; }
   select option { background: #0a141c; }
 
-  #stage { position: relative; overflow: hidden; min-height: 0; }
+  #stage { grid-column: 2; grid-row: 2; position: relative; overflow: hidden; min-height: 0; }
   #cv { position: absolute; inset: 0; width: 100%; height: 100%; cursor: grab; }
   #cv.drag { cursor: grabbing; }
   #empty { position: absolute; inset: 0; display: grid; place-items: center; color: var(--dim); text-align: center; pointer-events: none; padding: 16px; letter-spacing: .2em; font-size: 10px; text-transform: uppercase; }
@@ -59,7 +90,7 @@
   .card.perm .st { color: var(--amber); } .card.fail .st { color: var(--red); } .card.done .st { color: var(--c); }
   .card.fading { opacity: .35; }
 
-  aside { border-left: 1px solid var(--line); display: grid; grid-template-rows: auto 1fr; min-height: 0; }
+  aside { grid-column: 3; grid-row: 2; border-left: 1px solid var(--line); display: grid; grid-template-rows: auto 1fr; min-height: 0; }
   .title { color: var(--dim); font-size: 9px; letter-spacing: .3em; text-transform: uppercase; margin: 0 0 8px; }
   #detail { border-bottom: 1px solid var(--line); padding: 16px 18px; max-height: 50vh; overflow: auto; }
   #detail:empty { display: none; }
@@ -85,33 +116,11 @@
   .row b { font-weight: 500; color: #fff; }
 
   @media (max-width: 860px) {
-    body { grid-template-columns: 1fr; grid-template-rows: auto 60vh 1fr; overflow: auto; height: auto; }
-    #dock { position: absolute; left: 0; right: 0; bottom: 0; padding: 10px 16px 14px; background: linear-gradient(to top, rgba(4,7,11,.96) 70%, rgba(4,7,11,0)); display: none; }
-  #dock.on { display: block; }
-  .mission { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; font-size: 9px; letter-spacing: .25em; text-transform: uppercase; color: var(--dim); }
-  .mission .bar { flex: 1; height: 2px; background: var(--line); position: relative; overflow: hidden; }
-  .mission .bar i { position: absolute; inset: 0 auto 0 0; background: var(--accent); box-shadow: 0 0 8px var(--accent); transition: width .6s ease; }
-  .mission b { color: var(--text); font-weight: 400; }
-  #cards { display: flex; gap: 10px; overflow-x: auto; padding-bottom: 2px; }
-  .card { flex: 0 0 236px; border: 1px solid var(--line); border-top: 2px solid var(--c); background: var(--panel); padding: 8px 10px 9px; cursor: pointer; transition: opacity .8s, border-color .3s; backdrop-filter: blur(4px); }
-  .card:hover { border-color: var(--line2); border-top-color: var(--c); }
-  .card .top { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
-  .card .role { color: var(--c); font-size: 10px; letter-spacing: .25em; text-transform: uppercase; }
-  .card .time { color: var(--dim); font-variant-numeric: tabular-nums; font-size: 10px; }
-  .card .task { color: #e3f6fc; margin: 3px 0 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .card .bar { height: 2px; background: var(--line); position: relative; overflow: hidden; margin-bottom: 6px; }
-  .card .bar i { position: absolute; top: 0; bottom: 0; width: 35%; background: var(--c); box-shadow: 0 0 6px var(--c); animation: scan 1.4s ease-in-out infinite; }
-  @keyframes scan { from { left: -35%; } to { left: 100%; } }
-  .card.done .bar i { animation: none; left: 0; width: 100%; opacity: .5; }
-  .card.perm .bar i { background: var(--amber); box-shadow: 0 0 6px var(--amber); animation-duration: .7s; }
-  .card .now { display: flex; justify-content: space-between; gap: 8px; font-size: 10px; color: var(--dim); }
-  .card .now span:first-child { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .card .now b { color: var(--text); font-weight: 400; }
-  .card .st { white-space: nowrap; letter-spacing: .15em; text-transform: uppercase; font-size: 9px; }
-  .card.perm .st { color: var(--amber); } .card.fail .st { color: var(--red); } .card.done .st { color: var(--c); }
-  .card.fading { opacity: .35; }
-
-  aside { border-left: 0; border-top: 1px solid var(--line); }
+    body { display: flex; flex-direction: column; overflow: auto; height: auto; }
+    #terms { height: 60vh; border-right: 0; border-bottom: 1px solid var(--line); }
+    #stage { height: 60vh; flex: none; }
+    aside { border-left: 0; border-top: 1px solid var(--line); }
+    #splitter { display: none; }
     select { max-width: 60vw; }
   }
 </style>
@@ -124,10 +133,18 @@
   <div class="stat"><small>active</small><b id="s-running">0</b></div>
   <div class="stat"><small>calls</small><b id="s-calls">0</b></div>
   <span class="spacer"></span>
+  <button id="tbtn" title="Show terminals">Terminals</button>
+  <button id="ibtn" class="on" title="Show the intel panel">Intel</button>
   <button id="demo" title="Play a simulated orchestration">Demo</button>
   <button id="fit" title="Fit graph to view">Center</button>
   <select id="session" title="session"></select>
 </header>
+<section id="terms">
+  <div class="tabs"><button id="newterm" title="New terminal">+</button><div id="tablist" style="display:flex"></div></div>
+  <div id="termhost"><div id="termmsg">No terminals<br><br>Press + to launch Claude Code in a project</div></div>
+  <div id="picker" hidden></div>
+  <div id="splitter"></div>
+</section>
 <main id="stage">
   <canvas id="cv"></canvas>
   <div id="dock"><div class="mission"><span>Mission</span><span class="bar"><i id="mbar"></i></span><span id="mtext"></span></div><div id="cards"></div></div>
@@ -221,7 +238,7 @@ function ingest(e) {
   const now = performance.now();
 
   switch (e.event) {
-    case "UserPromptSubmit": axa.prompt = e.prompt; axa.status = "running"; break;
+    case "UserPromptSubmit": if (!/^\s*<task-notification>/.test(e.prompt || "")) axa.prompt = e.prompt; axa.status = "running"; break;
     case "Stop": axa.status = "idle"; axa.message = e.message; break;
     case "PermissionRequest": owner.perm = e.tool || true; break;
     case "PreToolUse": {
@@ -571,7 +588,7 @@ function renderDetail(g) {
 function describe(e) {
   const isSpawn = e.tool === "Agent" || e.tool === "Task";
   switch (e.event) {
-    case "UserPromptSubmit": return ["prompt", "directive: " + esc(e.prompt)];
+    case "UserPromptSubmit": return /^\s*<task-notification>/.test(e.prompt || "") ? ["", "background task finished"] : ["prompt", "directive: " + esc(e.prompt)];
     case "Stop": return ["", "standing by"];
     case "SessionStart": return ["", "session " + esc(e.source || "start")];
     case "SubagentStart": return ["", "online"];
@@ -645,6 +662,7 @@ function renderDock(g) {
 function renderChrome(g) {
   renderDock(g);
   $("empty").style.display = g ? "none" : "grid";
+  if (!g && !locked) $("empty").innerHTML = focusCwd ? `Standing by<br><br>No activity in ${esc(focusCwd.split("/").pop())} yet` : "Standing by<br><br>Start a Claude Code session with AXA enabled — or run the demo";
   const roles = g ? [...g.nodes.values()].filter((n) => n.kind === "role") : [];
   $("s-agents").textContent = roles.length;
   $("s-running").textContent = g ? [...g.nodes.values()].filter((n) => n.kind === "inst" && n.status === "running").length : 0;
@@ -663,13 +681,18 @@ function renderChrome(g) {
   }
   sel.value = current || "";
 }
-$("session").onchange = (ev) => { current = ev.target.value; pinned = true; selectedId = "axa"; autoFit = true; dirty = true; };
+$("session").onchange = (ev) => { current = ev.target.value; pinned = true; focusCwd = null; selectedId = "axa"; autoFit = true; dirty = true; };
 
+let focusCwd = null; // set while a terminal tab is active: the map follows that project
 function follow() {
   if (pinned && sessions.has(current)) return;
   let best = null;
-  for (const s of sessions.values()) if (!best || s.last > best.last) best = s;
+  for (const s of sessions.values()) {
+    if (focusCwd && !(s.cwd || "").startsWith(focusCwd)) continue;
+    if (!best || s.last > best.last) best = s;
+  }
   if (best && best.id !== current) { current = best.id; selectedId = "axa"; autoFit = true; dirty = true; }
+  if (!best && focusCwd && current) { current = null; dirty = true; } // this project has no activity yet
 }
 
 // ---------- loop ----------
@@ -727,9 +750,126 @@ function demo() {
 }
 $("demo").onclick = demo;
 
+
+// ---------- terminals: real Claude Code sessions inside the dashboard ----------
+const tabs = new Map(); // id -> { info, term, fit, ws, el, tab }
+let activeTab = null;
+const XT_THEME = { background: "#03060a", foreground: "#cfe9f3", cursor: "#4fd8ff", cursorAccent: "#03060a", selectionBackground: "rgba(79,216,255,.3)",
+  black: "#0b1620", brightBlack: "#4f6b7a", blue: "#4fa8ff", brightBlue: "#8fc8ff", cyan: "#4fd8ff", brightCyan: "#9fe9ff",
+  green: "#5ef2c2", brightGreen: "#8ff7d6", magenta: "#c3a6ff", brightMagenta: "#dcc8ff", red: "#ff5468", brightRed: "#ff8a98",
+  white: "#cfe9f3", brightWhite: "#ffffff", yellow: "#ffd38a", brightYellow: "#ffe2ad" };
+
+function setTermsOpen(open) {
+  document.body.classList.toggle("with-terms", open);
+  $("tbtn").classList.toggle("on", open);
+  try { localStorage.setItem("axa.terms", open ? "1" : "0"); } catch {}
+  if (open && activeTab) requestAnimationFrame(() => fitTab(tabs.get(activeTab)));
+}
+$("tbtn").onclick = () => setTermsOpen(!document.body.classList.contains("with-terms"));
+$("ibtn").onclick = () => { const off = document.body.classList.toggle("no-intel"); $("ibtn").classList.toggle("on", !off); try { localStorage.setItem("axa.intel", off ? "0" : "1"); } catch {} };
+
+function termMsg(html) { $("termmsg").innerHTML = html; $("termmsg").style.display = html ? "grid" : "none"; }
+
+function fitTab(t) {
+  if (!t || !t.fit || !t.el.offsetWidth) return;
+  try { t.fit.fit(); } catch {}
+  if (t.ws?.readyState === 1) t.ws.send(JSON.stringify({ t: "r", c: t.term.cols, r: t.term.rows }));
+}
+new ResizeObserver(() => fitTab(tabs.get(activeTab))).observe($("termhost"));
+
+function openTab(info) {
+  if (tabs.has(info.id)) return tabs.get(info.id);
+  const el = document.createElement("div"); el.className = "xt"; $("termhost").appendChild(el);
+  const term = new Terminal({ fontFamily: 'ui-monospace, "SF Mono", Menlo, monospace', fontSize: 12.5, lineHeight: 1.15, cursorBlink: true, theme: XT_THEME, allowProposedApi: true, scrollback: 5000 });
+  const fit = new FitAddon.FitAddon(); term.loadAddon(fit); term.open(el);
+  const tab = document.createElement("div"); tab.className = "tab";
+  tab.innerHTML = `<span class="dot"></span><span>${esc(info.name)}</span><span class="mode">${info.mode === "claude" ? "claude" : "sh"}</span><span class="x" title="Close">✕</span>`;
+  tab.onclick = (ev) => { if (ev.target.classList.contains("x")) closeTab(info.id); else activate(info.id); };
+  $("tablist").appendChild(tab);
+  const t = { info, term, fit, el, tab, ws: null };
+  tabs.set(info.id, t);
+  const connectWs = () => {
+    const ws = new WebSocket(`ws://${location.host}/pty/${info.id}`);
+    t.ws = ws;
+    ws.onopen = () => { term.reset(); fitTab(t); };
+    ws.onmessage = (m) => term.write(m.data);
+    ws.onclose = () => { if (tabs.has(info.id)) tab.classList.add("dead"); };
+  };
+  term.onData((d) => t.ws?.readyState === 1 && t.ws.send(JSON.stringify({ t: "i", d })));
+  connectWs();
+  return t;
+}
+
+function activate(id) {
+  activeTab = id;
+  for (const [k, t] of tabs) { t.el.classList.toggle("active", k === id); t.tab.classList.toggle("active", k === id); }
+  termMsg(tabs.size ? "" : "No terminals<br><br>Press + to launch Claude Code in a project");
+  const t = tabs.get(id);
+  if (t) {
+    requestAnimationFrame(() => { fitTab(t); t.term.focus(); });
+    // the map follows the project this terminal is in
+    focusCwd = t.info.cwd; pinned = false; autoFit = true; dirty = true;
+  }
+  try { localStorage.setItem("axa.activeTab", id || ""); } catch {}
+}
+
+async function closeTab(id) {
+  const t = tabs.get(id); if (!t) return;
+  if (t.info.alive && !t.tab.classList.contains("dead") && !confirm(`Close ${t.info.name}? This ends its process.`)) return;
+  await fetch(`/api/terms/${id}`, { method: "DELETE" });
+  t.ws?.close(); t.term.dispose(); t.el.remove(); t.tab.remove(); tabs.delete(id);
+  if (activeTab === id) { const next = [...tabs.keys()].pop(); if (next) activate(next); else { activeTab = null; focusCwd = null; termMsg("No terminals<br><br>Press + to launch Claude Code in a project"); } }
+}
+
+async function launch(cwd, mode) {
+  $("picker").hidden = true;
+  const r = await fetch("/api/terms", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ cwd, mode }) });
+  const body = await r.json();
+  if (!r.ok) return alert(body.error || "Could not start terminal");
+  openTab(body); activate(body.id); setTermsOpen(true);
+}
+
+async function showPicker() {
+  const pk = $("picker");
+  if (!pk.hidden) { pk.hidden = true; return; }
+  const r = await fetch("/api/projects");
+  const projects = r.ok ? await r.json() : [];
+  pk.innerHTML = `<p class="title">Launch in project</p>` + projects.map((p, i) => `
+    <div class="proj"><div><b>${esc(p.name)}</b><small>${esc(p.path.replace(/^\/Users\/[^/]+/, "~"))}</small></div>
+    <button data-i="${i}" data-m="claude">Claude</button><button data-i="${i}" data-m="shell">Shell</button></div>`).join("") +
+    `<input id="custompath" placeholder="or type a path, e.g. ~/projects/n2s-platform/dashboard  ↵">`;
+  pk.querySelectorAll("button").forEach((b) => (b.onclick = () => launch(projects[b.dataset.i].path, b.dataset.m)));
+  pk.querySelector("#custompath").onkeydown = (ev) => { if (ev.key === "Enter" && ev.target.value.trim()) launch(ev.target.value.trim(), "claude"); if (ev.key === "Escape") pk.hidden = true; };
+  pk.hidden = false;
+}
+$("newterm").onclick = showPicker;
+
+// draggable divider between terminals and the map
+$("splitter").addEventListener("pointerdown", (ev) => {
+  const sp = $("splitter"); sp.classList.add("drag"); sp.setPointerCapture(ev.pointerId);
+  const move = (e) => { const w = Math.max(320, Math.min(window.innerWidth - 420, e.clientX)); document.body.style.setProperty("--tw", w + "px"); };
+  const up = () => { sp.classList.remove("drag"); sp.removeEventListener("pointermove", move); sp.removeEventListener("pointerup", up); fitTab(tabs.get(activeTab)); try { localStorage.setItem("axa.tw", document.body.style.getPropertyValue("--tw")); } catch {} };
+  sp.addEventListener("pointermove", move); sp.addEventListener("pointerup", up);
+});
+
+async function initTerms() {
+  let prefs = {};
+  try { prefs = { open: localStorage.getItem("axa.terms"), intel: localStorage.getItem("axa.intel"), tw: localStorage.getItem("axa.tw"), active: localStorage.getItem("axa.activeTab") }; } catch {}
+  if (prefs.tw) document.body.style.setProperty("--tw", prefs.tw);
+  if (prefs.intel === "0") { document.body.classList.add("no-intel"); $("ibtn").classList.remove("on"); }
+  if (typeof Terminal === "undefined") { $("tbtn").title = "Terminals need: npm install in the console folder"; termMsg("Terminals unavailable<br><br>Run npm install in the AXA console folder, then restart it"); return; }
+  const r = await fetch("/api/terms");
+  if (!r.ok) { termMsg(esc((await r.json().catch(() => ({}))).error || "Terminals unavailable")); return; }
+  const list = await r.json();
+  list.forEach(openTab);
+  if (list.length) activate(list.some((t) => t.id === prefs.active) ? prefs.active : list[list.length - 1].id);
+  setTermsOpen(prefs.open === "1" || (prefs.open === null && list.length > 0));
+}
+
 // ---------- data ----------
+let locked = false;
 async function loadRoster() {
-  try { roster = await (await fetch("/roster")).json(); } catch { roster = []; }
+  try { const r = await fetch("/roster"); locked = r.status === 401; roster = locked ? [] : await r.json(); } catch { roster = []; }
   typeToRole.clear();
   for (const r of roster) { typeToRole.set(r.subagent_type, r.role); typeToRole.set(r.subagent_type.split(":").pop(), r.role); }
 }
@@ -740,7 +880,9 @@ function connect() {
   es.onopen = () => { $("live").classList.add("on"); $("live").textContent = "online"; };
   es.onerror = () => { $("live").classList.remove("on"); $("live").textContent = "offline"; };
 }
-loadRoster().then(() => { connect(); requestAnimationFrame(frame); if (new URLSearchParams(location.search).has("demo")) demo(); });
+loadRoster().then(() => {
+  if (locked) { $("empty").innerHTML = "Console locked<br><br>Open it with /axa:console — or the unlock link the server prints"; $("live").textContent = "locked"; requestAnimationFrame(frame); return; }
+  initTerms(); connect(); requestAnimationFrame(frame); if (new URLSearchParams(location.search).has("demo")) demo(); });
 </script>
 </body>
 </html>
