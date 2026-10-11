@@ -6,47 +6,58 @@
 <title>AXA Console</title>
 <style>
   :root {
-    --bg: #070a10; --panel: #0c1119; --line: #182230; --text: #d6e2ea; --dim: #5f7282;
-    --gold: #e8b04a; --green: #4ade80; --red: #ff5d6c; --amber: #ffb547; --violet: #c18cff;
+    --bg: #04070b; --panel: rgba(10, 20, 28, .72); --line: rgba(79, 216, 255, .14); --line2: rgba(79, 216, 255, .28);
+    --text: #cfe9f3; --dim: #4f6b7a; --accent: #4fd8ff; --amber: #ffb547; --red: #ff5468;
   }
   * { box-sizing: border-box; }
-  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font: 13px/1.45 ui-monospace, "SF Mono", Menlo, monospace; }
-  body { display: grid; grid-template-columns: 1fr 380px; grid-template-rows: auto 1fr; height: 100vh; overflow: hidden; }
-  header { grid-column: 1 / -1; display: flex; align-items: center; gap: 16px; padding: 10px 16px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
-  header h1 { margin: 0; font-size: 14px; letter-spacing: .35em; color: var(--gold); font-weight: 600; }
-  .stat { color: var(--dim); } .stat b { color: var(--text); font-weight: 500; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font: 12px/1.5 ui-monospace, "SF Mono", Menlo, monospace; }
+  body { display: grid; grid-template-columns: 1fr 360px; grid-template-rows: auto 1fr; height: 100vh; overflow: hidden; }
+
+  header { grid-column: 1 / -1; display: flex; align-items: center; gap: 22px; padding: 12px 20px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+  .brand { display: flex; align-items: baseline; gap: 12px; }
+  .brand h1 { margin: 0; font-size: 15px; font-weight: 500; letter-spacing: .6em; color: var(--accent); text-shadow: 0 0 12px rgba(79,216,255,.5); }
+  .brand span { color: var(--dim); letter-spacing: .25em; font-size: 10px; text-transform: uppercase; }
+  #live { color: var(--dim); font-size: 10px; letter-spacing: .25em; text-transform: uppercase; display: flex; align-items: center; gap: 6px; }
+  #live::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--dim); }
+  #live.on { color: var(--accent); } #live.on::before { background: var(--accent); box-shadow: 0 0 8px var(--accent); }
+  .stat { display: flex; flex-direction: column; line-height: 1.2; }
+  .stat small { color: var(--dim); font-size: 9px; letter-spacing: .25em; text-transform: uppercase; }
+  .stat b { color: var(--text); font-weight: 400; font-size: 16px; font-variant-numeric: tabular-nums; }
   .spacer { flex: 1; }
-  button, select { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 4px 10px; font: inherit; cursor: pointer; }
-  button:hover, select:hover { border-color: #2c3d50; }
-  select { max-width: 320px; }
-  #live { width: 8px; height: 8px; border-radius: 50%; background: var(--dim); }
-  #live.on { background: var(--green); box-shadow: 0 0 8px var(--green); }
+  button, select { background: transparent; color: var(--text); border: 1px solid var(--line2); border-radius: 2px; padding: 5px 12px; font: inherit; font-size: 10px; letter-spacing: .2em; text-transform: uppercase; cursor: pointer; }
+  button:hover, select:hover { border-color: var(--accent); color: var(--accent); }
+  select { max-width: 300px; letter-spacing: .05em; text-transform: none; font-size: 11px; }
+  select option { background: #0a141c; }
 
   #stage { position: relative; overflow: hidden; min-height: 0; }
   #cv { position: absolute; inset: 0; width: 100%; height: 100%; cursor: grab; }
   #cv.drag { cursor: grabbing; }
-  #legend { position: absolute; left: 12px; bottom: 12px; display: flex; flex-wrap: wrap; gap: 6px; max-width: 70%; }
-  .chip { display: flex; align-items: center; gap: 6px; padding: 3px 8px; border: 1px solid var(--line); border-radius: 999px; background: rgba(12,17,25,.85); color: var(--dim); cursor: pointer; }
-  .chip i { width: 8px; height: 8px; border-radius: 2px; display: inline-block; }
-  .chip.on { color: var(--text); }
-  #empty { position: absolute; inset: 0; display: grid; place-items: center; color: var(--dim); text-align: center; pointer-events: none; padding: 16px; }
+  #empty { position: absolute; inset: 0; display: grid; place-items: center; color: var(--dim); text-align: center; pointer-events: none; padding: 16px; letter-spacing: .2em; font-size: 10px; text-transform: uppercase; }
 
   aside { border-left: 1px solid var(--line); display: grid; grid-template-rows: auto 1fr; min-height: 0; }
-  #detail { border-bottom: 1px solid var(--line); padding: 12px 14px; max-height: 48vh; overflow: auto; }
+  .title { color: var(--dim); font-size: 9px; letter-spacing: .3em; text-transform: uppercase; margin: 0 0 8px; }
+  #detail { border-bottom: 1px solid var(--line); padding: 16px 18px; max-height: 50vh; overflow: auto; }
   #detail:empty { display: none; }
-  #detail h2 { margin: 0 0 6px; font-size: 13px; }
-  #detail .k { color: var(--dim); }
-  #detail pre { white-space: pre-wrap; word-break: break-word; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 8px; margin: 6px 0 10px; max-height: 180px; overflow: auto; }
-  #detail ul { margin: 4px 0 8px; padding-left: 16px; }
-  #feed { overflow: auto; padding: 6px 0; min-height: 0; }
-  .row { display: grid; grid-template-columns: 58px 96px 1fr; gap: 8px; padding: 3px 14px; border-left: 2px solid transparent; cursor: default; }
-  .row:hover { background: var(--panel); }
-  .row .t { color: var(--dim); }
+  #detail h2 { margin: 0 0 10px; font-size: 13px; font-weight: 500; letter-spacing: .3em; text-transform: uppercase; }
+  #detail .kv { display: grid; grid-template-columns: 74px 1fr; gap: 2px 10px; margin-bottom: 10px; }
+  #detail .k { color: var(--dim); font-size: 10px; letter-spacing: .15em; text-transform: uppercase; }
+  #detail pre { white-space: pre-wrap; word-break: break-word; background: var(--panel); border: 1px solid var(--line); border-left: 2px solid var(--line2); padding: 8px 10px; margin: 4px 0 12px; max-height: 170px; overflow: auto; font: inherit; }
+  #detail ul { margin: 2px 0 10px; padding-left: 0; list-style: none; }
+  #detail li { padding: 2px 0; }
+  #feedwrap { display: grid; grid-template-rows: auto 1fr; min-height: 0; padding-top: 14px; }
+  #feedwrap .title { padding: 0 18px; }
+  #feed { overflow: auto; min-height: 0; padding-bottom: 8px; }
+  .row { display: grid; grid-template-columns: 62px 84px 1fr; gap: 8px; padding: 3px 18px; border-left: 2px solid transparent; animation: in .35s ease-out; }
+  @keyframes in { from { opacity: 0; transform: translateX(6px); } }
+  .row:hover { background: rgba(79,216,255,.04); }
+  .row .t { color: var(--dim); font-variant-numeric: tabular-nums; }
+  .row .who { text-transform: uppercase; letter-spacing: .12em; font-size: 10px; padding-top: 1px; }
   .row .who, .row .what { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .row.fail { border-left-color: var(--red); } .row.fail .what { color: var(--red); }
   .row.perm { border-left-color: var(--amber); } .row.perm .what { color: var(--amber); }
-  .row.prompt .what { color: var(--text); }
-  .row b { font-weight: 600; }
+  .row.call { border-left-color: var(--line2); }
+  .row.prompt .what { color: #fff; }
+  .row b { font-weight: 500; color: #fff; }
 
   @media (max-width: 860px) {
     body { grid-template-columns: 1fr; grid-template-rows: auto 60vh 1fr; overflow: auto; height: auto; }
@@ -57,43 +68,35 @@
 </head>
 <body>
 <header>
-  <span id="live" title="connection"></span>
-  <h1>AXA</h1>
-  <span class="stat">agents called <b id="s-agents">0</b></span>
-  <span class="stat">running <b id="s-running">0</b></span>
-  <span class="stat">tool calls <b id="s-calls">0</b></span>
+  <div class="brand"><h1>AXA</h1><span>orchestration console</span></div>
+  <span id="live">offline</span>
+  <div class="stat"><small>agents</small><b id="s-agents">0</b></div>
+  <div class="stat"><small>active</small><b id="s-running">0</b></div>
+  <div class="stat"><small>calls</small><b id="s-calls">0</b></div>
   <span class="spacer"></span>
-  <button id="demo" title="Play a simulated orchestration">▶ Demo</button>
-  <button id="fit" title="Fit graph to view">Fit</button>
+  <button id="demo" title="Play a simulated orchestration">Demo</button>
+  <button id="fit" title="Fit graph to view">Center</button>
   <select id="session" title="session"></select>
 </header>
 <main id="stage">
   <canvas id="cv"></canvas>
-  <div id="legend"></div>
-  <div id="empty">Waiting for activity…<br>Start a new Claude Code session with the AXA plugin, or press ▶ Demo.</div>
+  <div id="empty">Standing by<br><br>Start a Claude Code session with AXA enabled — or run the demo</div>
 </main>
 <aside>
   <section id="detail"></section>
-  <section id="feed"></section>
+  <section id="feedwrap"><p class="title">Activity</p><div id="feed"></div></section>
 </aside>
 
 <script>
 const $ = (id) => document.getElementById(id);
 
-// ---------- look ----------
-const PALETTE = ["#ff7a45", "#e45cf0", "#4ade80", "#3fd6ff", "#ffc04d", "#8aa4ff", "#ff5d8f", "#a3e635"];
-const ROLE_COLORS = { builder: "#ff7a45", researcher: "#e45cf0", reviewer: "#4ade80", scout: "#3fd6ff", planner: "#ffc04d", generalist: "#8aa4ff" };
-const AXA_COLOR = "#e8b04a";
-const SPRITES = [
-  [ "..#######..", ".#########.", "###oo#oo###", "###oo#oo###", "###########", "###########", "###########", "##.##.##.##" ],
-  [ "..#.....#..", "...#...#...", "..#######..", ".##o###o##.", "###########", "#.#######.#", "#.#.....#.#", "...##.##..." ],
-  [ "...#####...", ".#########.", "##o##.##o##", "###########", "##.#####.##", "###.....###", ".#########.", "..#.#.#.#.." ],
-  [ "....#.#....", ".#########.", ".#o#####o#.", ".#########.", ".##.....##.", ".#########.", "..##...##..", "..##...##.." ],
-  [ "...#...#...", "..#######..", ".##o###o##.", "###########", "###.###.###", ".#########.", ".#.#...#.#.", "#.#.....#.#" ],
-];
+// ---------- palette: one cool family, amber = needs you, red = failed ----------
+const ACCENT = "#4fd8ff", AMBER = "#ffb547", RED = "#ff5468", BG = "#04070b";
+const ROLE_COLORS = { scout: "#4fd8ff", researcher: "#9db8ff", builder: "#5ef2c2", reviewer: "#c3a6ff", planner: "#ffd38a", generalist: "#8fe3ff" };
+const PALETTE = ["#4fd8ff", "#9db8ff", "#5ef2c2", "#c3a6ff", "#8fe3ff", "#7fc8ff"];
 const hash = (s) => [...String(s)].reduce((h, c) => (h * 31 + c.charCodeAt(0)) >>> 0, 7);
 
-// ---------- roster: which roles exist and which subagent_type maps to which role ----------
+// ---------- roster ----------
 let roster = [];
 const typeToRole = new Map();
 function roleFor(subagentType) {
@@ -105,30 +108,24 @@ function roleFor(subagentType) {
 function roleMeta(role) {
   const r = roster.find((x) => x.role === role);
   const clean = (v) => (v && !/^[—–-]+$/.test(v) ? v : undefined);
-  const color = ROLE_COLORS[role] || PALETTE[hash(role) % PALETTE.length];
-  return { color, sprite: SPRITES[1 + (hash(role) % (SPRITES.length - 1))], model: clean(r?.model), use: clean(r?.use), type: clean(r?.subagent_type) };
+  return { color: ROLE_COLORS[role] || PALETTE[hash(role) % PALETTE.length], model: clean(r?.model), use: clean(r?.use), type: clean(r?.subagent_type) };
 }
 
-// ---------- graph per session ----------
+// ---------- graph per session: nodes appear only when they are called ----------
 const sessions = new Map();
 let current = null, pinned = false, selectedId = "axa";
+const COLLAPSE_MS = 7000; // a finished job folds its tool leaves away after this
 
 function newGraph(id, cwd) {
   const g = { id, cwd, last: 0, calls: 0, events: [], nodes: new Map(), links: [], pending: [] };
-  addNode(g, { id: "axa", kind: "axa", label: "AXA", color: AXA_COLOR, sprite: SPRITES[0], x: 0, y: 0, fixed: true, status: "idle" });
-  addRosterRoles(g);
+  addNode(g, { id: "axa", kind: "axa", label: "AXA", color: ACCENT, x: 0, y: 0, fixed: true, status: "idle" });
   return g;
-}
-function addRosterRoles(g) {
-  roster.forEach((r, i) => {
-    const a = (i / roster.length) * Math.PI * 2 - Math.PI / 2;
-    ensureRole(g, r.role, Math.cos(a) * 190, Math.sin(a) * 190);
-  });
 }
 function addNode(g, n, parentId) {
   const p = parentId && g.nodes.get(parentId);
-  n.x ??= (p ? p.x : 0) + (Math.random() - 0.5) * 40;
-  n.y ??= (p ? p.y : 0) + (Math.random() - 0.5) * 40;
+  const a = Math.random() * Math.PI * 2;
+  n.x ??= (p ? p.x : 0) + Math.cos(a) * 30;
+  n.y ??= (p ? p.y : 0) + Math.sin(a) * 30;
   Object.assign(n, { vx: 0, vy: 0, parent: parentId || null, hotUntil: 0, count: 0, born: performance.now() });
   g.nodes.set(n.id, n);
   if (p) g.links.push({ a: p.id, b: n.id });
@@ -139,29 +136,25 @@ function removeNode(g, id) {
   g.nodes.delete(id);
   g.links = g.links.filter((l) => l.a !== id && l.b !== id);
 }
-function ensureRole(g, role, x, y) {
+function ensureRole(g, role) {
   const id = "role:" + role;
-  let n = g.nodes.get(id);
-  if (!n) { const m = roleMeta(role); n = addNode(g, { id, kind: "role", label: role, role, color: m.color, sprite: m.sprite, status: "idle", calls: 0, x, y }, "axa"); }
-  return n;
+  return g.nodes.get(id) || addNode(g, { id, kind: "role", label: role, role, color: roleMeta(role).color, status: "idle", calls: 0 }, "axa");
 }
 function ensureInst(g, e) {
   let n = g.nodes.get(e.agent_id);
   if (n) return n;
   const role = roleFor(e.agent_type);
   const r = ensureRole(g, role);
-  // keep the 6 most recent jobs per role on the map
   const jobs = [...g.nodes.values()].filter((x) => x.parent === r.id && x.kind === "inst");
-  if (jobs.length >= 6) removeNode(g, jobs.sort((a, b) => a.start - b.start)[0].id);
+  if (jobs.length >= 5) removeNode(g, jobs.sort((a, b) => a.start - b.start)[0].id);
   return addNode(g, { id: e.agent_id, kind: "inst", label: role, role, color: r.color, status: "running", start: e.ts }, r.id);
 }
 function ensureLeaf(g, parent, name, kind) {
   const id = parent.id + "|" + name;
   let n = g.nodes.get(id);
   if (!n) {
-    const leaves = [...g.nodes.values()].filter((x) => x.parent === parent.id && x.kind === "leaf");
-    if (leaves.length >= 10) return null;
-    n = addNode(g, { id, kind: "leaf", label: name, leafKind: kind, color: kind === "skill" ? "#c18cff" : parent.color, recent: [] }, parent.id);
+    if ([...g.nodes.values()].filter((x) => x.parent === parent.id && x.kind === "leaf").length >= 9) return null;
+    n = addNode(g, { id, kind: "leaf", label: name, leafKind: kind, color: parent.color, recent: [] }, parent.id);
   }
   return n;
 }
@@ -189,15 +182,14 @@ function ingest(e) {
         g.pending.push({ role, prompt: e.prompt, desc: e.summary });
         break;
       }
-      if (owner.kind === "axa" && !e.skill) axa.status = "running";
-      const name = e.skill ? "⚡" + e.skill : e.tool;
+      const name = e.skill ? e.skill : e.tool;
       const leaf = ensureLeaf(g, owner, name, e.skill ? "skill" : "tool");
-      if (leaf) { leaf.count++; leaf.hotUntil = now + 1200; leaf.fail = false; leaf.recent.unshift(e.summary || ""); leaf.recent.length = Math.min(leaf.recent.length, 5); }
+      if (leaf) { leaf.count++; leaf.hotUntil = now + 1100; leaf.fail = false; leaf.recent.unshift(e.summary || ""); leaf.recent.length = Math.min(leaf.recent.length, 5); }
       break;
     }
     case "PostToolUse": owner.perm = null; break;
     case "PostToolUseFailure": {
-      const leaf = g.nodes.get(owner.id + "|" + (e.skill ? "⚡" + e.skill : e.tool));
+      const leaf = g.nodes.get(owner.id + "|" + (e.skill || e.tool));
       if (leaf) { leaf.fail = true; leaf.hotUntil = 0; leaf.error = e.error; }
       owner.perm = null;
       break;
@@ -217,7 +209,6 @@ function ingest(e) {
       break;
     }
   }
-  // a role is "running" while any of its jobs are
   for (const r of g.nodes.values()) if (r.kind === "role")
     r.status = [...g.nodes.values()].some((x) => x.parent === r.id && x.status === "running") ? "running" : "idle";
   g.events.push(e);
@@ -225,23 +216,29 @@ function ingest(e) {
   dirty = true;
 }
 
+// collapsed = leaves of a job that finished a while ago (kept in data, hidden from the map)
+function hidden(g, n) {
+  if (n.kind !== "leaf") return false;
+  const p = g.nodes.get(n.parent);
+  return p && p.kind === "inst" && p.status === "done" && Date.now() - p.end > COLLAPSE_MS && selectedId !== p.id;
+}
+
 // ---------- physics ----------
-const W = { axa: 3.2, role: 2.2, inst: 1.5, leaf: 0.7 };
-const LEN = { role: 200, inst: 105, leaf: 62 };
+const W = { axa: 3.4, role: 2.2, inst: 1.4, leaf: 0.6 };
+const LEN = { role: 210, inst: 110, leaf: 58 };
 function step(g) {
-  const ns = [...g.nodes.values()];
+  const ns = [...g.nodes.values()].filter((n) => !n.hide);
   for (let i = 0; i < ns.length; i++) for (let j = i + 1; j < ns.length; j++) {
     const a = ns[i], b = ns[j];
     let dx = b.x - a.x, dy = b.y - a.y, d2 = dx * dx + dy * dy;
     if (d2 < 1) { dx = Math.random() - .5; dy = Math.random() - .5; d2 = 1; }
     if (d2 > 250000) continue;
     const f = 2600 * W[a.kind] * W[b.kind] / d2, d = Math.sqrt(d2);
-    const fx = dx / d * f, fy = dy / d * f;
-    a.vx -= fx; a.vy -= fy; b.vx += fx; b.vy += fy;
+    a.vx -= dx / d * f; a.vy -= dy / d * f; b.vx += dx / d * f; b.vy += dy / d * f;
   }
   for (const l of g.links) {
     const a = g.nodes.get(l.a), b = g.nodes.get(l.b);
-    if (!a || !b) continue;
+    if (!a || !b || b.hide) continue;
     const dx = b.x - a.x, dy = b.y - a.y, d = Math.hypot(dx, dy) || 1;
     const f = (d - (LEN[b.kind] || 80)) * 0.035;
     a.vx += dx / d * f * 0.5; a.vy += dy / d * f * 0.5; b.vx -= dx / d * f; b.vy -= dy / d * f;
@@ -264,112 +261,179 @@ function resize() {
   Wd = r.width; Ht = r.height; cv.width = Wd * dpr; cv.height = Ht * dpr;
 }
 new ResizeObserver(resize).observe(cv);
-const toScreen = (x, y) => [(x - cam.x) * cam.k + Wd / 2, (y - cam.y) * cam.k + Ht / 2];
 const toWorld = (sx, sy) => [(sx - Wd / 2) / cam.k + cam.x, (sy - Ht / 2) / cam.k + cam.y];
 
 function fit(g, instant) {
-  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-  for (const n of g.nodes.values()) { x0 = Math.min(x0, n.x); y0 = Math.min(y0, n.y); x1 = Math.max(x1, n.x); y1 = Math.max(y1, n.y); }
-  const k = Math.min(1.6, Math.min(Wd / (x1 - x0 + 220), Ht / (y1 - y0 + 200)));
-  const t = instant ? 1 : 0.06;
+  let x0 = -160, y0 = -160, x1 = 160, y1 = 160; // keep AXA's rings in frame even when alone
+  for (const n of g.nodes.values()) if (!n.hide) { x0 = Math.min(x0, n.x); y0 = Math.min(y0, n.y); x1 = Math.max(x1, n.x); y1 = Math.max(y1, n.y); }
+  const k = Math.min(1.5, Math.min(Wd / (x1 - x0 + 260), Ht / (y1 - y0 + 220)));
+  const t = instant ? 1 : 0.05;
   cam.x += ((x0 + x1) / 2 - cam.x) * t; cam.y += ((y0 + y1) / 2 - cam.y) * t; cam.k += (k - cam.k) * t;
 }
 
 function rgba(hex, a) { const n = parseInt(hex.slice(1), 16); return `rgba(${n >> 16},${(n >> 8) & 255},${n & 255},${a})`; }
-function drawSprite(sprite, cx, cy, size, color, alpha) {
-  const cell = size / 11, ox = cx - size / 2, oy = cy - (cell * 8) / 2;
-  ctx.globalAlpha = alpha;
-  ctx.fillStyle = color;
-  sprite.forEach((row, y) => [...row].forEach((c, x) => { if (c === "#") ctx.fillRect(ox + x * cell, oy + y * cell, cell + 0.5, cell + 0.5); }));
-  ctx.fillStyle = "#070a10";
-  sprite.forEach((row, y) => [...row].forEach((c, x) => { if (c === "o") ctx.fillRect(ox + x * cell, oy + y * cell, cell + 0.5, cell + 0.5); }));
-  ctx.globalAlpha = 1;
-}
-const curve = (a, b) => { const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2, dx = b.x - a.x, dy = b.y - a.y; return [mx - dy * 0.14, my + dx * 0.14]; };
-const bez = (a, c, b, t) => [(1 - t) ** 2 * a.x + 2 * (1 - t) * t * c[0] + t * t * b.x, (1 - t) ** 2 * a.y + 2 * (1 - t) * t * c[1] + t * t * b.y];
 const trunc = (s, n) => (s && s.length > n ? s.slice(0, n - 1) + "…" : s || "");
-const size = (n) => n.kind === "axa" ? 64 : n.kind === "role" ? 40 : n.kind === "inst" ? 9 : Math.min(4 + Math.sqrt(n.count) * 1.6, 9);
+const ease = (x) => 1 - Math.pow(1 - Math.min(1, Math.max(0, x)), 3);
+function text(str, x, y, { size = 10, color = "#cfe9f3", weight = 400, spacing = 0, align = "center", alpha = 1 } = {}) {
+  ctx.font = `${weight} ${size}px ui-monospace, "SF Mono", Menlo, monospace`;
+  if ("letterSpacing" in ctx) ctx.letterSpacing = spacing + "px";
+  ctx.textAlign = align; ctx.globalAlpha = alpha;
+  ctx.lineJoin = "round"; ctx.lineWidth = 4; ctx.strokeStyle = BG; ctx.strokeText(str, x, y);
+  ctx.fillStyle = color; ctx.fillText(str, x, y);
+  ctx.globalAlpha = 1; if ("letterSpacing" in ctx) ctx.letterSpacing = "0px";
+}
+function arc(x, y, r, a0, a1, color, w, alpha = 1) {
+  ctx.globalAlpha = alpha; ctx.strokeStyle = color; ctx.lineWidth = w;
+  ctx.beginPath(); ctx.arc(x, y, r, a0, a1); ctx.stroke(); ctx.globalAlpha = 1;
+}
+// label "types in" over its first moments on screen
+const typed = (s, n, now) => s.slice(0, Math.max(1, Math.floor((now - n.born) / 22)));
+const active = (n, now) => n.status === "running" || n.hotUntil > now;
 
-function active(n, now) { return n.status === "running" || n.hotUntil > now; }
+function drawBackdrop(now) {
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const grd = ctx.createRadialGradient(Wd / 2, Ht / 2, 0, Wd / 2, Ht / 2, Math.max(Wd, Ht) * 0.7);
+  grd.addColorStop(0, "#081521"); grd.addColorStop(1, BG);
+  ctx.fillStyle = grd; ctx.fillRect(0, 0, Wd, Ht);
+  // HUD corner brackets
+  ctx.strokeStyle = "rgba(79,216,255,.35)"; ctx.lineWidth = 1;
+  const m = 14, L = 22;
+  for (const [x, y, sx, sy] of [[m, m, 1, 1], [Wd - m, m, -1, 1], [m, Ht - m, 1, -1], [Wd - m, Ht - m, -1, -1]]) {
+    ctx.beginPath(); ctx.moveTo(x, y + sy * L); ctx.lineTo(x, y); ctx.lineTo(x + sx * L, y); ctx.stroke();
+  }
+  text(new Date().toLocaleTimeString([], { hour12: false }), Wd - 22, Ht - 22, { size: 9, color: "#3b5666", spacing: 2, align: "right" });
+}
+
+function drawRange(now) {
+  // range rings + bearing ticks around AXA, and a slow radar sweep
+  for (const r of [210, 330, 450]) {
+    ctx.setLineDash([2, 8]); arc(0, 0, r, 0, Math.PI * 2, ACCENT, 1 / cam.k, 0.12); ctx.setLineDash([]);
+  }
+  ctx.strokeStyle = "rgba(79,216,255,.18)"; ctx.lineWidth = 1 / cam.k;
+  for (let i = 0; i < 72; i++) {
+    const a = (i / 72) * Math.PI * 2, r0 = 450, r1 = i % 6 ? 456 : 464;
+    ctx.beginPath(); ctx.moveTo(Math.cos(a) * r0, Math.sin(a) * r0); ctx.lineTo(Math.cos(a) * r1, Math.sin(a) * r1); ctx.stroke();
+  }
+  const sweep = (now / 1000) * 0.35;
+  const sg = ctx.createConicGradient ? ctx.createConicGradient(sweep, 0, 0) : null;
+  if (sg) {
+    sg.addColorStop(0, "rgba(79,216,255,0.10)"); sg.addColorStop(0.08, "rgba(79,216,255,0)"); sg.addColorStop(1, "rgba(79,216,255,0)");
+    ctx.fillStyle = sg; ctx.beginPath(); ctx.arc(0, 0, 450, 0, Math.PI * 2); ctx.fill();
+  }
+}
+
+function drawAxa(n, now) {
+  const t = now / 1000, on = n.status === "running", pulse = 0.5 + 0.5 * Math.sin(t * 3);
+  ctx.save(); ctx.translate(n.x, n.y);
+  // core glow
+  const glow = ctx.createRadialGradient(0, 0, 0, 0, 0, 60);
+  glow.addColorStop(0, rgba(ACCENT, on ? 0.45 + pulse * 0.2 : 0.25)); glow.addColorStop(1, rgba(ACCENT, 0));
+  ctx.fillStyle = glow; ctx.beginPath(); ctx.arc(0, 0, 60, 0, 7); ctx.fill();
+  ctx.fillStyle = "#e9fbff"; ctx.shadowColor = ACCENT; ctx.shadowBlur = 20;
+  ctx.beginPath(); ctx.arc(0, 0, 9 + (on ? pulse * 2 : 0), 0, 7); ctx.fill(); ctx.shadowBlur = 0;
+  arc(0, 0, 17, 0, 7, ACCENT, 1.5, 0.9);
+  // segmented reactor ring
+  for (let i = 0; i < 10; i++) { const a = (i / 10) * Math.PI * 2 + t * 0.15; arc(0, 0, 26, a + 0.08, a + Math.PI / 5 - 0.08, ACCENT, 5, 0.55); }
+  // rotating arcs
+  const sp = on ? 1.1 : 0.35;
+  for (let i = 0; i < 3; i++) { const a = t * sp + (i * Math.PI * 2) / 3; arc(0, 0, 38, a, a + 1.2, ACCENT, 1.5, 0.85); }
+  for (let i = 0; i < 2; i++) { const a = -t * sp * 0.6 + i * Math.PI; arc(0, 0, 46, a, a + 2.2, ACCENT, 1, 0.45); }
+  // tick ring
+  ctx.strokeStyle = rgba(ACCENT, 0.35); ctx.lineWidth = 1;
+  for (let i = 0; i < 60; i++) {
+    const a = (i / 60) * Math.PI * 2 - t * 0.08, r1 = i % 5 ? 54 : 58;
+    ctx.beginPath(); ctx.moveTo(Math.cos(a) * 52, Math.sin(a) * 52); ctx.lineTo(Math.cos(a) * r1, Math.sin(a) * r1); ctx.stroke();
+  }
+  ctx.restore();
+  text("AXA", n.x, n.y + 78, { size: 13, weight: 500, color: ACCENT, spacing: 7 });
+  text(on ? "PROCESSING" : "STANDING BY", n.x, n.y + 93, { size: 8, color: on ? "#9fe9ff" : "#3f5b6a", spacing: 3 });
+}
+
+function drawRole(g, n, now) {
+  const t = now / 1000, on = n.status === "running", hot = n.hotUntil > now, c = n.color;
+  const appear = ease((now - n.born) / 600), r = 15 * appear;
+  const jobs = [...g.nodes.values()].filter((x) => x.parent === n.id && x.status === "running").length;
+  if (on || hot) { const gl = ctx.createRadialGradient(n.x, n.y, 0, n.x, n.y, 40); gl.addColorStop(0, rgba(c, 0.28)); gl.addColorStop(1, rgba(c, 0)); ctx.fillStyle = gl; ctx.beginPath(); ctx.arc(n.x, n.y, 40, 0, 7); ctx.fill(); }
+  ctx.fillStyle = BG; ctx.beginPath(); ctx.arc(n.x, n.y, r, 0, 7); ctx.fill();
+  arc(n.x, n.y, r, 0, 7, c, 1.5, on ? 1 : 0.6);
+  ctx.fillStyle = c; ctx.globalAlpha = on ? 1 : 0.55; ctx.beginPath(); ctx.arc(n.x, n.y, 4, 0, 7); ctx.fill(); ctx.globalAlpha = 1;
+  if (on) for (let i = 0; i < 2; i++) { const a = t * 1.6 + i * Math.PI; arc(n.x, n.y, r + 7, a, a + 1.4, c, 1.5, 0.9); }
+  else arc(n.x, n.y, r + 7, 0, 7, c, 0.75, 0.18 * appear);
+  const label = typed(n.role.toUpperCase(), n, now);
+  text(label, n.x, n.y + 36, { size: 11, weight: 500, color: c, spacing: 3, alpha: on ? 1 : 0.75 });
+  const m = roleMeta(n.role);
+  text([m.model, jobs ? `${jobs} ACTIVE` : `${n.calls} CALL${n.calls === 1 ? "" : "S"}`].filter(Boolean).join("  ·  ").toUpperCase(), n.x, n.y + 50, { size: 8, color: "#4f6b7a", spacing: 2, alpha: appear });
+}
+
+function drawInst(n, now) {
+  const on = n.status === "running", c = n.fail ? RED : n.color, appear = ease((now - n.born) / 500);
+  const pulse = 0.5 + 0.5 * Math.sin(now / 250 + hash(n.id));
+  if (on) { ctx.shadowColor = c; ctx.shadowBlur = 10 + pulse * 8; }
+  ctx.fillStyle = on ? c : BG; ctx.beginPath(); ctx.arc(n.x, n.y, 6 * appear, 0, 7); ctx.fill(); ctx.shadowBlur = 0;
+  arc(n.x, n.y, 6 * appear, 0, 7, c, 1.2, on ? 1 : 0.5);
+  if (on) arc(n.x, n.y, 11, now / 300, now / 300 + 1.6, c, 1, 0.7);
+  text(trunc(typed(n.label, n, now), 34), n.x, n.y - 15, { size: 10, color: on ? "#e3f6fc" : "#5d7a89" });
+}
+
+function drawLeaf(n, now) {
+  const hot = n.hotUntil > now, c = n.fail ? RED : hot ? "#ffffff" : n.color, appear = ease((now - n.born) / 400);
+  const s = Math.min(2.5 + Math.sqrt(n.count) * 1.1, 6) * appear;
+  if (hot || n.fail) { ctx.shadowColor = n.fail ? RED : n.color; ctx.shadowBlur = 14; }
+  ctx.fillStyle = c; ctx.globalAlpha = hot || n.fail ? 1 : 0.7;
+  if (n.leafKind === "skill") { ctx.beginPath(); ctx.moveTo(n.x, n.y - s - 1.5); ctx.lineTo(n.x + s + 1.5, n.y); ctx.lineTo(n.x, n.y + s + 1.5); ctx.lineTo(n.x - s - 1.5, n.y); ctx.closePath(); ctx.fill(); }
+  else { ctx.beginPath(); ctx.arc(n.x, n.y, s, 0, 7); ctx.fill(); }
+  ctx.globalAlpha = 1; ctx.shadowBlur = 0;
+  if (cam.k > 0.7 || hot) {
+    const lbl = (n.leafKind === "skill" ? "◆ " : "") + n.label + (n.count > 1 ? `  ${n.count}` : "");
+    text(typed(lbl, n, now), n.x, n.y + s + 12, { size: 9, color: n.fail ? RED : hot ? "#ffffff" : n.leafKind === "skill" ? n.color : "#6c8796" });
+  }
+}
 
 function draw(g, now) {
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  ctx.fillStyle = "#070a10"; ctx.fillRect(0, 0, Wd, Ht);
-  // faint dot grid
-  ctx.fillStyle = "#0f1620";
-  const gs = 40 * cam.k, [gx, gy] = toScreen(0, 0);
-  if (gs > 12) for (let x = gx % gs; x < Wd; x += gs) for (let y = gy % gs; y < Ht; y += gs) ctx.fillRect(x, y, 1.5, 1.5);
+  drawBackdrop(now);
   if (!g) return;
-
+  for (const n of g.nodes.values()) n.hide = hidden(g, n);
   ctx.save();
   ctx.translate(Wd / 2, Ht / 2); ctx.scale(cam.k, cam.k); ctx.translate(-cam.x, -cam.y);
-  const t = now / 1000;
+  drawRange(now);
 
-  // links + particles
+  // links: draw outward from the parent as the node appears, then carry data packets while active
   for (const l of g.links) {
     const a = g.nodes.get(l.a), b = g.nodes.get(l.b);
-    if (!a || !b) continue;
-    const c = curve(a, b), on = active(b, now);
-    ctx.strokeStyle = on ? rgba(b.color, 0.7) : b.kind === "role" && !b.calls ? "#1a2430" : rgba(b.color, 0.28);
-    ctx.lineWidth = (on ? 1.8 : 1.1) / Math.max(cam.k, 0.6);
-    ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.quadraticCurveTo(c[0], c[1], b.x, b.y); ctx.stroke();
-    if (on && b.kind !== "leaf") {
-      ctx.fillStyle = "#fff2d6"; ctx.shadowColor = b.color; ctx.shadowBlur = 10;
-      for (let i = 0; i < 5; i++) {
-        const [px, py] = bez(a, c, b, (t * 0.55 + i / 5) % 1);
-        ctx.beginPath(); ctx.arc(px, py, 2.2, 0, 7); ctx.fill();
+    if (!a || !b || b.hide) continue;
+    const grow = ease((now - b.born) / 500), on = active(b, now);
+    const ex = a.x + (b.x - a.x) * grow, ey = a.y + (b.y - a.y) * grow;
+    ctx.strokeStyle = rgba(b.fail ? RED : b.color, on ? 0.6 : b.kind === "leaf" ? 0.16 : 0.26);
+    ctx.lineWidth = (on ? 1.4 : 1) / Math.max(cam.k, 0.6);
+    ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(ex, ey); ctx.stroke();
+    if (on && b.kind !== "leaf" && grow >= 1) {
+      const len = Math.hypot(b.x - a.x, b.y - a.y), ux = (b.x - a.x) / len, uy = (b.y - a.y) / len;
+      ctx.strokeStyle = "#eaffff"; ctx.lineWidth = 2 / Math.max(cam.k, 0.6); ctx.shadowColor = b.color; ctx.shadowBlur = 8;
+      for (let i = 0; i < 3; i++) {
+        const p = ((now / 1000) * 0.7 + i / 3) % 1, px = a.x + (b.x - a.x) * p, py = a.y + (b.y - a.y) * p;
+        ctx.beginPath(); ctx.moveTo(px, py); ctx.lineTo(px + ux * 9, py + uy * 9); ctx.stroke();
       }
       ctx.shadowBlur = 0;
     }
   }
 
-  // nodes
   const order = { leaf: 0, inst: 1, role: 2, axa: 3 };
-  for (const n of [...g.nodes.values()].sort((a, b) => order[a.kind] - order[b.kind])) {
-    const s = size(n), on = active(n, now), pulse = 0.5 + 0.5 * Math.sin(t * 4 + hash(n.id));
-    const pop = Math.min(1, (now - n.born) / 400);
-    if (n.kind === "axa" || n.kind === "role") {
-      const idle = n.kind === "role" && !n.calls && n.status !== "running";
-      const bob = on ? Math.sin(t * 5 + hash(n.id)) * 2 : 0;
-      if (on) { ctx.shadowColor = n.color; ctx.shadowBlur = 18 + pulse * 14; }
-      drawSprite(n.sprite, n.x, n.y + bob, s * pop, n.color, idle ? 0.32 : 1);
-      ctx.shadowBlur = 0;
-    } else {
-      const col = n.fail ? "#ff5d6c" : n.color;
-      if (on || n.fail) { ctx.shadowColor = col; ctx.shadowBlur = n.hotUntil > now ? 22 : 10 + pulse * 10; }
-      ctx.beginPath(); ctx.arc(n.x, n.y, s * pop, 0, 7);
-      if (n.kind === "inst" && n.status === "done") { ctx.fillStyle = rgba(col, 0.25); ctx.fill(); ctx.strokeStyle = rgba(col, 0.7); ctx.lineWidth = 1.5; ctx.stroke(); }
-      else { ctx.fillStyle = n.hotUntil > now ? "#ffffff" : rgba(col, n.kind === "leaf" ? 0.75 : 1); ctx.fill(); }
-      ctx.shadowBlur = 0;
+  for (const n of [...g.nodes.values()].filter((n) => !n.hide).sort((a, b) => order[a.kind] - order[b.kind])) {
+    if (n.kind === "axa") drawAxa(n, now);
+    else if (n.kind === "role") drawRole(g, n, now);
+    else if (n.kind === "inst") drawInst(n, now);
+    else drawLeaf(n, now);
+    if (n.id === selectedId && n.kind !== "axa") {
+      const r = n.kind === "role" ? 30 : n.kind === "inst" ? 14 : 9;
+      ctx.strokeStyle = "rgba(255,255,255,.8)"; ctx.lineWidth = 1 / cam.k;
+      for (let i = 0; i < 4; i++) { const a = i * Math.PI / 2 + Math.PI / 4; ctx.beginPath(); ctx.arc(n.x, n.y, r, a - 0.3, a + 0.3); ctx.stroke(); }
     }
-    if (n.id === selectedId) { ctx.strokeStyle = "#ffffff"; ctx.lineWidth = 1.5 / cam.k; ctx.beginPath(); ctx.arc(n.x, n.y, s / (n.kind === "axa" || n.kind === "role" ? 1.4 : 1) + 6, 0, 7); ctx.stroke(); }
-
-    // labels
-    const showLeafLabel = n.kind !== "leaf" || cam.k > 0.75 || on;
-    if (showLeafLabel) {
-      ctx.textAlign = "center";
-      const dy = n.kind === "axa" ? s * 0.5 + 18 : n.kind === "role" ? s * 0.45 + 16 : s + 13;
-      const col = n.kind === "leaf" ? (n.fail ? "#ff5d6c" : "#8a9aa8") : n.kind === "role" && !n.calls && n.status !== "running" ? "#3c4b58" : n.color;
-      ctx.fillStyle = col;
-      ctx.font = `${n.kind === "axa" ? "600 14px" : n.kind === "role" ? "600 12px" : n.kind === "inst" ? "11px" : "10px"} ui-monospace, Menlo, monospace`;
-      const label = n.kind === "axa" ? "A X A" : n.kind === "leaf" ? (n.count > 1 ? `${n.label} ×${n.count}` : n.label) : trunc(n.label, 30);
-      const ly = n.kind === "inst" ? n.y - s - 8 : n.y + dy;
-      ctx.lineJoin = "round"; ctx.lineWidth = 4; ctx.strokeStyle = "#070a10";
-      ctx.strokeText(label, n.x, ly); ctx.fillText(label, n.x, ly);
-      if (n.kind === "role") {
-        const m = roleMeta(n.role), jobs = [...g.nodes.values()].filter((x) => x.parent === n.id && x.status === "running").length;
-        ctx.font = "10px ui-monospace, Menlo, monospace"; ctx.fillStyle = "#5f7282";
-        ctx.strokeText([m.model, jobs ? `${jobs} working` : n.calls ? `${n.calls} called` : "idle"].filter(Boolean).join(" · "), n.x, n.y + dy + 13);
-        ctx.fillText([m.model, jobs ? `${jobs} working` : n.calls ? `${n.calls} called` : "idle"].filter(Boolean).join(" · "), n.x, n.y + dy + 13);
-      }
-      if (n.kind === "axa") { ctx.font = "10px ui-monospace, Menlo, monospace"; ctx.fillStyle = "#5f7282"; ctx.fillText(n.status, n.x, n.y + dy + 14); }
-    }
-    // permission badge
     if (n.perm) {
-      const bw = 78, bh = 16, by = n.y - s / (n.kind === "inst" ? 1 : 1.6) - 18;
-      ctx.fillStyle = "#ffb547"; ctx.shadowColor = "#ffb547"; ctx.shadowBlur = 8 + pulse * 8;
-      ctx.beginPath(); ctx.roundRect(n.x - bw / 2, by - bh / 2, bw, bh, 8); ctx.fill(); ctx.shadowBlur = 0;
-      ctx.fillStyle = "#1a1206"; ctx.font = "600 9px ui-monospace, Menlo, monospace"; ctx.textAlign = "center"; ctx.fillText("PERMISSION", n.x, by + 3);
+      const by = n.y - (n.kind === "inst" ? 34 : n.kind === "role" ? 44 : 24);
+      const pulse = 0.5 + 0.5 * Math.sin(now / 180);
+      ctx.strokeStyle = AMBER; ctx.lineWidth = 1; ctx.shadowColor = AMBER; ctx.shadowBlur = 6 + pulse * 8;
+      ctx.fillStyle = "rgba(40,26,4,.9)"; ctx.beginPath(); ctx.rect(n.x - 52, by - 9, 104, 16); ctx.fill(); ctx.stroke(); ctx.shadowBlur = 0;
+      text("AWAITING APPROVAL", n.x, by + 3, { size: 8, weight: 500, color: AMBER, spacing: 1.5 });
     }
   }
   ctx.restore();
@@ -381,7 +445,8 @@ function hit(g, sx, sy) {
   const [x, y] = toWorld(sx, sy);
   let best = null, bd = Infinity;
   for (const n of g.nodes.values()) {
-    const r = (n.kind === "axa" || n.kind === "role" ? size(n) / 2 : size(n)) + 8 / cam.k;
+    if (n.hide) continue;
+    const r = (n.kind === "axa" ? 50 : n.kind === "role" ? 22 : n.kind === "inst" ? 10 : 7) + 6 / cam.k;
     const d = Math.hypot(n.x - x, n.y - y);
     if (d < r && d < bd) { best = n; bd = d; }
   }
@@ -401,7 +466,7 @@ cv.addEventListener("pointermove", (ev) => {
   else if (drag.moved) { autoFit = false; cam.x = drag.cx - dx / cam.k; cam.y = drag.cy - dy / cam.k; }
 });
 cv.addEventListener("pointerup", () => {
-  if (drag && !drag.moved && drag.clicked) { selectedId = drag.clicked.id; dirty = true; }
+  if (drag && !drag.moved) { selectedId = drag.clicked ? drag.clicked.id : "axa"; dirty = true; }
   drag = null; cv.classList.remove("drag");
 });
 cv.addEventListener("wheel", (ev) => {
@@ -416,36 +481,35 @@ $("fit").onclick = () => { autoFit = true; };
 const esc = (t) => String(t ?? "").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
 const dur = (ms) => ms < 60000 ? (ms / 1000).toFixed(1) + "s" : Math.floor(ms / 60000) + "m " + Math.round((ms % 60000) / 1000) + "s";
 const short = (id) => String(id || "").replace(/^agent-/, "").slice(0, 6);
+const kv = (rows) => `<div class="kv">${rows.filter(([, v]) => v).map(([k, v]) => `<span class="k">${k}</span><span>${v}</span>`).join("")}</div>`;
 
 function renderDetail(g) {
   const box = $("detail");
   if (!g) return box.replaceChildren();
   const n = g.nodes.get(selectedId) || g.nodes.get("axa");
   const kids = [...g.nodes.values()].filter((x) => x.parent === n.id);
-  const head = (txt) => `<h2 style="color:${n.color}">${txt}</h2>`;
+  const head = (txt) => `<p class="title">Selected</p><h2 style="color:${n.color}">${txt}</h2>`;
   let html = "";
   if (n.kind === "axa") {
-    html = head("AXA · orchestrator") + `<div><span class="k">status</span> ${esc(n.status)}</div>
-      <div><span class="k">agents</span> ${kids.filter((k) => k.kind === "role").map((k) => esc(k.role) + (k.calls ? ` ×${k.calls}` : "")).join(" · ") || "—"}</div>
-      <div><span class="k">own tools</span> ${kids.filter((k) => k.kind === "leaf").map((k) => `${esc(k.label)} ×${k.count}`).join(" · ") || "—"}</div>
-      ${n.prompt ? `<div class="k" style="margin-top:8px">last prompt</div><pre>${esc(n.prompt)}</pre>` : ""}
-      ${n.message ? `<div class="k">last reply</div><pre>${esc(n.message)}</pre>` : ""}`;
+    html = head("AXA") + kv([
+      ["status", n.status === "running" ? "processing" : "standing by"],
+      ["agents", kids.filter((k) => k.kind === "role").map((k) => `${esc(k.role)} ×${k.calls}`).join(" · ") || "none called yet"],
+      ["own calls", kids.filter((k) => k.kind === "leaf").map((k) => `${esc(k.label)} ×${k.count}`).join(" · ")],
+    ]) + (n.prompt ? `<span class="k">directive</span><pre>${esc(n.prompt)}</pre>` : "") + (n.message ? `<span class="k">last report</span><pre>${esc(n.message)}</pre>` : "");
   } else if (n.kind === "role") {
     const m = roleMeta(n.role);
-    html = head(esc(n.role)) + `<div><span class="k">agent</span> ${esc(m.type || n.role)} ${m.model ? `<span class="k">· ${esc(m.model)}</span>` : ""}</div>
-      ${m.use ? `<div><span class="k">use for</span> ${esc(m.use)}</div>` : ""}
-      <div class="k" style="margin-top:8px">jobs (${n.calls} called)</div>
-      <ul>${kids.map((k) => `<li>${k.status === "running" ? "● " : "✓ "}${esc(k.desc || short(k.id))}</li>`).join("") || "<li class='k'>none yet</li>"}</ul>`;
+    html = head(esc(n.role)) + kv([["agent", esc(m.type || n.role)], ["model", esc(m.model)], ["use for", esc(m.use)], ["called", String(n.calls)]]) +
+      `<span class="k">jobs</span><ul>${kids.map((k) => `<li>${k.status === "running" ? `<span style="color:${n.color}">●</span>` : "<span class='k'>✓</span>"} ${esc(k.desc || short(k.id))}</li>`).join("")}</ul>`;
   } else if (n.kind === "inst") {
-    html = head(`${esc(n.role)} · ${esc(short(n.id))}`) + `<div><span class="k">status</span> ${esc(n.status)} <span class="k">· ${dur((n.end || Date.now()) - (n.start || Date.now()))}</span></div>
-      ${n.desc ? `<div><span class="k">task</span> ${esc(n.desc)}</div>` : ""}
-      <div><span class="k">calls</span> ${kids.map((k) => `${esc(k.label)} ×${k.count}`).join(" · ") || "—"}</div>
-      ${n.prompt ? `<div class="k" style="margin-top:8px">assigned by AXA</div><pre>${esc(n.prompt)}</pre>` : ""}
-      ${n.message ? `<div class="k">reported back</div><pre>${esc(n.message)}</pre>` : ""}`;
+    html = head(esc(n.role)) + kv([
+      ["task", esc(n.desc)], ["status", n.status === "running" ? "active" : "complete"],
+      ["elapsed", dur((n.end || Date.now()) - (n.start || Date.now()))],
+      ["calls", kids.map((k) => `${esc(k.label)} ×${k.count}`).join(" · ")],
+    ]) + (n.prompt ? `<span class="k">assigned by axa</span><pre>${esc(n.prompt)}</pre>` : "") + (n.message ? `<span class="k">report</span><pre>${esc(n.message)}</pre>` : "");
   } else {
-    html = head(esc(n.label)) + `<div><span class="k">calls</span> ${n.count}</div>
-      ${n.error ? `<div class="k">last error</div><pre>${esc(n.error)}</pre>` : ""}
-      <div class="k" style="margin-top:8px">recent</div><ul>${n.recent.map((r) => `<li>${esc(r) || "—"}</li>`).join("")}</ul>`;
+    html = head(esc(n.label)) + kv([["type", n.leafKind], ["calls", String(n.count)]]) +
+      (n.error ? `<span class="k">last error</span><pre>${esc(n.error)}</pre>` : "") +
+      `<span class="k">recent</span><ul>${n.recent.map((r) => `<li>${esc(r) || "—"}</li>`).join("")}</ul>`;
   }
   box.innerHTML = html;
 }
@@ -453,16 +517,16 @@ function renderDetail(g) {
 function describe(e) {
   const isSpawn = e.tool === "Agent" || e.tool === "Task";
   switch (e.event) {
-    case "UserPromptSubmit": return ["prompt", "you → " + esc(e.prompt)];
-    case "Stop": return ["", "turn finished"];
+    case "UserPromptSubmit": return ["prompt", "directive: " + esc(e.prompt)];
+    case "Stop": return ["", "standing by"];
     case "SessionStart": return ["", "session " + esc(e.source || "start")];
-    case "SubagentStart": return ["", `<b>${esc(roleFor(e.agent_type))}</b> started`];
-    case "SubagentStop": return ["", `<b>${esc(roleFor(e.agent_type))}</b> reported back`];
-    case "PermissionRequest": return ["perm", `needs permission: ${esc(e.tool)} ${esc(e.summary || "")}`];
-    case "PostToolUseFailure": return ["fail", `${esc(e.tool)} failed: ${esc(e.error)}`];
+    case "SubagentStart": return ["", "online"];
+    case "SubagentStop": return ["", "reported back"];
+    case "PermissionRequest": return ["perm", `awaiting approval · ${esc(e.tool)} ${esc(e.summary || "")}`];
+    case "PostToolUseFailure": return ["fail", `${esc(e.tool)} failed · ${esc(e.error)}`];
     case "PreToolUse":
-      if (e.skill) return ["", `skill <b>⚡${esc(e.skill)}</b>`];
-      if (isSpawn) return ["", `calls <b>${esc(roleFor(e.subagent_type))}</b>: ${esc(e.summary)}`];
+      if (e.skill) return ["", `skill <b>${esc(e.skill)}</b>`];
+      if (isSpawn) return ["call", `dispatch <b>${esc(roleFor(e.subagent_type))}</b> · ${esc(e.summary)}`];
       return ["", `<b>${esc(e.tool)}</b> ${esc(e.summary || "")}`];
   }
   return null;
@@ -477,8 +541,8 @@ function renderFeed(g) {
     const d = describe(e); if (!d) continue;
     const row = document.createElement("div");
     row.className = "row " + d[0];
-    const who = e.agent_id ? roleFor(e.agent_type) : "AXA";
-    const color = e.agent_id ? roleMeta(who).color : AXA_COLOR;
+    const who = e.agent_id ? roleFor(e.agent_type) : "axa";
+    const color = e.agent_id ? roleMeta(who).color : ACCENT;
     row.innerHTML = `<span class="t">${new Date(e.ts).toLocaleTimeString([], { hour12: false })}</span><span class="who" style="color:${color}">${esc(who)}</span><span class="what">${d[1]}</span>`;
     row.title = row.textContent;
     if (e.agent_id) row.onclick = () => { selectedId = e.agent_id; dirty = true; };
@@ -492,11 +556,9 @@ function renderFeed(g) {
 function renderChrome(g) {
   $("empty").style.display = g ? "none" : "grid";
   const roles = g ? [...g.nodes.values()].filter((n) => n.kind === "role") : [];
-  $("s-agents").textContent = roles.reduce((s, r) => s + r.calls, 0);
+  $("s-agents").textContent = roles.length;
   $("s-running").textContent = g ? [...g.nodes.values()].filter((n) => n.kind === "inst" && n.status === "running").length : 0;
   $("s-calls").textContent = g ? g.calls : 0;
-  $("legend").innerHTML = roles.map((r) => `<span class="chip ${r.calls ? "on" : ""}" data-id="${esc(r.id)}" title="${esc(roleMeta(r.role).use || "")}"><i style="background:${r.color}"></i>${esc(r.role)}</span>`).join("");
-  $("legend").querySelectorAll(".chip").forEach((c) => (c.onclick = () => { selectedId = c.dataset.id; dirty = true; }));
   const sel = $("session");
   const list = [...sessions.values()].sort((a, b) => b.last - a.last).slice(0, 30);
   const sig = list.map((s) => s.id).join();
@@ -504,7 +566,7 @@ function renderChrome(g) {
     sel.replaceChildren(...list.map((s) => {
       const o = document.createElement("option");
       o.value = s.id;
-      o.textContent = s.id === "demo" ? "▶ demo" : `${(s.cwd || "").split("/").pop() || "~"} · ${new Date(s.last).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })} · ${s.id.slice(0, 8)}`;
+      o.textContent = s.id === "demo" ? "Demo run" : `${(s.cwd || "").split("/").pop() || "~"} · ${new Date(s.last).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}`;
       return o;
     }));
     sel.dataset.sig = sig;
@@ -531,7 +593,7 @@ function frame(now) {
   requestAnimationFrame(frame);
 }
 
-// ---------- demo: a scripted orchestration so the map can be seen without a live run ----------
+// ---------- demo: a scripted orchestration so the console can be seen without a live run ----------
 function demo() {
   sessions.delete("demo"); feedFor = null;
   pinned = true; current = "demo"; selectedId = "axa"; autoFit = true;
@@ -540,35 +602,35 @@ function demo() {
   const type = (r) => roster.find((x) => x.role === r)?.subagent_type || r;
   const steps = [
     [0, { event: "UserPromptSubmit", prompt: "Wire the Launches app into N2S as the Aerospace Hangar node and get it reviewed." }],
-    [600, { event: "PreToolUse", tool: "Skill", skill: "axa", summary: "axa" }],
-    [1200, { event: "PreToolUse", tool: "Read", summary: "roster.md" }],
-    [1900, { event: "PreToolUse", tool: "Agent", subagent_type: type("scout"), summary: "Map Launches feature folder", prompt: "Map ~/projects/launches/src/features/launches: entry points, env vars, assets." }],
-    [1950, { event: "SubagentStart", agent_id: ids.scout, agent_type: type("scout") }],
-    [2100, { event: "PreToolUse", tool: "Agent", subagent_type: type("researcher"), summary: "Check R3F version compat", prompt: "Is @react-three/fiber in Launches compatible with N2S's version?" }],
-    [2150, { event: "SubagentStart", agent_id: ids.research, agent_type: type("researcher") }],
-    ...[["Glob", "src/features/**"], ["Read", "index.ts"], ["Grep", "process.env"], ["Read", "LaunchScene.tsx"], ["Glob", "public/launches/**"]].map(([t, s], i) => [2600 + i * 700, { event: "PreToolUse", agent_id: ids.scout, agent_type: type("scout"), tool: t, summary: s }]),
-    ...[["WebSearch", "react-three-fiber v9 changelog"], ["WebFetch", "github.com/pmndrs/react-three-fiber"], ["WebSearch", "next 16 r3f"]].map(([t, s], i) => [2900 + i * 1100, { event: "PreToolUse", agent_id: ids.research, agent_type: type("researcher"), tool: t, summary: s }]),
-    [6200, { event: "SubagentStop", agent_id: ids.scout, agent_type: type("scout"), message: "Feature is self-contained in src/features/launches (100 files). Needs NEXT_PUBLIC_LAUNCHES_ASSET_BASE." }],
-    [6600, { event: "SubagentStop", agent_id: ids.research, agent_type: type("researcher"), message: "Both on R3F 9.x — compatible. No upgrade needed." }],
-    [7200, { event: "PreToolUse", tool: "Agent", subagent_type: type("builder"), summary: "Port feature into dashboard/", prompt: "Copy src/features/launches into N2S dashboard, scope styles, add /aerospace route." }],
-    [7250, { event: "SubagentStart", agent_id: ids.b1, agent_type: type("builder") }],
-    [7400, { event: "PreToolUse", tool: "Agent", subagent_type: type("builder"), summary: "Add Aerospace to MODULE_ROUTES", prompt: "Register /aerospace in components/ecosystem/routes.ts and the orrery node." }],
-    [7450, { event: "SubagentStart", agent_id: ids.b2, agent_type: type("builder") }],
-    ...[["Bash", "cp -r features"], ["Edit", "page.tsx"], ["Write", "aerospace/layout.tsx"], ["Edit", "globals.css"], ["Skill", "cloudflare"], ["Bash", "npx opennextjs-cloudflare build"]].map(([t, s], i) => [7900 + i * 900, { event: "PreToolUse", agent_id: ids.b1, agent_type: type("builder"), tool: t, skill: t === "Skill" ? s : undefined, summary: s }]),
-    ...[["Read", "routes.ts"], ["Edit", "routes.ts"], ["Edit", "Orrery.tsx"]].map(([t, s], i) => [8200 + i * 1000, { event: "PreToolUse", agent_id: ids.b2, agent_type: type("builder"), tool: t, summary: s }]),
-    [11400, { event: "PermissionRequest", agent_id: ids.b2, agent_type: type("builder"), tool: "Bash", summary: "git checkout -b aerospace-node" }],
-    [13600, { event: "PreToolUse", agent_id: ids.b2, agent_type: type("builder"), tool: "Bash", summary: "git checkout -b aerospace-node" }],
-    [13000, { event: "PostToolUseFailure", agent_id: ids.b1, agent_type: type("builder"), tool: "Bash", error: "Type error: 'scene' is possibly null" }],
-    [13800, { event: "PreToolUse", agent_id: ids.b1, agent_type: type("builder"), tool: "Edit", summary: "LaunchScene.tsx" }],
-    [14600, { event: "PreToolUse", agent_id: ids.b1, agent_type: type("builder"), tool: "Bash", summary: "npx opennextjs-cloudflare build" }],
-    [15400, { event: "SubagentStop", agent_id: ids.b2, agent_type: type("builder"), message: "Route registered; orrery node links to /aerospace." }],
-    [16200, { event: "SubagentStop", agent_id: ids.b1, agent_type: type("builder"), message: "Ported 100 files; build passes after null-check fix." }],
-    [16800, { event: "PreToolUse", tool: "Agent", subagent_type: type("reviewer"), summary: "Review aerospace-node diff", prompt: "Review the aerospace-node branch diff; run build + typecheck." }],
-    [16850, { event: "SubagentStart", agent_id: ids.review, agent_type: type("reviewer") }],
-    ...[["Bash", "git diff main"], ["Read", "routes.ts"], ["Read", "LaunchScene.tsx"], ["Bash", "npx tsc --noEmit"]].map(([t, s], i) => [17300 + i * 800, { event: "PreToolUse", agent_id: ids.review, agent_type: type("reviewer"), tool: t, summary: s }]),
-    [21000, { event: "SubagentStop", agent_id: ids.review, agent_type: type("reviewer"), message: "Clean. One nit: asset base env var missing from .env.example." }],
-    [21600, { event: "PreToolUse", tool: "Bash", summary: "verify build" }],
-    [22800, { event: "Stop", message: "Aerospace Hangar wired in on branch aerospace-node. Scout mapped, researcher confirmed R3F compat, 2 builders ported + routed, reviewer clean. Not pushed." }],
+    [800, { event: "PreToolUse", tool: "Skill", skill: "axa", summary: "axa" }],
+    [1500, { event: "PreToolUse", tool: "Read", summary: "roster.md" }],
+    [2400, { event: "PreToolUse", tool: "Agent", subagent_type: type("scout"), summary: "Map Launches feature folder", prompt: "Map ~/projects/launches/src/features/launches: entry points, env vars, assets." }],
+    [2450, { event: "SubagentStart", agent_id: ids.scout, agent_type: type("scout") }],
+    [3300, { event: "PreToolUse", tool: "Agent", subagent_type: type("researcher"), summary: "Check R3F version compat", prompt: "Is @react-three/fiber in Launches compatible with N2S's version?" }],
+    [3350, { event: "SubagentStart", agent_id: ids.research, agent_type: type("researcher") }],
+    ...[["Glob", "src/features/**"], ["Read", "index.ts"], ["Grep", "process.env"], ["Read", "LaunchScene.tsx"], ["Glob", "public/launches/**"]].map(([t, s], i) => [3000 + i * 800, { event: "PreToolUse", agent_id: ids.scout, agent_type: type("scout"), tool: t, summary: s }]),
+    ...[["WebSearch", "react-three-fiber v9 changelog"], ["WebFetch", "github.com/pmndrs/react-three-fiber"], ["WebSearch", "next 16 r3f"]].map(([t, s], i) => [4000 + i * 1200, { event: "PreToolUse", agent_id: ids.research, agent_type: type("researcher"), tool: t, summary: s }]),
+    [7400, { event: "SubagentStop", agent_id: ids.scout, agent_type: type("scout"), message: "Feature is self-contained in src/features/launches (100 files). Needs NEXT_PUBLIC_LAUNCHES_ASSET_BASE." }],
+    [8000, { event: "SubagentStop", agent_id: ids.research, agent_type: type("researcher"), message: "Both on R3F 9.x — compatible. No upgrade needed." }],
+    [9000, { event: "PreToolUse", tool: "Agent", subagent_type: type("builder"), summary: "Port feature into dashboard/", prompt: "Copy src/features/launches into N2S dashboard, scope styles, add /aerospace route." }],
+    [9050, { event: "SubagentStart", agent_id: ids.b1, agent_type: type("builder") }],
+    [9700, { event: "PreToolUse", tool: "Agent", subagent_type: type("builder"), summary: "Register Aerospace route", prompt: "Register /aerospace in components/ecosystem/routes.ts and the orrery node." }],
+    [9750, { event: "SubagentStart", agent_id: ids.b2, agent_type: type("builder") }],
+    ...[["Bash", "cp -r features"], ["Edit", "page.tsx"], ["Write", "aerospace/layout.tsx"], ["Edit", "globals.css"], ["Skill", "cloudflare"], ["Bash", "npx opennextjs-cloudflare build"]].map(([t, s], i) => [9700 + i * 900, { event: "PreToolUse", agent_id: ids.b1, agent_type: type("builder"), tool: t, skill: t === "Skill" ? s : undefined, summary: s }]),
+    ...[["Read", "routes.ts"], ["Edit", "routes.ts"], ["Edit", "Orrery.tsx"]].map(([t, s], i) => [10300 + i * 1000, { event: "PreToolUse", agent_id: ids.b2, agent_type: type("builder"), tool: t, summary: s }]),
+    [13400, { event: "PermissionRequest", agent_id: ids.b2, agent_type: type("builder"), tool: "Bash", summary: "git checkout -b aerospace-node" }],
+    [15400, { event: "PreToolUse", agent_id: ids.b2, agent_type: type("builder"), tool: "Bash", summary: "git checkout -b aerospace-node" }],
+    [15000, { event: "PostToolUseFailure", agent_id: ids.b1, agent_type: type("builder"), tool: "Bash", error: "Type error: 'scene' is possibly null" }],
+    [15800, { event: "PreToolUse", agent_id: ids.b1, agent_type: type("builder"), tool: "Edit", summary: "LaunchScene.tsx" }],
+    [16600, { event: "PreToolUse", agent_id: ids.b1, agent_type: type("builder"), tool: "Bash", summary: "npx opennextjs-cloudflare build" }],
+    [17200, { event: "SubagentStop", agent_id: ids.b2, agent_type: type("builder"), message: "Route registered; orrery node links to /aerospace." }],
+    [18200, { event: "SubagentStop", agent_id: ids.b1, agent_type: type("builder"), message: "Ported 100 files; build passes after null-check fix." }],
+    [19000, { event: "PreToolUse", tool: "Agent", subagent_type: type("reviewer"), summary: "Review aerospace-node diff", prompt: "Review the aerospace-node branch diff; run build + typecheck." }],
+    [19050, { event: "SubagentStart", agent_id: ids.review, agent_type: type("reviewer") }],
+    ...[["Bash", "git diff main"], ["Read", "routes.ts"], ["Read", "LaunchScene.tsx"], ["Bash", "npx tsc --noEmit"]].map(([t, s], i) => [19600 + i * 900, { event: "PreToolUse", agent_id: ids.review, agent_type: type("reviewer"), tool: t, summary: s }]),
+    [23500, { event: "SubagentStop", agent_id: ids.review, agent_type: type("reviewer"), message: "Clean. One nit: asset base env var missing from .env.example." }],
+    [24200, { event: "PreToolUse", tool: "Bash", summary: "verify build" }],
+    [25500, { event: "Stop", message: "Aerospace Hangar wired in on branch aerospace-node. Scout mapped, researcher confirmed R3F compat, 2 builders ported + routed, reviewer clean. Not pushed." }],
   ];
   const t0 = Date.now();
   for (const [at, e] of steps) setTimeout(() => ingest({ ...base, ts: t0 + at, ...e }), at);
@@ -585,8 +647,8 @@ function connect() {
   const es = new EventSource("/events");
   es.addEventListener("history", (m) => { for (const k of [...sessions.keys()]) if (k !== "demo") sessions.delete(k); feedFor = null; JSON.parse(m.data).forEach(ingest); dirty = true; });
   es.onmessage = (m) => { try { ingest(JSON.parse(m.data)); } catch {} };
-  es.onopen = () => $("live").classList.add("on");
-  es.onerror = () => $("live").classList.remove("on");
+  es.onopen = () => { $("live").classList.add("on"); $("live").textContent = "online"; };
+  es.onerror = () => { $("live").classList.remove("on"); $("live").textContent = "offline"; };
 }
 loadRoster().then(() => { connect(); requestAnimationFrame(frame); if (new URLSearchParams(location.search).has("demo")) demo(); });
 </script>
