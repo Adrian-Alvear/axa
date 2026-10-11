@@ -1,0 +1,343 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AXA Console</title>
+<style>
+  :root {
+    --bg: #05080d; --panel: #0a111a; --line: #15222f; --text: #cfe3ee; --dim: #5d7584;
+    --cyan: #3fd6ff; --cyan-soft: rgba(63,214,255,.18); --green: #4ade80; --red: #ff5d6c; --amber: #ffc04d; --violet: #b18cff;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font: 13px/1.45 ui-monospace, "SF Mono", Menlo, monospace; }
+  body { display: grid; grid-template-columns: 1fr 380px; grid-template-rows: auto 1fr; height: 100vh; overflow: hidden; }
+  header { grid-column: 1 / -1; display: flex; align-items: center; gap: 16px; padding: 10px 16px; border-bottom: 1px solid var(--line); }
+  header h1 { margin: 0; font-size: 14px; letter-spacing: .35em; color: var(--cyan); font-weight: 600; }
+  header .stat { color: var(--dim); }
+  header .stat b { color: var(--text); font-weight: 500; }
+  header select { margin-left: auto; background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; font: inherit; max-width: 340px; }
+  #live { width: 8px; height: 8px; border-radius: 50%; background: var(--dim); }
+  #live.on { background: var(--green); box-shadow: 0 0 8px var(--green); }
+
+  #stage { position: relative; overflow: hidden; }
+  #stage svg { width: 100%; height: 100%; display: block; }
+  .ring { fill: none; stroke: var(--line); stroke-dasharray: 2 6; }
+  .spin { transform-origin: center; transform-box: fill-box; animation: spin 90s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .node { cursor: pointer; transition: transform .7s cubic-bezier(.2,.8,.2,1), opacity .5s; }
+  .node .halo { fill: var(--cyan-soft); opacity: 0; transition: opacity .3s; }
+  .node.running .halo { opacity: 1; animation: breathe 1.8s ease-in-out infinite; }
+  .node .core { fill: var(--panel); stroke: var(--cyan); stroke-width: 1.5; }
+  .node.done .core { stroke: var(--dim); }
+  .node.done { opacity: .55; }
+  .node.selected .core { stroke-width: 3; }
+  .node text { fill: var(--text); text-anchor: middle; pointer-events: none; }
+  .node .sub { fill: var(--dim); font-size: 10px; }
+  .center .core { stroke-width: 2.5; }
+  .center text.title { font-size: 18px; letter-spacing: .3em; fill: var(--cyan); }
+  @keyframes breathe { 50% { transform: scale(1.18); } }
+  .halo { transform-box: fill-box; transform-origin: center; }
+
+  .edge { stroke: var(--line); stroke-width: 1.5; fill: none; transition: stroke .3s; }
+  .edge.running { stroke: var(--cyan); stroke-dasharray: 6 8; animation: flow .8s linear infinite; }
+  @keyframes flow { to { stroke-dashoffset: -14; } }
+
+  .sat { transition: transform .7s cubic-bezier(.2,.8,.2,1); }
+  .sat circle { fill: #0f1c27; stroke: #2a4152; }
+  .sat.skill circle { stroke: var(--violet); }
+  .sat.agent circle { stroke: var(--amber); }
+  .sat.hot circle { fill: var(--cyan); stroke: var(--cyan); filter: drop-shadow(0 0 6px var(--cyan)); }
+  .sat.fail circle { fill: var(--red); stroke: var(--red); }
+  .sat text { fill: var(--dim); font-size: 9.5px; text-anchor: middle; pointer-events: none; }
+  .sat.hot text { fill: var(--text); }
+
+  aside { border-left: 1px solid var(--line); display: grid; grid-template-rows: auto 1fr; min-height: 0; }
+  #detail { border-bottom: 1px solid var(--line); padding: 12px 14px; max-height: 45vh; overflow: auto; }
+  #detail:empty { display: none; }
+  #detail h2 { margin: 0 0 6px; font-size: 13px; color: var(--cyan); }
+  #detail .k { color: var(--dim); }
+  #detail pre { white-space: pre-wrap; word-break: break-word; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 8px; margin: 6px 0 10px; max-height: 180px; overflow: auto; }
+  #feed { overflow: auto; padding: 6px 0; min-height: 0; }
+  .row { display: grid; grid-template-columns: 58px 92px 1fr; gap: 8px; padding: 3px 14px; border-left: 2px solid transparent; }
+  .row:hover { background: var(--panel); }
+  .row .t { color: var(--dim); }
+  .row .who { color: var(--cyan); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .row .who.main { color: var(--text); }
+  .row .what { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .row.fail { border-left-color: var(--red); } .row.fail .what { color: var(--red); }
+  .row.agent { border-left-color: var(--amber); }
+  .row.skill .what b { color: var(--violet); }
+  .row.prompt { border-left-color: var(--cyan); } .row.prompt .what { color: var(--text); }
+  .row b { font-weight: 600; }
+  #empty { position: absolute; inset: 0; display: grid; place-items: center; color: var(--dim); text-align: center; pointer-events: none; }
+
+  @media (max-width: 860px) {
+    body { grid-template-columns: 1fr; grid-template-rows: auto 55vh 1fr; overflow: auto; height: auto; }
+    aside { border-left: 0; border-top: 1px solid var(--line); }
+    header select { max-width: 50vw; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <span id="live" title="connection"></span>
+  <h1>AXA</h1>
+  <span class="stat">agents <b id="s-agents">0</b></span>
+  <span class="stat">running <b id="s-running">0</b></span>
+  <span class="stat">tool calls <b id="s-calls">0</b></span>
+  <select id="session" title="session"></select>
+</header>
+<main id="stage">
+  <svg id="svg" viewBox="-500 -400 1000 800" preserveAspectRatio="xMidYMid meet">
+    <circle class="ring spin" r="270"></circle>
+    <circle class="ring" r="150" opacity=".5"></circle>
+    <g id="edges"></g><g id="nodes"></g>
+  </svg>
+  <div id="empty">Waiting for activity…<br>Use Claude Code with the AXA plugin enabled — every agent, skill and tool call shows up here.</div>
+</main>
+<aside>
+  <section id="detail"></section>
+  <section id="feed"></section>
+</aside>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const NS = "http://www.w3.org/2000/svg";
+const sessions = new Map();      // session_id -> session state
+let current = null;              // selected session id
+let pinned = false;              // user picked a session manually
+let selected = "main";           // node shown in the detail panel
+const HOT_MS = 1400;
+
+function newSession(id, cwd) {
+  return { id, cwd, last: 0, calls: 0, events: [],
+    main: { key: "main", type: "AXA", status: "idle", tools: new Map(), prompt: null, message: null },
+    agents: new Map(), pendingSpawns: [] };
+}
+function agentFor(s, e) {
+  if (!e.agent_id) return s.main;
+  let a = s.agents.get(e.agent_id);
+  if (!a) {
+    a = { key: e.agent_id, type: e.agent_type || "agent", status: "running", tools: new Map(), start: e.ts, order: s.agents.size };
+    s.agents.set(e.agent_id, a);
+  }
+  return a;
+}
+function touchTool(node, name, kind, ts, state) {
+  let t = node.tools.get(name);
+  if (!t) { t = { name, kind, count: 0, hotUntil: 0, fail: false }; node.tools.set(name, t); }
+  if (state === "start") { t.count++; t.hotUntil = ts + HOT_MS; t.fail = false; }
+  if (state === "fail") { t.fail = true; t.hotUntil = 0; }
+}
+
+function ingest(e) {
+  if (!e || !e.session) return;
+  let s = sessions.get(e.session);
+  if (!s) { s = newSession(e.session, e.cwd); sessions.set(e.session, s); }
+  s.last = e.ts; s.cwd = e.cwd || s.cwd;
+  const node = agentFor(s, e);
+  const isSpawn = e.tool === "Agent" || e.tool === "Task";
+  const satName = e.tool === "Skill" ? "⚡" + (e.skill || "skill") : isSpawn ? "➜ " + (e.subagent_type || "agent") : e.tool;
+  const kind = e.tool === "Skill" ? "skill" : isSpawn ? "agent" : "tool";
+
+  switch (e.event) {
+    case "UserPromptSubmit": s.main.prompt = e.prompt; s.main.status = "running"; break;
+    case "Stop": s.main.status = "idle"; s.main.message = e.message; break;
+    case "PreToolUse":
+      s.calls++; node.status = "running";
+      touchTool(node, satName, kind, e.ts, "start");
+      if (isSpawn) s.pendingSpawns.push({ type: e.subagent_type, prompt: e.prompt, desc: e.summary });
+      break;
+    case "PostToolUseFailure": touchTool(node, satName, kind, e.ts, "fail"); break;
+    case "SubagentStart": {
+      const i = s.pendingSpawns.findIndex((p) => p.type === e.agent_type);
+      const spawn = i >= 0 ? s.pendingSpawns.splice(i, 1)[0] : s.pendingSpawns.shift();
+      if (spawn) { node.prompt = spawn.prompt; node.desc = spawn.desc; }
+      node.status = "running"; node.start = e.ts;
+      break;
+    }
+    case "SubagentStop": node.status = "done"; node.message = e.message; node.end = e.ts; break;
+  }
+  s.events.push(e);
+  if (s.events.length > 3000) s.events.splice(0, s.events.length - 3000);
+}
+
+// ---------- rendering ----------
+function el(tag, attrs = {}, parent) {
+  const n = document.createElementNS(NS, tag);
+  for (const k in attrs) n.setAttribute(k, attrs[k]);
+  if (parent) parent.appendChild(n);
+  return n;
+}
+const pool = new Map(); // key -> svg element, so nodes animate between positions
+function keyed(key, make, parent) {
+  let n = pool.get(key);
+  if (!n) { n = make(); parent.appendChild(n); pool.set(key, n); }
+  n.dataset.seen = "1";
+  return n;
+}
+const short = (id) => (id || "").replace(/^agent-/, "").slice(0, 6);
+const place = (n, x, y) => { n.style.transform = `translate(${x}px, ${y}px)`; };
+
+function drawNode(key, x, y, r, node, isCenter) {
+  const g = keyed("n:" + key, () => {
+    const g = el("g", { class: "node" + (isCenter ? " center" : "") });
+    el("circle", { class: "halo", r: r + 14 }, g);
+    el("circle", { class: "core", r }, g);
+    el("text", { class: "title", dy: isCenter ? 6 : 0 }, g);
+    el("text", { class: "sub", dy: isCenter ? 26 : 14 }, g);
+    g.addEventListener("click", () => { selected = key; render(); });
+    return g;
+  }, $("nodes"));
+  g.classList.toggle("running", node.status === "running");
+  g.classList.toggle("done", node.status === "done");
+  g.classList.toggle("selected", selected === key);
+  const [title, sub] = g.querySelectorAll("text");
+  title.textContent = isCenter ? "AXA" : node.type;
+  sub.textContent = isCenter ? node.status : short(node.key) + (node.status === "done" ? " ✓" : "");
+  place(g, x, y);
+
+  // satellites: this node's tools/skills/spawns, on a small orbit
+  const tools = [...node.tools.values()].sort((a, b) => b.count - a.count).slice(0, isCenter ? 14 : 8);
+  const R = r + (isCenter ? 58 : 36), now = Date.now();
+  tools.forEach((t, i) => {
+    const ang = -Math.PI / 2 + (i / Math.max(tools.length, 1)) * Math.PI * 2;
+    const sg = keyed(`s:${key}:${t.name}`, () => {
+      const sg = el("g", { class: "sat" });
+      el("circle", {}, sg); el("text", {}, sg);
+      return sg;
+    }, $("nodes"));
+    sg.setAttribute("class", `sat ${t.kind}${t.hotUntil > now ? " hot" : ""}${t.fail ? " fail" : ""}`);
+    const sr = Math.min(5 + Math.sqrt(t.count) * 2.2, 14);
+    sg.querySelector("circle").setAttribute("r", sr);
+    const tx = sg.querySelector("text");
+    tx.textContent = t.count > 1 ? `${t.name} ×${t.count}` : t.name;
+    tx.setAttribute("dy", sr + 11);
+    place(sg, x + Math.cos(ang) * R, y + Math.sin(ang) * R);
+  });
+}
+
+function render() {
+  const s = sessions.get(current);
+  for (const n of pool.values()) n.dataset.seen = "";
+  $("edges").replaceChildren();
+  $("empty").style.display = s ? "none" : "grid";
+  if (s) {
+    drawNode("main", 0, 0, 52, s.main, true);
+    const agents = [...s.agents.values()];
+    // running agents first, then the most recent finished ones
+    const shown = [...agents.filter((a) => a.status === "running"), ...agents.filter((a) => a.status !== "running").reverse()].slice(0, 12)
+      .sort((a, b) => a.order - b.order);
+    shown.forEach((a, i) => {
+      const ang = -Math.PI / 2 + (i / shown.length) * Math.PI * 2;
+      const x = Math.cos(ang) * 270, y = Math.sin(ang) * 270;
+      el("line", { class: "edge" + (a.status === "running" ? " running" : ""), x1: 0, y1: 0, x2: x, y2: y }, $("edges"));
+      drawNode(a.key, x, y, 34, a, false);
+    });
+    $("s-agents").textContent = agents.length;
+    $("s-running").textContent = agents.filter((a) => a.status === "running").length;
+    $("s-calls").textContent = s.calls;
+  }
+  for (const [k, n] of pool) if (!n.dataset.seen) { n.remove(); pool.delete(k); }
+  renderDetail(s); renderFeed(s); renderSessions();
+}
+
+const esc = (t) => String(t ?? "").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+const dur = (ms) => ms < 60000 ? (ms / 1000).toFixed(1) + "s" : Math.floor(ms / 60000) + "m " + Math.round((ms % 60000) / 1000) + "s";
+
+function renderDetail(s) {
+  if (!s) return $("detail").replaceChildren();
+  const n = selected === "main" ? s.main : s.agents.get(selected);
+  if (!n) { selected = "main"; return renderDetail(s); }
+  const tools = [...n.tools.values()].sort((a, b) => b.count - a.count).map((t) => `${esc(t.name)} ×${t.count}`).join(" · ") || "—";
+  const time = n.start ? dur((n.end || Date.now()) - n.start) : "";
+  $("detail").innerHTML = `
+    <h2>${selected === "main" ? "AXA · main thread" : esc(n.type) + " · " + esc(short(n.key))}</h2>
+    <div><span class="k">status</span> ${esc(n.status)} ${time && `<span class="k">· ${time}</span>`}</div>
+    ${n.desc ? `<div><span class="k">task</span> ${esc(n.desc)}</div>` : ""}
+    <div><span class="k">calls</span> ${tools}</div>
+    ${n.prompt ? `<div class="k" style="margin-top:8px">${selected === "main" ? "last prompt" : "assigned prompt"}</div><pre>${esc(n.prompt)}</pre>` : ""}
+    ${n.message ? `<div class="k">${selected === "main" ? "last reply" : "report back"}</div><pre>${esc(n.message)}</pre>` : ""}`;
+}
+
+function describe(e) {
+  const isSpawn = e.tool === "Agent" || e.tool === "Task";
+  switch (e.event) {
+    case "UserPromptSubmit": return ["prompt", "you → " + esc(e.prompt)];
+    case "Stop": return ["", "turn finished"];
+    case "SessionStart": return ["", "session " + esc(e.source || "start")];
+    case "SubagentStart": return ["agent", `<b>${esc(e.agent_type)}</b> started`];
+    case "SubagentStop": return ["agent", `<b>${esc(e.agent_type)}</b> reported back`];
+    case "PostToolUseFailure": return ["fail", `${esc(e.tool)} failed: ${esc(e.error)}`];
+    case "PreToolUse":
+      if (e.tool === "Skill") return ["skill", `skill <b>${esc(e.skill)}</b>`];
+      if (isSpawn) return ["agent", `spawn <b>${esc(e.subagent_type)}</b>: ${esc(e.summary)}`];
+      return ["", `<b>${esc(e.tool)}</b> ${esc(e.summary || "")}`];
+  }
+  return null;
+}
+let feedFor = null, feedCount = 0;
+function renderFeed(s) {
+  const feed = $("feed");
+  if (!s) { feed.replaceChildren(); feedFor = null; return; }
+  if (feedFor !== s.id) { feed.replaceChildren(); feedFor = s.id; feedCount = 0; }
+  const atTop = feed.scrollTop < 20;
+  const frag = document.createDocumentFragment();
+  for (const e of s.events.slice(feedCount)) {
+    const d = describe(e); if (!d) continue;
+    const row = document.createElement("div");
+    row.className = "row " + d[0];
+    const who = e.agent_id ? `${e.agent_type || "agent"}·${short(e.agent_id)}` : "AXA";
+    row.innerHTML = `<span class="t">${new Date(e.ts).toLocaleTimeString([], { hour12: false })}</span><span class="who ${e.agent_id ? "" : "main"}">${esc(who)}</span><span class="what">${d[1]}</span>`;
+    row.title = row.textContent;
+    if (e.agent_id) row.onclick = () => { selected = e.agent_id; render(); };
+    frag.prepend(row);
+  }
+  feedCount = s.events.length;
+  feed.prepend(frag);
+  while (feed.childElementCount > 800) feed.lastChild.remove();
+  if (atTop) feed.scrollTop = 0;
+}
+
+function renderSessions() {
+  const sel = $("session");
+  const list = [...sessions.values()].sort((a, b) => b.last - a.last).slice(0, 30);
+  const sig = list.map((s) => s.id).join();
+  if (sel.dataset.sig !== sig) {
+    sel.replaceChildren(...list.map((s) => {
+      const o = document.createElement("option");
+      o.value = s.id;
+      o.textContent = `${(s.cwd || "").split("/").pop() || "~"} · ${new Date(s.last).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })} · ${s.id.slice(0, 8)}`;
+      return o;
+    }));
+    sel.dataset.sig = sig;
+  }
+  sel.value = current || "";
+}
+$("session").onchange = (ev) => { current = ev.target.value; pinned = true; selected = "main"; render(); };
+
+// follow the most recently active session unless the user picked one
+function follow() {
+  if (pinned && sessions.has(current)) return;
+  let best = null;
+  for (const s of sessions.values()) if (!best || s.last > best.last) best = s;
+  if (best && best.id !== current) { current = best.id; selected = "main"; }
+}
+
+let queued = false;
+const schedule = () => { if (!queued) { queued = true; requestAnimationFrame(() => { queued = false; follow(); render(); }); } };
+setInterval(schedule, 500); // cools down "hot" satellites and ticks durations
+
+function connect() {
+  const es = new EventSource("/events");
+  es.addEventListener("history", (m) => { sessions.clear(); feedFor = null; JSON.parse(m.data).forEach(ingest); schedule(); });
+  es.onmessage = (m) => { try { ingest(JSON.parse(m.data)); schedule(); } catch {} };
+  es.onopen = () => $("live").classList.add("on");
+  es.onerror = () => $("live").classList.remove("on");
+}
+connect();
+</script>
+</body>
+</html>
