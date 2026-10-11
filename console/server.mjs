@@ -32,6 +32,22 @@ function readRange(start, end) {
   return buf.toString("utf8");
 }
 
+// Roles table from ~/.axa/roster.md (falls back to the plugin's example roster).
+function readRoster() {
+  const file = [join(home, "roster.md"), join(here, "..", "roster.example.md")].find(existsSync);
+  if (!file) return [];
+  const roles = [];
+  let inRoles = false;
+  for (const line of readFileSync(file, "utf8").split("\n")) {
+    if (line.startsWith("## ")) inRoles = /roles/i.test(line);
+    if (!inRoles || !line.startsWith("|")) continue;
+    const cells = line.split("|").slice(1, -1).map((c) => c.trim().replace(/`/g, ""));
+    if (cells.length < 4 || /^-+$/.test(cells[0]) || cells[0].toLowerCase() === "role") continue;
+    roles.push({ role: cells[0], subagent_type: cells[1], model: cells[2], use: cells[3] });
+  }
+  return roles;
+}
+
 // Tail the log once for all clients.
 const clients = new Set();
 let offset = statSync(logPath).size;
@@ -49,11 +65,16 @@ setInterval(() => {
 }, 250);
 
 const server = createServer((req, res) => {
-  if (req.url === "/" || req.url === "/index.html") {
+  const path = req.url.split("?")[0];
+  if (path === "/" || path === "/index.html") {
     res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     return res.end(readFileSync(join(here, "index.html")));
   }
-  if (req.url === "/events") {
+  if (path === "/roster") {
+    res.writeHead(200, { "content-type": "application/json" });
+    return res.end(JSON.stringify(readRoster()));
+  }
+  if (path === "/events") {
     res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
     const start = Math.max(0, offset - HISTORY_BYTES);
     const lines = readRange(start, offset).split("\n");

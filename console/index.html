@@ -6,77 +6,52 @@
 <title>AXA Console</title>
 <style>
   :root {
-    --bg: #05080d; --panel: #0a111a; --line: #15222f; --text: #cfe3ee; --dim: #5d7584;
-    --cyan: #3fd6ff; --cyan-soft: rgba(63,214,255,.18); --green: #4ade80; --red: #ff5d6c; --amber: #ffc04d; --violet: #b18cff;
+    --bg: #070a10; --panel: #0c1119; --line: #182230; --text: #d6e2ea; --dim: #5f7282;
+    --gold: #e8b04a; --green: #4ade80; --red: #ff5d6c; --amber: #ffb547; --violet: #c18cff;
   }
   * { box-sizing: border-box; }
   html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font: 13px/1.45 ui-monospace, "SF Mono", Menlo, monospace; }
   body { display: grid; grid-template-columns: 1fr 380px; grid-template-rows: auto 1fr; height: 100vh; overflow: hidden; }
-  header { grid-column: 1 / -1; display: flex; align-items: center; gap: 16px; padding: 10px 16px; border-bottom: 1px solid var(--line); }
-  header h1 { margin: 0; font-size: 14px; letter-spacing: .35em; color: var(--cyan); font-weight: 600; }
-  header .stat { color: var(--dim); }
-  header .stat b { color: var(--text); font-weight: 500; }
-  header select { margin-left: auto; background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; font: inherit; max-width: 340px; }
+  header { grid-column: 1 / -1; display: flex; align-items: center; gap: 16px; padding: 10px 16px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+  header h1 { margin: 0; font-size: 14px; letter-spacing: .35em; color: var(--gold); font-weight: 600; }
+  .stat { color: var(--dim); } .stat b { color: var(--text); font-weight: 500; }
+  .spacer { flex: 1; }
+  button, select { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 4px 10px; font: inherit; cursor: pointer; }
+  button:hover, select:hover { border-color: #2c3d50; }
+  select { max-width: 320px; }
   #live { width: 8px; height: 8px; border-radius: 50%; background: var(--dim); }
   #live.on { background: var(--green); box-shadow: 0 0 8px var(--green); }
 
-  #stage { position: relative; overflow: hidden; }
-  #stage svg { width: 100%; height: 100%; display: block; }
-  .ring { fill: none; stroke: var(--line); stroke-dasharray: 2 6; }
-  .spin { transform-origin: center; transform-box: fill-box; animation: spin 90s linear infinite; }
-  @keyframes spin { to { transform: rotate(360deg); } }
-
-  .node { cursor: pointer; transition: transform .7s cubic-bezier(.2,.8,.2,1), opacity .5s; }
-  .node .halo { fill: var(--cyan-soft); opacity: 0; transition: opacity .3s; }
-  .node.running .halo { opacity: 1; animation: breathe 1.8s ease-in-out infinite; }
-  .node .core { fill: var(--panel); stroke: var(--cyan); stroke-width: 1.5; }
-  .node.done .core { stroke: var(--dim); }
-  .node.done { opacity: .55; }
-  .node.selected .core { stroke-width: 3; }
-  .node text { fill: var(--text); text-anchor: middle; pointer-events: none; }
-  .node .sub { fill: var(--dim); font-size: 10px; }
-  .center .core { stroke-width: 2.5; }
-  .center text.title { font-size: 18px; letter-spacing: .3em; fill: var(--cyan); }
-  @keyframes breathe { 50% { transform: scale(1.18); } }
-  .halo { transform-box: fill-box; transform-origin: center; }
-
-  .edge { stroke: var(--line); stroke-width: 1.5; fill: none; transition: stroke .3s; }
-  .edge.running { stroke: var(--cyan); stroke-dasharray: 6 8; animation: flow .8s linear infinite; }
-  @keyframes flow { to { stroke-dashoffset: -14; } }
-
-  .sat { transition: transform .7s cubic-bezier(.2,.8,.2,1); }
-  .sat circle { fill: #0f1c27; stroke: #2a4152; }
-  .sat.skill circle { stroke: var(--violet); }
-  .sat.agent circle { stroke: var(--amber); }
-  .sat.hot circle { fill: var(--cyan); stroke: var(--cyan); filter: drop-shadow(0 0 6px var(--cyan)); }
-  .sat.fail circle { fill: var(--red); stroke: var(--red); }
-  .sat text { fill: var(--dim); font-size: 9.5px; text-anchor: middle; pointer-events: none; }
-  .sat.hot text { fill: var(--text); }
+  #stage { position: relative; overflow: hidden; min-height: 0; }
+  #cv { position: absolute; inset: 0; width: 100%; height: 100%; cursor: grab; }
+  #cv.drag { cursor: grabbing; }
+  #legend { position: absolute; left: 12px; bottom: 12px; display: flex; flex-wrap: wrap; gap: 6px; max-width: 70%; }
+  .chip { display: flex; align-items: center; gap: 6px; padding: 3px 8px; border: 1px solid var(--line); border-radius: 999px; background: rgba(12,17,25,.85); color: var(--dim); cursor: pointer; }
+  .chip i { width: 8px; height: 8px; border-radius: 2px; display: inline-block; }
+  .chip.on { color: var(--text); }
+  #empty { position: absolute; inset: 0; display: grid; place-items: center; color: var(--dim); text-align: center; pointer-events: none; padding: 16px; }
 
   aside { border-left: 1px solid var(--line); display: grid; grid-template-rows: auto 1fr; min-height: 0; }
-  #detail { border-bottom: 1px solid var(--line); padding: 12px 14px; max-height: 45vh; overflow: auto; }
+  #detail { border-bottom: 1px solid var(--line); padding: 12px 14px; max-height: 48vh; overflow: auto; }
   #detail:empty { display: none; }
-  #detail h2 { margin: 0 0 6px; font-size: 13px; color: var(--cyan); }
+  #detail h2 { margin: 0 0 6px; font-size: 13px; }
   #detail .k { color: var(--dim); }
   #detail pre { white-space: pre-wrap; word-break: break-word; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 8px; margin: 6px 0 10px; max-height: 180px; overflow: auto; }
+  #detail ul { margin: 4px 0 8px; padding-left: 16px; }
   #feed { overflow: auto; padding: 6px 0; min-height: 0; }
-  .row { display: grid; grid-template-columns: 58px 92px 1fr; gap: 8px; padding: 3px 14px; border-left: 2px solid transparent; }
+  .row { display: grid; grid-template-columns: 58px 96px 1fr; gap: 8px; padding: 3px 14px; border-left: 2px solid transparent; cursor: default; }
   .row:hover { background: var(--panel); }
   .row .t { color: var(--dim); }
-  .row .who { color: var(--cyan); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .row .who.main { color: var(--text); }
-  .row .what { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .row .who, .row .what { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .row.fail { border-left-color: var(--red); } .row.fail .what { color: var(--red); }
-  .row.agent { border-left-color: var(--amber); }
-  .row.skill .what b { color: var(--violet); }
-  .row.prompt { border-left-color: var(--cyan); } .row.prompt .what { color: var(--text); }
+  .row.perm { border-left-color: var(--amber); } .row.perm .what { color: var(--amber); }
+  .row.prompt .what { color: var(--text); }
   .row b { font-weight: 600; }
-  #empty { position: absolute; inset: 0; display: grid; place-items: center; color: var(--dim); text-align: center; pointer-events: none; }
 
   @media (max-width: 860px) {
-    body { grid-template-columns: 1fr; grid-template-rows: auto 55vh 1fr; overflow: auto; height: auto; }
+    body { grid-template-columns: 1fr; grid-template-rows: auto 60vh 1fr; overflow: auto; height: auto; }
     aside { border-left: 0; border-top: 1px solid var(--line); }
-    header select { max-width: 50vw; }
+    select { max-width: 60vw; }
   }
 </style>
 </head>
@@ -84,18 +59,18 @@
 <header>
   <span id="live" title="connection"></span>
   <h1>AXA</h1>
-  <span class="stat">agents <b id="s-agents">0</b></span>
+  <span class="stat">agents called <b id="s-agents">0</b></span>
   <span class="stat">running <b id="s-running">0</b></span>
   <span class="stat">tool calls <b id="s-calls">0</b></span>
+  <span class="spacer"></span>
+  <button id="demo" title="Play a simulated orchestration">▶ Demo</button>
+  <button id="fit" title="Fit graph to view">Fit</button>
   <select id="session" title="session"></select>
 </header>
 <main id="stage">
-  <svg id="svg" viewBox="-500 -400 1000 800" preserveAspectRatio="xMidYMid meet">
-    <circle class="ring spin" r="270"></circle>
-    <circle class="ring" r="150" opacity=".5"></circle>
-    <g id="edges"></g><g id="nodes"></g>
-  </svg>
-  <div id="empty">Waiting for activity…<br>Use Claude Code with the AXA plugin enabled — every agent, skill and tool call shows up here.</div>
+  <canvas id="cv"></canvas>
+  <div id="legend"></div>
+  <div id="empty">Waiting for activity…<br>Start a new Claude Code session with the AXA plugin, or press ▶ Demo.</div>
 </main>
 <aside>
   <section id="detail"></section>
@@ -104,162 +79,375 @@
 
 <script>
 const $ = (id) => document.getElementById(id);
-const NS = "http://www.w3.org/2000/svg";
-const sessions = new Map();      // session_id -> session state
-let current = null;              // selected session id
-let pinned = false;              // user picked a session manually
-let selected = "main";           // node shown in the detail panel
-const HOT_MS = 1400;
 
-function newSession(id, cwd) {
-  return { id, cwd, last: 0, calls: 0, events: [],
-    main: { key: "main", type: "AXA", status: "idle", tools: new Map(), prompt: null, message: null },
-    agents: new Map(), pendingSpawns: [] };
+// ---------- look ----------
+const PALETTE = ["#ff7a45", "#e45cf0", "#4ade80", "#3fd6ff", "#ffc04d", "#8aa4ff", "#ff5d8f", "#a3e635"];
+const ROLE_COLORS = { builder: "#ff7a45", researcher: "#e45cf0", reviewer: "#4ade80", scout: "#3fd6ff", planner: "#ffc04d", generalist: "#8aa4ff" };
+const AXA_COLOR = "#e8b04a";
+const SPRITES = [
+  [ "..#######..", ".#########.", "###oo#oo###", "###oo#oo###", "###########", "###########", "###########", "##.##.##.##" ],
+  [ "..#.....#..", "...#...#...", "..#######..", ".##o###o##.", "###########", "#.#######.#", "#.#.....#.#", "...##.##..." ],
+  [ "...#####...", ".#########.", "##o##.##o##", "###########", "##.#####.##", "###.....###", ".#########.", "..#.#.#.#.." ],
+  [ "....#.#....", ".#########.", ".#o#####o#.", ".#########.", ".##.....##.", ".#########.", "..##...##..", "..##...##.." ],
+  [ "...#...#...", "..#######..", ".##o###o##.", "###########", "###.###.###", ".#########.", ".#.#...#.#.", "#.#.....#.#" ],
+];
+const hash = (s) => [...String(s)].reduce((h, c) => (h * 31 + c.charCodeAt(0)) >>> 0, 7);
+
+// ---------- roster: which roles exist and which subagent_type maps to which role ----------
+let roster = [];
+const typeToRole = new Map();
+function roleFor(subagentType) {
+  const t = subagentType || "general-purpose";
+  if (typeToRole.has(t)) return typeToRole.get(t);
+  const bare = t.includes(":") ? t.split(":").pop() : t;
+  return typeToRole.get(bare) || bare;
 }
-function agentFor(s, e) {
-  if (!e.agent_id) return s.main;
-  let a = s.agents.get(e.agent_id);
-  if (!a) {
-    a = { key: e.agent_id, type: e.agent_type || "agent", status: "running", tools: new Map(), start: e.ts, order: s.agents.size };
-    s.agents.set(e.agent_id, a);
+function roleMeta(role) {
+  const r = roster.find((x) => x.role === role);
+  const clean = (v) => (v && !/^[—–-]+$/.test(v) ? v : undefined);
+  const color = ROLE_COLORS[role] || PALETTE[hash(role) % PALETTE.length];
+  return { color, sprite: SPRITES[1 + (hash(role) % (SPRITES.length - 1))], model: clean(r?.model), use: clean(r?.use), type: clean(r?.subagent_type) };
+}
+
+// ---------- graph per session ----------
+const sessions = new Map();
+let current = null, pinned = false, selectedId = "axa";
+
+function newGraph(id, cwd) {
+  const g = { id, cwd, last: 0, calls: 0, events: [], nodes: new Map(), links: [], pending: [] };
+  addNode(g, { id: "axa", kind: "axa", label: "AXA", color: AXA_COLOR, sprite: SPRITES[0], x: 0, y: 0, fixed: true, status: "idle" });
+  addRosterRoles(g);
+  return g;
+}
+function addRosterRoles(g) {
+  roster.forEach((r, i) => {
+    const a = (i / roster.length) * Math.PI * 2 - Math.PI / 2;
+    ensureRole(g, r.role, Math.cos(a) * 190, Math.sin(a) * 190);
+  });
+}
+function addNode(g, n, parentId) {
+  const p = parentId && g.nodes.get(parentId);
+  n.x ??= (p ? p.x : 0) + (Math.random() - 0.5) * 40;
+  n.y ??= (p ? p.y : 0) + (Math.random() - 0.5) * 40;
+  Object.assign(n, { vx: 0, vy: 0, parent: parentId || null, hotUntil: 0, count: 0, born: performance.now() });
+  g.nodes.set(n.id, n);
+  if (p) g.links.push({ a: p.id, b: n.id });
+  return n;
+}
+function removeNode(g, id) {
+  for (const n of [...g.nodes.values()]) if (n.parent === id) removeNode(g, n.id);
+  g.nodes.delete(id);
+  g.links = g.links.filter((l) => l.a !== id && l.b !== id);
+}
+function ensureRole(g, role, x, y) {
+  const id = "role:" + role;
+  let n = g.nodes.get(id);
+  if (!n) { const m = roleMeta(role); n = addNode(g, { id, kind: "role", label: role, role, color: m.color, sprite: m.sprite, status: "idle", calls: 0, x, y }, "axa"); }
+  return n;
+}
+function ensureInst(g, e) {
+  let n = g.nodes.get(e.agent_id);
+  if (n) return n;
+  const role = roleFor(e.agent_type);
+  const r = ensureRole(g, role);
+  // keep the 6 most recent jobs per role on the map
+  const jobs = [...g.nodes.values()].filter((x) => x.parent === r.id && x.kind === "inst");
+  if (jobs.length >= 6) removeNode(g, jobs.sort((a, b) => a.start - b.start)[0].id);
+  return addNode(g, { id: e.agent_id, kind: "inst", label: role, role, color: r.color, status: "running", start: e.ts }, r.id);
+}
+function ensureLeaf(g, parent, name, kind) {
+  const id = parent.id + "|" + name;
+  let n = g.nodes.get(id);
+  if (!n) {
+    const leaves = [...g.nodes.values()].filter((x) => x.parent === parent.id && x.kind === "leaf");
+    if (leaves.length >= 10) return null;
+    n = addNode(g, { id, kind: "leaf", label: name, leafKind: kind, color: kind === "skill" ? "#c18cff" : parent.color, recent: [] }, parent.id);
   }
-  return a;
-}
-function touchTool(node, name, kind, ts, state) {
-  let t = node.tools.get(name);
-  if (!t) { t = { name, kind, count: 0, hotUntil: 0, fail: false }; node.tools.set(name, t); }
-  if (state === "start") { t.count++; t.hotUntil = ts + HOT_MS; t.fail = false; }
-  if (state === "fail") { t.fail = true; t.hotUntil = 0; }
+  return n;
 }
 
 function ingest(e) {
   if (!e || !e.session) return;
-  let s = sessions.get(e.session);
-  if (!s) { s = newSession(e.session, e.cwd); sessions.set(e.session, s); }
-  s.last = e.ts; s.cwd = e.cwd || s.cwd;
-  const node = agentFor(s, e);
+  let g = sessions.get(e.session);
+  if (!g) { g = newGraph(e.session, e.cwd); sessions.set(e.session, g); }
+  g.last = e.ts; g.cwd = e.cwd || g.cwd;
+  const axa = g.nodes.get("axa");
+  const owner = e.agent_id ? ensureInst(g, e) : axa;
   const isSpawn = e.tool === "Agent" || e.tool === "Task";
-  const satName = e.tool === "Skill" ? "⚡" + (e.skill || "skill") : isSpawn ? "➜ " + (e.subagent_type || "agent") : e.tool;
-  const kind = e.tool === "Skill" ? "skill" : isSpawn ? "agent" : "tool";
+  const now = performance.now();
 
   switch (e.event) {
-    case "UserPromptSubmit": s.main.prompt = e.prompt; s.main.status = "running"; break;
-    case "Stop": s.main.status = "idle"; s.main.message = e.message; break;
-    case "PreToolUse":
-      s.calls++; node.status = "running";
-      touchTool(node, satName, kind, e.ts, "start");
-      if (isSpawn) s.pendingSpawns.push({ type: e.subagent_type, prompt: e.prompt, desc: e.summary });
-      break;
-    case "PostToolUseFailure": touchTool(node, satName, kind, e.ts, "fail"); break;
-    case "SubagentStart": {
-      const i = s.pendingSpawns.findIndex((p) => p.type === e.agent_type);
-      const spawn = i >= 0 ? s.pendingSpawns.splice(i, 1)[0] : s.pendingSpawns.shift();
-      if (spawn) { node.prompt = spawn.prompt; node.desc = spawn.desc; }
-      node.status = "running"; node.start = e.ts;
+    case "UserPromptSubmit": axa.prompt = e.prompt; axa.status = "running"; break;
+    case "Stop": axa.status = "idle"; axa.message = e.message; break;
+    case "PermissionRequest": owner.perm = e.tool || true; break;
+    case "PreToolUse": {
+      g.calls++; owner.perm = null;
+      if (isSpawn && !e.agent_id) {
+        const role = roleFor(e.subagent_type);
+        const r = ensureRole(g, role);
+        r.calls++; r.hotUntil = now + 1600;
+        g.pending.push({ role, prompt: e.prompt, desc: e.summary });
+        break;
+      }
+      if (owner.kind === "axa" && !e.skill) axa.status = "running";
+      const name = e.skill ? "⚡" + e.skill : e.tool;
+      const leaf = ensureLeaf(g, owner, name, e.skill ? "skill" : "tool");
+      if (leaf) { leaf.count++; leaf.hotUntil = now + 1200; leaf.fail = false; leaf.recent.unshift(e.summary || ""); leaf.recent.length = Math.min(leaf.recent.length, 5); }
       break;
     }
-    case "SubagentStop": node.status = "done"; node.message = e.message; node.end = e.ts; break;
+    case "PostToolUse": owner.perm = null; break;
+    case "PostToolUseFailure": {
+      const leaf = g.nodes.get(owner.id + "|" + (e.skill ? "⚡" + e.skill : e.tool));
+      if (leaf) { leaf.fail = true; leaf.hotUntil = 0; leaf.error = e.error; }
+      owner.perm = null;
+      break;
+    }
+    case "SubagentStart": {
+      const role = roleFor(e.agent_type);
+      const i = g.pending.findIndex((p) => p.role === role);
+      const spawn = i >= 0 ? g.pending.splice(i, 1)[0] : null;
+      const n = ensureInst(g, e);
+      n.status = "running"; n.start = e.ts;
+      if (spawn) { n.prompt = spawn.prompt; n.desc = spawn.desc; n.label = spawn.desc || n.label; }
+      break;
+    }
+    case "SubagentStop": {
+      const n = g.nodes.get(e.agent_id);
+      if (n) { n.status = "done"; n.message = e.message; n.end = e.ts; n.perm = null; }
+      break;
+    }
   }
-  s.events.push(e);
-  if (s.events.length > 3000) s.events.splice(0, s.events.length - 3000);
+  // a role is "running" while any of its jobs are
+  for (const r of g.nodes.values()) if (r.kind === "role")
+    r.status = [...g.nodes.values()].some((x) => x.parent === r.id && x.status === "running") ? "running" : "idle";
+  g.events.push(e);
+  if (g.events.length > 3000) g.events.splice(0, g.events.length - 3000);
+  dirty = true;
 }
 
-// ---------- rendering ----------
-function el(tag, attrs = {}, parent) {
-  const n = document.createElementNS(NS, tag);
-  for (const k in attrs) n.setAttribute(k, attrs[k]);
-  if (parent) parent.appendChild(n);
-  return n;
-}
-const pool = new Map(); // key -> svg element, so nodes animate between positions
-function keyed(key, make, parent) {
-  let n = pool.get(key);
-  if (!n) { n = make(); parent.appendChild(n); pool.set(key, n); }
-  n.dataset.seen = "1";
-  return n;
-}
-const short = (id) => (id || "").replace(/^agent-/, "").slice(0, 6);
-const place = (n, x, y) => { n.style.transform = `translate(${x}px, ${y}px)`; };
-
-function drawNode(key, x, y, r, node, isCenter) {
-  const g = keyed("n:" + key, () => {
-    const g = el("g", { class: "node" + (isCenter ? " center" : "") });
-    el("circle", { class: "halo", r: r + 14 }, g);
-    el("circle", { class: "core", r }, g);
-    el("text", { class: "title", dy: isCenter ? 6 : 0 }, g);
-    el("text", { class: "sub", dy: isCenter ? 26 : 14 }, g);
-    g.addEventListener("click", () => { selected = key; render(); });
-    return g;
-  }, $("nodes"));
-  g.classList.toggle("running", node.status === "running");
-  g.classList.toggle("done", node.status === "done");
-  g.classList.toggle("selected", selected === key);
-  const [title, sub] = g.querySelectorAll("text");
-  title.textContent = isCenter ? "AXA" : node.type;
-  sub.textContent = isCenter ? node.status : short(node.key) + (node.status === "done" ? " ✓" : "");
-  place(g, x, y);
-
-  // satellites: this node's tools/skills/spawns, on a small orbit
-  const tools = [...node.tools.values()].sort((a, b) => b.count - a.count).slice(0, isCenter ? 14 : 8);
-  const R = r + (isCenter ? 58 : 36), now = Date.now();
-  tools.forEach((t, i) => {
-    const ang = -Math.PI / 2 + (i / Math.max(tools.length, 1)) * Math.PI * 2;
-    const sg = keyed(`s:${key}:${t.name}`, () => {
-      const sg = el("g", { class: "sat" });
-      el("circle", {}, sg); el("text", {}, sg);
-      return sg;
-    }, $("nodes"));
-    sg.setAttribute("class", `sat ${t.kind}${t.hotUntil > now ? " hot" : ""}${t.fail ? " fail" : ""}`);
-    const sr = Math.min(5 + Math.sqrt(t.count) * 2.2, 14);
-    sg.querySelector("circle").setAttribute("r", sr);
-    const tx = sg.querySelector("text");
-    tx.textContent = t.count > 1 ? `${t.name} ×${t.count}` : t.name;
-    tx.setAttribute("dy", sr + 11);
-    place(sg, x + Math.cos(ang) * R, y + Math.sin(ang) * R);
-  });
-}
-
-function render() {
-  const s = sessions.get(current);
-  for (const n of pool.values()) n.dataset.seen = "";
-  $("edges").replaceChildren();
-  $("empty").style.display = s ? "none" : "grid";
-  if (s) {
-    drawNode("main", 0, 0, 52, s.main, true);
-    const agents = [...s.agents.values()];
-    // running agents first, then the most recent finished ones
-    const shown = [...agents.filter((a) => a.status === "running"), ...agents.filter((a) => a.status !== "running").reverse()].slice(0, 12)
-      .sort((a, b) => a.order - b.order);
-    shown.forEach((a, i) => {
-      const ang = -Math.PI / 2 + (i / shown.length) * Math.PI * 2;
-      const x = Math.cos(ang) * 270, y = Math.sin(ang) * 270;
-      el("line", { class: "edge" + (a.status === "running" ? " running" : ""), x1: 0, y1: 0, x2: x, y2: y }, $("edges"));
-      drawNode(a.key, x, y, 34, a, false);
-    });
-    $("s-agents").textContent = agents.length;
-    $("s-running").textContent = agents.filter((a) => a.status === "running").length;
-    $("s-calls").textContent = s.calls;
+// ---------- physics ----------
+const W = { axa: 3.2, role: 2.2, inst: 1.5, leaf: 0.7 };
+const LEN = { role: 200, inst: 105, leaf: 62 };
+function step(g) {
+  const ns = [...g.nodes.values()];
+  for (let i = 0; i < ns.length; i++) for (let j = i + 1; j < ns.length; j++) {
+    const a = ns[i], b = ns[j];
+    let dx = b.x - a.x, dy = b.y - a.y, d2 = dx * dx + dy * dy;
+    if (d2 < 1) { dx = Math.random() - .5; dy = Math.random() - .5; d2 = 1; }
+    if (d2 > 250000) continue;
+    const f = 2600 * W[a.kind] * W[b.kind] / d2, d = Math.sqrt(d2);
+    const fx = dx / d * f, fy = dy / d * f;
+    a.vx -= fx; a.vy -= fy; b.vx += fx; b.vy += fy;
   }
-  for (const [k, n] of pool) if (!n.dataset.seen) { n.remove(); pool.delete(k); }
-  renderDetail(s); renderFeed(s); renderSessions();
+  for (const l of g.links) {
+    const a = g.nodes.get(l.a), b = g.nodes.get(l.b);
+    if (!a || !b) continue;
+    const dx = b.x - a.x, dy = b.y - a.y, d = Math.hypot(dx, dy) || 1;
+    const f = (d - (LEN[b.kind] || 80)) * 0.035;
+    a.vx += dx / d * f * 0.5; a.vy += dy / d * f * 0.5; b.vx -= dx / d * f; b.vy -= dy / d * f;
+  }
+  for (const n of ns) {
+    if (n.fixed) { n.vx = n.vy = 0; continue; }
+    n.vx -= n.x * 0.0015; n.vy -= n.y * 0.0015;
+    n.vx *= 0.8; n.vy *= 0.8;
+    const v = Math.hypot(n.vx, n.vy); if (v > 12) { n.vx *= 12 / v; n.vy *= 12 / v; }
+    if (n !== drag?.node) { n.x += n.vx; n.y += n.vy; }
+  }
 }
 
+// ---------- drawing ----------
+const cv = $("cv"), ctx = cv.getContext("2d");
+let Wd = 0, Ht = 0, dpr = 1;
+const cam = { x: 0, y: 0, k: 1 }; let autoFit = true;
+function resize() {
+  const r = cv.getBoundingClientRect(); dpr = window.devicePixelRatio || 1;
+  Wd = r.width; Ht = r.height; cv.width = Wd * dpr; cv.height = Ht * dpr;
+}
+new ResizeObserver(resize).observe(cv);
+const toScreen = (x, y) => [(x - cam.x) * cam.k + Wd / 2, (y - cam.y) * cam.k + Ht / 2];
+const toWorld = (sx, sy) => [(sx - Wd / 2) / cam.k + cam.x, (sy - Ht / 2) / cam.k + cam.y];
+
+function fit(g, instant) {
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const n of g.nodes.values()) { x0 = Math.min(x0, n.x); y0 = Math.min(y0, n.y); x1 = Math.max(x1, n.x); y1 = Math.max(y1, n.y); }
+  const k = Math.min(1.6, Math.min(Wd / (x1 - x0 + 220), Ht / (y1 - y0 + 200)));
+  const t = instant ? 1 : 0.06;
+  cam.x += ((x0 + x1) / 2 - cam.x) * t; cam.y += ((y0 + y1) / 2 - cam.y) * t; cam.k += (k - cam.k) * t;
+}
+
+function rgba(hex, a) { const n = parseInt(hex.slice(1), 16); return `rgba(${n >> 16},${(n >> 8) & 255},${n & 255},${a})`; }
+function drawSprite(sprite, cx, cy, size, color, alpha) {
+  const cell = size / 11, ox = cx - size / 2, oy = cy - (cell * 8) / 2;
+  ctx.globalAlpha = alpha;
+  ctx.fillStyle = color;
+  sprite.forEach((row, y) => [...row].forEach((c, x) => { if (c === "#") ctx.fillRect(ox + x * cell, oy + y * cell, cell + 0.5, cell + 0.5); }));
+  ctx.fillStyle = "#070a10";
+  sprite.forEach((row, y) => [...row].forEach((c, x) => { if (c === "o") ctx.fillRect(ox + x * cell, oy + y * cell, cell + 0.5, cell + 0.5); }));
+  ctx.globalAlpha = 1;
+}
+const curve = (a, b) => { const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2, dx = b.x - a.x, dy = b.y - a.y; return [mx - dy * 0.14, my + dx * 0.14]; };
+const bez = (a, c, b, t) => [(1 - t) ** 2 * a.x + 2 * (1 - t) * t * c[0] + t * t * b.x, (1 - t) ** 2 * a.y + 2 * (1 - t) * t * c[1] + t * t * b.y];
+const trunc = (s, n) => (s && s.length > n ? s.slice(0, n - 1) + "…" : s || "");
+const size = (n) => n.kind === "axa" ? 64 : n.kind === "role" ? 40 : n.kind === "inst" ? 9 : Math.min(4 + Math.sqrt(n.count) * 1.6, 9);
+
+function active(n, now) { return n.status === "running" || n.hotUntil > now; }
+
+function draw(g, now) {
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.fillStyle = "#070a10"; ctx.fillRect(0, 0, Wd, Ht);
+  // faint dot grid
+  ctx.fillStyle = "#0f1620";
+  const gs = 40 * cam.k, [gx, gy] = toScreen(0, 0);
+  if (gs > 12) for (let x = gx % gs; x < Wd; x += gs) for (let y = gy % gs; y < Ht; y += gs) ctx.fillRect(x, y, 1.5, 1.5);
+  if (!g) return;
+
+  ctx.save();
+  ctx.translate(Wd / 2, Ht / 2); ctx.scale(cam.k, cam.k); ctx.translate(-cam.x, -cam.y);
+  const t = now / 1000;
+
+  // links + particles
+  for (const l of g.links) {
+    const a = g.nodes.get(l.a), b = g.nodes.get(l.b);
+    if (!a || !b) continue;
+    const c = curve(a, b), on = active(b, now);
+    ctx.strokeStyle = on ? rgba(b.color, 0.7) : b.kind === "role" && !b.calls ? "#1a2430" : rgba(b.color, 0.28);
+    ctx.lineWidth = (on ? 1.8 : 1.1) / Math.max(cam.k, 0.6);
+    ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.quadraticCurveTo(c[0], c[1], b.x, b.y); ctx.stroke();
+    if (on && b.kind !== "leaf") {
+      ctx.fillStyle = "#fff2d6"; ctx.shadowColor = b.color; ctx.shadowBlur = 10;
+      for (let i = 0; i < 5; i++) {
+        const [px, py] = bez(a, c, b, (t * 0.55 + i / 5) % 1);
+        ctx.beginPath(); ctx.arc(px, py, 2.2, 0, 7); ctx.fill();
+      }
+      ctx.shadowBlur = 0;
+    }
+  }
+
+  // nodes
+  const order = { leaf: 0, inst: 1, role: 2, axa: 3 };
+  for (const n of [...g.nodes.values()].sort((a, b) => order[a.kind] - order[b.kind])) {
+    const s = size(n), on = active(n, now), pulse = 0.5 + 0.5 * Math.sin(t * 4 + hash(n.id));
+    const pop = Math.min(1, (now - n.born) / 400);
+    if (n.kind === "axa" || n.kind === "role") {
+      const idle = n.kind === "role" && !n.calls && n.status !== "running";
+      const bob = on ? Math.sin(t * 5 + hash(n.id)) * 2 : 0;
+      if (on) { ctx.shadowColor = n.color; ctx.shadowBlur = 18 + pulse * 14; }
+      drawSprite(n.sprite, n.x, n.y + bob, s * pop, n.color, idle ? 0.32 : 1);
+      ctx.shadowBlur = 0;
+    } else {
+      const col = n.fail ? "#ff5d6c" : n.color;
+      if (on || n.fail) { ctx.shadowColor = col; ctx.shadowBlur = n.hotUntil > now ? 22 : 10 + pulse * 10; }
+      ctx.beginPath(); ctx.arc(n.x, n.y, s * pop, 0, 7);
+      if (n.kind === "inst" && n.status === "done") { ctx.fillStyle = rgba(col, 0.25); ctx.fill(); ctx.strokeStyle = rgba(col, 0.7); ctx.lineWidth = 1.5; ctx.stroke(); }
+      else { ctx.fillStyle = n.hotUntil > now ? "#ffffff" : rgba(col, n.kind === "leaf" ? 0.75 : 1); ctx.fill(); }
+      ctx.shadowBlur = 0;
+    }
+    if (n.id === selectedId) { ctx.strokeStyle = "#ffffff"; ctx.lineWidth = 1.5 / cam.k; ctx.beginPath(); ctx.arc(n.x, n.y, s / (n.kind === "axa" || n.kind === "role" ? 1.4 : 1) + 6, 0, 7); ctx.stroke(); }
+
+    // labels
+    const showLeafLabel = n.kind !== "leaf" || cam.k > 0.75 || on;
+    if (showLeafLabel) {
+      ctx.textAlign = "center";
+      const dy = n.kind === "axa" ? s * 0.5 + 18 : n.kind === "role" ? s * 0.45 + 16 : s + 13;
+      const col = n.kind === "leaf" ? (n.fail ? "#ff5d6c" : "#8a9aa8") : n.kind === "role" && !n.calls && n.status !== "running" ? "#3c4b58" : n.color;
+      ctx.fillStyle = col;
+      ctx.font = `${n.kind === "axa" ? "600 14px" : n.kind === "role" ? "600 12px" : n.kind === "inst" ? "11px" : "10px"} ui-monospace, Menlo, monospace`;
+      const label = n.kind === "axa" ? "A X A" : n.kind === "leaf" ? (n.count > 1 ? `${n.label} ×${n.count}` : n.label) : trunc(n.label, 30);
+      const ly = n.kind === "inst" ? n.y - s - 8 : n.y + dy;
+      ctx.lineJoin = "round"; ctx.lineWidth = 4; ctx.strokeStyle = "#070a10";
+      ctx.strokeText(label, n.x, ly); ctx.fillText(label, n.x, ly);
+      if (n.kind === "role") {
+        const m = roleMeta(n.role), jobs = [...g.nodes.values()].filter((x) => x.parent === n.id && x.status === "running").length;
+        ctx.font = "10px ui-monospace, Menlo, monospace"; ctx.fillStyle = "#5f7282";
+        ctx.strokeText([m.model, jobs ? `${jobs} working` : n.calls ? `${n.calls} called` : "idle"].filter(Boolean).join(" · "), n.x, n.y + dy + 13);
+        ctx.fillText([m.model, jobs ? `${jobs} working` : n.calls ? `${n.calls} called` : "idle"].filter(Boolean).join(" · "), n.x, n.y + dy + 13);
+      }
+      if (n.kind === "axa") { ctx.font = "10px ui-monospace, Menlo, monospace"; ctx.fillStyle = "#5f7282"; ctx.fillText(n.status, n.x, n.y + dy + 14); }
+    }
+    // permission badge
+    if (n.perm) {
+      const bw = 78, bh = 16, by = n.y - s / (n.kind === "inst" ? 1 : 1.6) - 18;
+      ctx.fillStyle = "#ffb547"; ctx.shadowColor = "#ffb547"; ctx.shadowBlur = 8 + pulse * 8;
+      ctx.beginPath(); ctx.roundRect(n.x - bw / 2, by - bh / 2, bw, bh, 8); ctx.fill(); ctx.shadowBlur = 0;
+      ctx.fillStyle = "#1a1206"; ctx.font = "600 9px ui-monospace, Menlo, monospace"; ctx.textAlign = "center"; ctx.fillText("PERMISSION", n.x, by + 3);
+    }
+  }
+  ctx.restore();
+}
+
+// ---------- interaction ----------
+let drag = null;
+function hit(g, sx, sy) {
+  const [x, y] = toWorld(sx, sy);
+  let best = null, bd = Infinity;
+  for (const n of g.nodes.values()) {
+    const r = (n.kind === "axa" || n.kind === "role" ? size(n) / 2 : size(n)) + 8 / cam.k;
+    const d = Math.hypot(n.x - x, n.y - y);
+    if (d < r && d < bd) { best = n; bd = d; }
+  }
+  return best;
+}
+cv.addEventListener("pointerdown", (ev) => {
+  const g = sessions.get(current); if (!g) return;
+  const n = hit(g, ev.offsetX, ev.offsetY);
+  drag = { node: n && !n.fixed ? n : null, sx: ev.offsetX, sy: ev.offsetY, cx: cam.x, cy: cam.y, moved: false, clicked: n };
+  cv.setPointerCapture(ev.pointerId); cv.classList.add("drag");
+});
+cv.addEventListener("pointermove", (ev) => {
+  if (!drag) return;
+  const dx = ev.offsetX - drag.sx, dy = ev.offsetY - drag.sy;
+  if (Math.abs(dx) + Math.abs(dy) > 3) drag.moved = true;
+  if (drag.node) { const [x, y] = toWorld(ev.offsetX, ev.offsetY); drag.node.x = x; drag.node.y = y; }
+  else if (drag.moved) { autoFit = false; cam.x = drag.cx - dx / cam.k; cam.y = drag.cy - dy / cam.k; }
+});
+cv.addEventListener("pointerup", () => {
+  if (drag && !drag.moved && drag.clicked) { selectedId = drag.clicked.id; dirty = true; }
+  drag = null; cv.classList.remove("drag");
+});
+cv.addEventListener("wheel", (ev) => {
+  ev.preventDefault(); autoFit = false;
+  const [wx, wy] = toWorld(ev.offsetX, ev.offsetY);
+  cam.k = Math.max(0.25, Math.min(3, cam.k * Math.exp(-ev.deltaY * 0.0015)));
+  cam.x = wx - (ev.offsetX - Wd / 2) / cam.k; cam.y = wy - (ev.offsetY - Ht / 2) / cam.k;
+}, { passive: false });
+$("fit").onclick = () => { autoFit = true; };
+
+// ---------- side panel ----------
 const esc = (t) => String(t ?? "").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
 const dur = (ms) => ms < 60000 ? (ms / 1000).toFixed(1) + "s" : Math.floor(ms / 60000) + "m " + Math.round((ms % 60000) / 1000) + "s";
+const short = (id) => String(id || "").replace(/^agent-/, "").slice(0, 6);
 
-function renderDetail(s) {
-  if (!s) return $("detail").replaceChildren();
-  const n = selected === "main" ? s.main : s.agents.get(selected);
-  if (!n) { selected = "main"; return renderDetail(s); }
-  const tools = [...n.tools.values()].sort((a, b) => b.count - a.count).map((t) => `${esc(t.name)} ×${t.count}`).join(" · ") || "—";
-  const time = n.start ? dur((n.end || Date.now()) - n.start) : "";
-  $("detail").innerHTML = `
-    <h2>${selected === "main" ? "AXA · main thread" : esc(n.type) + " · " + esc(short(n.key))}</h2>
-    <div><span class="k">status</span> ${esc(n.status)} ${time && `<span class="k">· ${time}</span>`}</div>
-    ${n.desc ? `<div><span class="k">task</span> ${esc(n.desc)}</div>` : ""}
-    <div><span class="k">calls</span> ${tools}</div>
-    ${n.prompt ? `<div class="k" style="margin-top:8px">${selected === "main" ? "last prompt" : "assigned prompt"}</div><pre>${esc(n.prompt)}</pre>` : ""}
-    ${n.message ? `<div class="k">${selected === "main" ? "last reply" : "report back"}</div><pre>${esc(n.message)}</pre>` : ""}`;
+function renderDetail(g) {
+  const box = $("detail");
+  if (!g) return box.replaceChildren();
+  const n = g.nodes.get(selectedId) || g.nodes.get("axa");
+  const kids = [...g.nodes.values()].filter((x) => x.parent === n.id);
+  const head = (txt) => `<h2 style="color:${n.color}">${txt}</h2>`;
+  let html = "";
+  if (n.kind === "axa") {
+    html = head("AXA · orchestrator") + `<div><span class="k">status</span> ${esc(n.status)}</div>
+      <div><span class="k">agents</span> ${kids.filter((k) => k.kind === "role").map((k) => esc(k.role) + (k.calls ? ` ×${k.calls}` : "")).join(" · ") || "—"}</div>
+      <div><span class="k">own tools</span> ${kids.filter((k) => k.kind === "leaf").map((k) => `${esc(k.label)} ×${k.count}`).join(" · ") || "—"}</div>
+      ${n.prompt ? `<div class="k" style="margin-top:8px">last prompt</div><pre>${esc(n.prompt)}</pre>` : ""}
+      ${n.message ? `<div class="k">last reply</div><pre>${esc(n.message)}</pre>` : ""}`;
+  } else if (n.kind === "role") {
+    const m = roleMeta(n.role);
+    html = head(esc(n.role)) + `<div><span class="k">agent</span> ${esc(m.type || n.role)} ${m.model ? `<span class="k">· ${esc(m.model)}</span>` : ""}</div>
+      ${m.use ? `<div><span class="k">use for</span> ${esc(m.use)}</div>` : ""}
+      <div class="k" style="margin-top:8px">jobs (${n.calls} called)</div>
+      <ul>${kids.map((k) => `<li>${k.status === "running" ? "● " : "✓ "}${esc(k.desc || short(k.id))}</li>`).join("") || "<li class='k'>none yet</li>"}</ul>`;
+  } else if (n.kind === "inst") {
+    html = head(`${esc(n.role)} · ${esc(short(n.id))}`) + `<div><span class="k">status</span> ${esc(n.status)} <span class="k">· ${dur((n.end || Date.now()) - (n.start || Date.now()))}</span></div>
+      ${n.desc ? `<div><span class="k">task</span> ${esc(n.desc)}</div>` : ""}
+      <div><span class="k">calls</span> ${kids.map((k) => `${esc(k.label)} ×${k.count}`).join(" · ") || "—"}</div>
+      ${n.prompt ? `<div class="k" style="margin-top:8px">assigned by AXA</div><pre>${esc(n.prompt)}</pre>` : ""}
+      ${n.message ? `<div class="k">reported back</div><pre>${esc(n.message)}</pre>` : ""}`;
+  } else {
+    html = head(esc(n.label)) + `<div><span class="k">calls</span> ${n.count}</div>
+      ${n.error ? `<div class="k">last error</div><pre>${esc(n.error)}</pre>` : ""}
+      <div class="k" style="margin-top:8px">recent</div><ul>${n.recent.map((r) => `<li>${esc(r) || "—"}</li>`).join("")}</ul>`;
+  }
+  box.innerHTML = html;
 }
 
 function describe(e) {
@@ -268,40 +456,47 @@ function describe(e) {
     case "UserPromptSubmit": return ["prompt", "you → " + esc(e.prompt)];
     case "Stop": return ["", "turn finished"];
     case "SessionStart": return ["", "session " + esc(e.source || "start")];
-    case "SubagentStart": return ["agent", `<b>${esc(e.agent_type)}</b> started`];
-    case "SubagentStop": return ["agent", `<b>${esc(e.agent_type)}</b> reported back`];
+    case "SubagentStart": return ["", `<b>${esc(roleFor(e.agent_type))}</b> started`];
+    case "SubagentStop": return ["", `<b>${esc(roleFor(e.agent_type))}</b> reported back`];
+    case "PermissionRequest": return ["perm", `needs permission: ${esc(e.tool)} ${esc(e.summary || "")}`];
     case "PostToolUseFailure": return ["fail", `${esc(e.tool)} failed: ${esc(e.error)}`];
     case "PreToolUse":
-      if (e.tool === "Skill") return ["skill", `skill <b>${esc(e.skill)}</b>`];
-      if (isSpawn) return ["agent", `spawn <b>${esc(e.subagent_type)}</b>: ${esc(e.summary)}`];
+      if (e.skill) return ["", `skill <b>⚡${esc(e.skill)}</b>`];
+      if (isSpawn) return ["", `calls <b>${esc(roleFor(e.subagent_type))}</b>: ${esc(e.summary)}`];
       return ["", `<b>${esc(e.tool)}</b> ${esc(e.summary || "")}`];
   }
   return null;
 }
 let feedFor = null, feedCount = 0;
-function renderFeed(s) {
+function renderFeed(g) {
   const feed = $("feed");
-  if (!s) { feed.replaceChildren(); feedFor = null; return; }
-  if (feedFor !== s.id) { feed.replaceChildren(); feedFor = s.id; feedCount = 0; }
-  const atTop = feed.scrollTop < 20;
+  if (!g) { feed.replaceChildren(); feedFor = null; return; }
+  if (feedFor !== g.id) { feed.replaceChildren(); feedFor = g.id; feedCount = 0; }
   const frag = document.createDocumentFragment();
-  for (const e of s.events.slice(feedCount)) {
+  for (const e of g.events.slice(feedCount)) {
     const d = describe(e); if (!d) continue;
     const row = document.createElement("div");
     row.className = "row " + d[0];
-    const who = e.agent_id ? `${e.agent_type || "agent"}·${short(e.agent_id)}` : "AXA";
-    row.innerHTML = `<span class="t">${new Date(e.ts).toLocaleTimeString([], { hour12: false })}</span><span class="who ${e.agent_id ? "" : "main"}">${esc(who)}</span><span class="what">${d[1]}</span>`;
+    const who = e.agent_id ? roleFor(e.agent_type) : "AXA";
+    const color = e.agent_id ? roleMeta(who).color : AXA_COLOR;
+    row.innerHTML = `<span class="t">${new Date(e.ts).toLocaleTimeString([], { hour12: false })}</span><span class="who" style="color:${color}">${esc(who)}</span><span class="what">${d[1]}</span>`;
     row.title = row.textContent;
-    if (e.agent_id) row.onclick = () => { selected = e.agent_id; render(); };
+    if (e.agent_id) row.onclick = () => { selectedId = e.agent_id; dirty = true; };
     frag.prepend(row);
   }
-  feedCount = s.events.length;
+  feedCount = g.events.length;
   feed.prepend(frag);
   while (feed.childElementCount > 800) feed.lastChild.remove();
-  if (atTop) feed.scrollTop = 0;
 }
 
-function renderSessions() {
+function renderChrome(g) {
+  $("empty").style.display = g ? "none" : "grid";
+  const roles = g ? [...g.nodes.values()].filter((n) => n.kind === "role") : [];
+  $("s-agents").textContent = roles.reduce((s, r) => s + r.calls, 0);
+  $("s-running").textContent = g ? [...g.nodes.values()].filter((n) => n.kind === "inst" && n.status === "running").length : 0;
+  $("s-calls").textContent = g ? g.calls : 0;
+  $("legend").innerHTML = roles.map((r) => `<span class="chip ${r.calls ? "on" : ""}" data-id="${esc(r.id)}" title="${esc(roleMeta(r.role).use || "")}"><i style="background:${r.color}"></i>${esc(r.role)}</span>`).join("");
+  $("legend").querySelectorAll(".chip").forEach((c) => (c.onclick = () => { selectedId = c.dataset.id; dirty = true; }));
   const sel = $("session");
   const list = [...sessions.values()].sort((a, b) => b.last - a.last).slice(0, 30);
   const sig = list.map((s) => s.id).join();
@@ -309,35 +504,91 @@ function renderSessions() {
     sel.replaceChildren(...list.map((s) => {
       const o = document.createElement("option");
       o.value = s.id;
-      o.textContent = `${(s.cwd || "").split("/").pop() || "~"} · ${new Date(s.last).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })} · ${s.id.slice(0, 8)}`;
+      o.textContent = s.id === "demo" ? "▶ demo" : `${(s.cwd || "").split("/").pop() || "~"} · ${new Date(s.last).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })} · ${s.id.slice(0, 8)}`;
       return o;
     }));
     sel.dataset.sig = sig;
   }
   sel.value = current || "";
 }
-$("session").onchange = (ev) => { current = ev.target.value; pinned = true; selected = "main"; render(); };
+$("session").onchange = (ev) => { current = ev.target.value; pinned = true; selectedId = "axa"; autoFit = true; dirty = true; };
 
-// follow the most recently active session unless the user picked one
 function follow() {
   if (pinned && sessions.has(current)) return;
   let best = null;
   for (const s of sessions.values()) if (!best || s.last > best.last) best = s;
-  if (best && best.id !== current) { current = best.id; selected = "main"; }
+  if (best && best.id !== current) { current = best.id; selectedId = "axa"; autoFit = true; dirty = true; }
 }
 
-let queued = false;
-const schedule = () => { if (!queued) { queued = true; requestAnimationFrame(() => { queued = false; follow(); render(); }); } };
-setInterval(schedule, 500); // cools down "hot" satellites and ticks durations
+// ---------- loop ----------
+let dirty = true, lastPanel = 0;
+function frame(now) {
+  follow();
+  const g = sessions.get(current);
+  if (g) { step(g); if (autoFit) fit(g); }
+  draw(g, now);
+  if (dirty || now - lastPanel > 1000) { renderDetail(g); renderFeed(g); renderChrome(g); dirty = false; lastPanel = now; }
+  requestAnimationFrame(frame);
+}
 
+// ---------- demo: a scripted orchestration so the map can be seen without a live run ----------
+function demo() {
+  sessions.delete("demo"); feedFor = null;
+  pinned = true; current = "demo"; selectedId = "axa"; autoFit = true;
+  const base = { session: "demo", cwd: "~/projects/n2s-platform" };
+  const ids = { scout: "agent-sc0ut1", research: "agent-r3s3a1", b1: "agent-bu1ld1", b2: "agent-bu1ld2", review: "agent-r3v13w" };
+  const type = (r) => roster.find((x) => x.role === r)?.subagent_type || r;
+  const steps = [
+    [0, { event: "UserPromptSubmit", prompt: "Wire the Launches app into N2S as the Aerospace Hangar node and get it reviewed." }],
+    [600, { event: "PreToolUse", tool: "Skill", skill: "axa", summary: "axa" }],
+    [1200, { event: "PreToolUse", tool: "Read", summary: "roster.md" }],
+    [1900, { event: "PreToolUse", tool: "Agent", subagent_type: type("scout"), summary: "Map Launches feature folder", prompt: "Map ~/projects/launches/src/features/launches: entry points, env vars, assets." }],
+    [1950, { event: "SubagentStart", agent_id: ids.scout, agent_type: type("scout") }],
+    [2100, { event: "PreToolUse", tool: "Agent", subagent_type: type("researcher"), summary: "Check R3F version compat", prompt: "Is @react-three/fiber in Launches compatible with N2S's version?" }],
+    [2150, { event: "SubagentStart", agent_id: ids.research, agent_type: type("researcher") }],
+    ...[["Glob", "src/features/**"], ["Read", "index.ts"], ["Grep", "process.env"], ["Read", "LaunchScene.tsx"], ["Glob", "public/launches/**"]].map(([t, s], i) => [2600 + i * 700, { event: "PreToolUse", agent_id: ids.scout, agent_type: type("scout"), tool: t, summary: s }]),
+    ...[["WebSearch", "react-three-fiber v9 changelog"], ["WebFetch", "github.com/pmndrs/react-three-fiber"], ["WebSearch", "next 16 r3f"]].map(([t, s], i) => [2900 + i * 1100, { event: "PreToolUse", agent_id: ids.research, agent_type: type("researcher"), tool: t, summary: s }]),
+    [6200, { event: "SubagentStop", agent_id: ids.scout, agent_type: type("scout"), message: "Feature is self-contained in src/features/launches (100 files). Needs NEXT_PUBLIC_LAUNCHES_ASSET_BASE." }],
+    [6600, { event: "SubagentStop", agent_id: ids.research, agent_type: type("researcher"), message: "Both on R3F 9.x — compatible. No upgrade needed." }],
+    [7200, { event: "PreToolUse", tool: "Agent", subagent_type: type("builder"), summary: "Port feature into dashboard/", prompt: "Copy src/features/launches into N2S dashboard, scope styles, add /aerospace route." }],
+    [7250, { event: "SubagentStart", agent_id: ids.b1, agent_type: type("builder") }],
+    [7400, { event: "PreToolUse", tool: "Agent", subagent_type: type("builder"), summary: "Add Aerospace to MODULE_ROUTES", prompt: "Register /aerospace in components/ecosystem/routes.ts and the orrery node." }],
+    [7450, { event: "SubagentStart", agent_id: ids.b2, agent_type: type("builder") }],
+    ...[["Bash", "cp -r features"], ["Edit", "page.tsx"], ["Write", "aerospace/layout.tsx"], ["Edit", "globals.css"], ["Skill", "cloudflare"], ["Bash", "npx opennextjs-cloudflare build"]].map(([t, s], i) => [7900 + i * 900, { event: "PreToolUse", agent_id: ids.b1, agent_type: type("builder"), tool: t, skill: t === "Skill" ? s : undefined, summary: s }]),
+    ...[["Read", "routes.ts"], ["Edit", "routes.ts"], ["Edit", "Orrery.tsx"]].map(([t, s], i) => [8200 + i * 1000, { event: "PreToolUse", agent_id: ids.b2, agent_type: type("builder"), tool: t, summary: s }]),
+    [11400, { event: "PermissionRequest", agent_id: ids.b2, agent_type: type("builder"), tool: "Bash", summary: "git checkout -b aerospace-node" }],
+    [13600, { event: "PreToolUse", agent_id: ids.b2, agent_type: type("builder"), tool: "Bash", summary: "git checkout -b aerospace-node" }],
+    [13000, { event: "PostToolUseFailure", agent_id: ids.b1, agent_type: type("builder"), tool: "Bash", error: "Type error: 'scene' is possibly null" }],
+    [13800, { event: "PreToolUse", agent_id: ids.b1, agent_type: type("builder"), tool: "Edit", summary: "LaunchScene.tsx" }],
+    [14600, { event: "PreToolUse", agent_id: ids.b1, agent_type: type("builder"), tool: "Bash", summary: "npx opennextjs-cloudflare build" }],
+    [15400, { event: "SubagentStop", agent_id: ids.b2, agent_type: type("builder"), message: "Route registered; orrery node links to /aerospace." }],
+    [16200, { event: "SubagentStop", agent_id: ids.b1, agent_type: type("builder"), message: "Ported 100 files; build passes after null-check fix." }],
+    [16800, { event: "PreToolUse", tool: "Agent", subagent_type: type("reviewer"), summary: "Review aerospace-node diff", prompt: "Review the aerospace-node branch diff; run build + typecheck." }],
+    [16850, { event: "SubagentStart", agent_id: ids.review, agent_type: type("reviewer") }],
+    ...[["Bash", "git diff main"], ["Read", "routes.ts"], ["Read", "LaunchScene.tsx"], ["Bash", "npx tsc --noEmit"]].map(([t, s], i) => [17300 + i * 800, { event: "PreToolUse", agent_id: ids.review, agent_type: type("reviewer"), tool: t, summary: s }]),
+    [21000, { event: "SubagentStop", agent_id: ids.review, agent_type: type("reviewer"), message: "Clean. One nit: asset base env var missing from .env.example." }],
+    [21600, { event: "PreToolUse", tool: "Bash", summary: "verify build" }],
+    [22800, { event: "Stop", message: "Aerospace Hangar wired in on branch aerospace-node. Scout mapped, researcher confirmed R3F compat, 2 builders ported + routed, reviewer clean. Not pushed." }],
+  ];
+  const t0 = Date.now();
+  for (const [at, e] of steps) setTimeout(() => ingest({ ...base, ts: t0 + at, ...e }), at);
+}
+$("demo").onclick = demo;
+
+// ---------- data ----------
+async function loadRoster() {
+  try { roster = await (await fetch("/roster")).json(); } catch { roster = []; }
+  typeToRole.clear();
+  for (const r of roster) { typeToRole.set(r.subagent_type, r.role); typeToRole.set(r.subagent_type.split(":").pop(), r.role); }
+}
 function connect() {
   const es = new EventSource("/events");
-  es.addEventListener("history", (m) => { sessions.clear(); feedFor = null; JSON.parse(m.data).forEach(ingest); schedule(); });
-  es.onmessage = (m) => { try { ingest(JSON.parse(m.data)); schedule(); } catch {} };
+  es.addEventListener("history", (m) => { for (const k of [...sessions.keys()]) if (k !== "demo") sessions.delete(k); feedFor = null; JSON.parse(m.data).forEach(ingest); dirty = true; });
+  es.onmessage = (m) => { try { ingest(JSON.parse(m.data)); } catch {} };
   es.onopen = () => $("live").classList.add("on");
   es.onerror = () => $("live").classList.remove("on");
 }
-connect();
+loadRoster().then(() => { connect(); requestAnimationFrame(frame); if (new URLSearchParams(location.search).has("demo")) demo(); });
 </script>
 </body>
 </html>
