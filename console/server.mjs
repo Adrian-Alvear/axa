@@ -150,6 +150,10 @@ const server = createServer(async (req, res) => {
     }
     const m = path.match(/^\/api\/terms\/([\w-]+)$/);
     if (m && req.method === "DELETE") return json(res, T.killTerm(m[1]) ? 200 : 404, {});
+    const sm = path.match(/^\/api\/terms\/([\w-]+)\/screen$/);
+    if (sm && req.method === "GET") { const r = T.readTerm(sm[1], Number(u.searchParams.get("lines")) || 60); return json(res, r ? 200 : 404, r || { error: "no such terminal" }); }
+    const im = path.match(/^\/api\/terms\/([\w-]+)\/input$/);
+    if (im && req.method === "POST") { const b = await readBody(req); if (typeof b.text !== "string") return json(res, 400, { error: "text required" }); const r = await T.sendToTerm(im[1], b.text, { enter: b.enter !== false }); return json(res, r.ok ? 200 : 409, r); }
   }
   res.writeHead(404).end();
 });

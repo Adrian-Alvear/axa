@@ -5,6 +5,7 @@
   "description": "AXA console server: live agent map + embedded Claude Code terminals",
   "dependencies": {
     "@xterm/addon-fit": "^0.10.0",
+    "@xterm/headless": "^5.5.0",
     "@xterm/xterm": "^5.5.0",
     "node-pty": "^1.0.0",
     "ws": "^8.18.0"

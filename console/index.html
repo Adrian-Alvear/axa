@@ -40,6 +40,10 @@
   .tab .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 6px var(--accent); }
   .tab.dead .dot { background: var(--dim); box-shadow: none; }
   .tab .mode { color: var(--dim); font-size: 9px; letter-spacing: .2em; text-transform: uppercase; }
+  .tab.axa { color: var(--accent); letter-spacing: .2em; }
+  .tab.axa .dot { border-radius: 1px; transform: rotate(45deg); }
+  .axa-row { border: 1px solid var(--line2) !important; padding: 8px 8px !important; background: rgba(79,216,255,.05); }
+  .axa-row b { color: var(--accent) !important; letter-spacing: .15em; }
   .tab .x { color: var(--dim); padding: 2px 4px; } .tab .x:hover { color: var(--red); }
   #newterm { border: 0; border-right: 1px solid var(--line); border-radius: 0; padding: 0 14px; font-size: 14px; letter-spacing: 0; }
   #termhost { position: relative; min-height: 0; }
@@ -797,9 +801,10 @@ function openTab(info) {
   const term = new Terminal({ fontFamily: 'ui-monospace, "SF Mono", Menlo, monospace', fontSize: 12.5, lineHeight: 1.15, cursorBlink: true, theme: XT_THEME, allowProposedApi: true, scrollback: 5000 });
   const fit = new FitAddon.FitAddon(); term.loadAddon(fit); term.open(el);
   const tab = document.createElement("div"); tab.className = "tab";
-  tab.innerHTML = `<span class="dot"></span><span>${esc(info.name)}</span><span class="mode">${info.mode === "claude" ? "claude" : "sh"}</span><span class="x" title="Close">✕</span>`;
+  tab.innerHTML = `<span class="dot"></span><span>${esc(info.name)}</span><span class="mode">${{ claude: "claude", axa: "commander", shell: "sh" }[info.mode] || "sh"}</span><span class="x" title="Close">✕</span>`;
+  if (info.mode === "axa") { tab.classList.add("axa"); $("tablist").prepend(tab); }
   tab.onclick = (ev) => { if (ev.target.classList.contains("x")) closeTab(info.id); else activate(info.id); };
-  $("tablist").appendChild(tab);
+  if (info.mode !== "axa") $("tablist").appendChild(tab);
   const t = { info, term, fit, el, tab, ws: null };
   tabs.set(info.id, t);
   const connectWs = () => {
@@ -847,11 +852,13 @@ async function launch(cwd, mode) {
 async function renderProjects(el, onEscape) {
   const r = await fetch("/api/projects");
   const projects = r.ok ? await r.json() : [];
-  el.innerHTML = `<p class="title">Launch in project</p>` + projects.map((p, i) => `
+  el.innerHTML = `<div class="proj axa-row"><div><b>AXA commander</b><small>one Claude session that sees and drives every terminal</small></div><button class="axa-go" data-m="axa">Launch</button><span></span></div>
+    <p class="title" style="margin-top:12px">Launch in project</p>` + projects.map((p, i) => `
     <div class="proj"><div><b>${esc(p.name)}</b><small>${esc(p.path.replace(/^\/Users\/[^/]+/, "~"))}</small></div>
     <button data-i="${i}" data-m="claude">Claude</button><button data-i="${i}" data-m="shell">Shell</button></div>`).join("") +
     `<input class="custompath" placeholder="or type a path, e.g. ~/projects/n2s-platform/dashboard  ↵">`;
-  el.querySelectorAll("button").forEach((b) => (b.onclick = () => launch(projects[b.dataset.i].path, b.dataset.m)));
+  el.querySelectorAll("button[data-i]").forEach((b) => (b.onclick = () => launch(projects[b.dataset.i].path, b.dataset.m)));
+  el.querySelector(".axa-go").onclick = () => { const open = [...tabs.values()].find((t) => t.info.mode === "axa" && t.info.alive); if (open) { activate(open.info.id); $("picker").hidden = true; } else launch("~/projects", "axa"); };
   el.querySelector(".custompath").onkeydown = (ev) => { if (ev.key === "Enter" && ev.target.value.trim()) launch(ev.target.value.trim(), "claude"); if (ev.key === "Escape") onEscape?.(); };
 }
 async function showPicker() {

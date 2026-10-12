@@ -9,6 +9,7 @@ import { randomUUID } from "node:crypto";
 const require = createRequire(import.meta.url);
 const pty = require("node-pty");
 const { WebSocketServer } = require("ws");
+const { Terminal: Headless } = require("@xterm/headless");
 
 // node-pty's prebuilt spawn-helper sometimes ships without the execute bit ("posix_spawnp failed").
 try {
@@ -28,6 +29,9 @@ function cleanEnv() {
   for (const k of Object.keys(env)) if (k === "CLAUDECODE" || k.startsWith("CLAUDE_CODE_")) delete env[k];
   return env;
 }
+
+const shq = (s) => "'" + s.replace(/'/g, "'\\''") + "'";
+const AXA_BRIEF = "You are AXA, the user's commander session in the AXA console. You can see and drive every terminal open in the console with the axa terminal tools (list_terminals, read_terminal, send_to_terminal, open_terminal). Each terminal is usually its own Claude Code session in a different project. When the user asks for work across projects, open or reuse the right terminals, send each a clear self-contained instruction, check their screens for progress, and report back briefly. Never answer another terminal's permission or trust prompt — tell the user which terminal needs them. Follow the axa skill for planning.";
 
 const expand = (p) => resolve(p.replace(/^~(?=$|\/)/, homedir()));
 
@@ -50,7 +54,36 @@ export function listProjects(rosterFile) {
   return [...seen.values()];
 }
 
-const summary = (t) => ({ id: t.id, name: t.name, cwd: t.cwd, mode: t.mode, alive: t.alive, created: t.created });
+const summary = (t) => ({ id: t.id, name: t.name, cwd: t.cwd, mode: t.mode, alive: t.alive, created: t.created,
+  idle_seconds: Math.round((Date.now() - t.lastOutput) / 1000), awaiting_permission: t.alive && awaitingPermission(t) });
+
+// ---------- reading and typing into terminals (used by AXA's terminal tools) ----------
+function screenLines(t, lines = 60) {
+  const b = t.screen.buffer.active, out = [];
+  for (let i = 0; i < b.length; i++) out.push(b.getLine(i)?.translateToString(true) ?? "");
+  while (out.length && !out[out.length - 1].trim()) out.pop();
+  return out.slice(-Math.max(1, Math.min(lines, 400)));
+}
+// Claude Code's permission dialogs: AXA must never answer these on the user's behalf.
+const PERMISSION_RE = /Do you want to (proceed|make this edit|create|allow)|Do you trust the files|trust this folder|Yes, and don't ask again|❯\s*1\.\s*Yes/i;
+function awaitingPermission(t) { return PERMISSION_RE.test(screenLines(t, 25).join("\n")); }
+
+export function readTerm(id, lines = 60) {
+  const t = terms.get(id);
+  if (!t) return null;
+  return { ...summary(t), screen: screenLines(t, lines).join("\n") };
+}
+
+export async function sendToTerm(id, text, { enter = true } = {}) {
+  const t = terms.get(id);
+  if (!t) return { ok: false, error: "no such terminal" };
+  if (!t.alive) return { ok: false, error: "terminal has exited" };
+  if (awaitingPermission(t)) return { ok: false, error: "This terminal is waiting on a permission/trust prompt. Only the user may answer it — tell them which terminal needs attention." };
+  t.proc.write(text);
+  // submit separately so TUIs treat it as Enter, not part of a paste
+  if (enter) { await new Promise((r) => setTimeout(r, 60)); t.proc.write("\r"); }
+  return { ok: true };
+}
 export const listTerms = () => [...terms.values()].map(summary);
 
 export function createTerm({ cwd, mode = "claude", cols = 100, rows = 30 }) {
@@ -58,11 +91,16 @@ export function createTerm({ cwd, mode = "claude", cols = 100, rows = 30 }) {
   if (!dir.startsWith(homedir()) || !statSync(dir).isDirectory()) throw new Error("cwd must be a directory in your home folder");
   const shell = process.env.SHELL || "/bin/zsh";
   // claude mode: run Claude Code, and drop to a normal shell if it exits
-  const args = mode === "claude" ? ["-l", "-c", 'claude; exec "$SHELL" -l'] : ["-l"];
+  const args = mode === "claude" ? ["-l", "-c", 'claude; exec "$SHELL" -l']
+    : mode === "axa" ? ["-l", "-c", `claude --append-system-prompt ${shq(AXA_BRIEF)}; exec "$SHELL" -l`]
+    : ["-l"];
   const proc = pty.spawn(shell, args, { name: "xterm-256color", cols, rows, cwd: dir, env: cleanEnv() });
-  const t = { id: randomUUID().slice(0, 8), name: basename(dir), cwd: dir, mode, proc, buf: "", alive: true, created: Date.now(), sockets: new Set() };
+  const screen = new Headless({ cols, rows, scrollback: 2000, allowProposedApi: true });
+  const t = { id: randomUUID().slice(0, 8), name: mode === "axa" ? "AXA" : basename(dir), cwd: dir, mode, proc, screen, buf: "", alive: true, created: Date.now(), lastOutput: Date.now(), sockets: new Set() };
   proc.onData((d) => {
     t.buf = (t.buf + d).slice(-SCROLLBACK);
+    t.lastOutput = Date.now();
+    screen.write(d);
     for (const ws of t.sockets) ws.send(d);
   });
   proc.onExit(({ exitCode }) => {
@@ -77,6 +115,7 @@ export function killTerm(id) {
   const t = terms.get(id);
   if (!t) return false;
   try { t.proc.kill(); } catch {}
+  try { t.screen.dispose(); } catch {}
   for (const ws of t.sockets) ws.close();
   terms.delete(id);
   return true;
@@ -98,7 +137,7 @@ export function attachWebSocket(server, authorize) {
         let msg; try { msg = JSON.parse(raw); } catch { return; }
         if (!t.alive) return;
         if (msg.t === "i" && typeof msg.d === "string") t.proc.write(msg.d);
-        if (msg.t === "r" && msg.c > 0 && msg.r > 0) t.proc.resize(Math.min(msg.c, 500), Math.min(msg.r, 300));
+        if (msg.t === "r" && msg.c > 0 && msg.r > 0) { const c = Math.min(msg.c, 500), r = Math.min(msg.r, 300); t.proc.resize(c, r); t.screen.resize(c, r); }
       });
       ws.on("close", () => t.sockets.delete(ws));
     });

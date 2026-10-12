@@ -11,6 +11,16 @@ Before planning, read the user's roster: `~/.axa/roster.md`. If it doesn't exist
 
 Every call you and your agents make is logged to `~/.axa/events.jsonl` and shown live in the AXA console (`/axa:console`).
 
+## Driving terminals (multi-project work)
+
+If the AXA console is running, you also have the **axa terminal tools**: `list_terminals`, `read_terminal`, `send_to_terminal`, `open_terminal`. Each terminal is usually its own Claude Code session in a different project, so this is how you run work across projects at the same time:
+
+- Start with `list_terminals`. Reuse a terminal already open in the right project; otherwise `open_terminal` (mode `claude`).
+- Hand each one a complete, self-contained instruction with `send_to_terminal` — it can't see this conversation, same as a subagent.
+- Check progress with `read_terminal`. `idle_seconds` rising and a prompt on screen usually means it's done or waiting for input.
+- **Never answer another terminal's permission or trust prompt** (the tool refuses anyway). Tell the user which terminal needs them: "launches is waiting for your approval".
+- Use subagents for work inside one project; use terminals when the work spans projects or should keep running on its own.
+
 ## 1. Break the task down
 
 Split the request into subtasks that each have **one owner and one clear deliverable**. Good splits follow seams that don't collide:
