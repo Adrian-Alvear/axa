@@ -14,8 +14,19 @@
   }
   * { box-sizing: border-box; }
   html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font: 12px/1.5 ui-monospace, "SF Mono", Menlo, monospace; }
-  body { --tw: 0px; --aw: 360px; display: grid; grid-template-columns: var(--tw) minmax(0, 1fr) var(--aw); grid-template-rows: auto 1fr; height: 100vh; overflow: hidden; }
-  body.with-terms { --tw: 46vw; }
+  body { --aw: 360px; display: grid; grid-template-columns: 0 minmax(0, 1fr) var(--aw); grid-template-rows: auto minmax(0, 1fr) 0; height: 100vh; overflow: hidden; }
+  body.with-terms { grid-template-columns: var(--tw, 46vw) minmax(0, 1fr) var(--aw); }
+  /* bottom layout: map + intel on top, terminal full width underneath */
+  body.term-bottom { grid-template-columns: minmax(0, 1fr) var(--aw); }
+  body.term-bottom.with-terms { grid-template-columns: minmax(0, 1fr) var(--aw); grid-template-rows: auto minmax(0, 1fr) var(--th, 42vh); }
+  body.term-bottom #terms { grid-column: 1 / -1; grid-row: 3; border-right: 0; border-top: 1px solid var(--line2); }
+  body.term-bottom #stage { grid-column: 1; }
+  body.term-bottom aside { grid-column: 2; }
+  body.term-bottom #splitter { top: -4px; left: 0; right: 0; bottom: auto; width: auto; height: 8px; cursor: row-resize; }
+  body.term-bottom #splitter:hover, body.term-bottom #splitter.drag { background: linear-gradient(to bottom, transparent 3px, var(--accent) 3px, var(--accent) 4px, transparent 4px); }
+  .tabs .grow { flex: 1; }
+  #layoutbtn { border: 0; border-left: 1px solid var(--line); border-radius: 0; padding: 0 12px; font-size: 13px; letter-spacing: 0; }
+  #termmsg .list { width: min(460px, 100%); text-align: left; text-transform: none; letter-spacing: normal; font-size: 12px; margin-top: 18px; }
   body.no-intel { --aw: 0px; } body.no-intel aside { display: none; }
   button.on { border-color: var(--accent); color: var(--accent); }
 
@@ -34,13 +45,13 @@
   #termhost { position: relative; min-height: 0; }
   #termhost .xt { position: absolute; inset: 8px 4px 4px 10px; display: none; }
   #termhost .xt.active { display: block; }
-  #termmsg { position: absolute; inset: 0; display: grid; place-items: center; text-align: center; color: var(--dim); font-size: 10px; letter-spacing: .2em; text-transform: uppercase; padding: 24px; pointer-events: none; }
+  #termmsg { position: absolute; inset: 0; display: grid; place-items: center; text-align: center; color: var(--dim); font-size: 10px; letter-spacing: .2em; text-transform: uppercase; padding: 24px; overflow: auto; }
   #picker { position: absolute; top: 36px; left: 8px; z-index: 5; width: min(420px, calc(100% - 16px)); max-height: 70%; overflow: auto; background: #07111a; border: 1px solid var(--line2); box-shadow: 0 12px 40px rgba(0,0,0,.6); padding: 10px; }
   #picker[hidden] { display: none; }
-  #picker .proj { display: grid; grid-template-columns: 1fr auto auto; gap: 6px; align-items: center; padding: 6px 4px; border-bottom: 1px solid var(--line); }
-  #picker .proj div b { display: block; font-weight: 500; color: var(--text); }
-  #picker .proj div small { color: var(--dim); font-size: 10px; }
-  #picker input { width: 100%; background: transparent; border: 1px solid var(--line2); color: var(--text); font: inherit; padding: 6px 8px; margin-top: 8px; }
+  #picker .proj, #termmsg .proj { display: grid; grid-template-columns: 1fr auto auto; gap: 6px; align-items: center; padding: 6px 4px; border-bottom: 1px solid var(--line); }
+  #picker .proj div b, #termmsg .proj div b { display: block; font-weight: 500; color: var(--text); }
+  #picker .proj div small, #termmsg .proj div small { color: var(--dim); font-size: 10px; }
+  #picker input, #termmsg input { width: 100%; background: transparent; border: 1px solid var(--line2); color: var(--text); font: inherit; padding: 6px 8px; margin-top: 8px; }
   #splitter { position: absolute; top: 0; right: -4px; bottom: 0; width: 8px; cursor: col-resize; z-index: 4; }
   #splitter:hover, #splitter.drag { background: linear-gradient(to right, transparent 3px, var(--accent) 3px, var(--accent) 4px, transparent 4px); }
 
@@ -140,7 +151,7 @@
   <select id="session" title="session"></select>
 </header>
 <section id="terms">
-  <div class="tabs"><button id="newterm" title="New terminal">+</button><div id="tablist" style="display:flex"></div></div>
+  <div class="tabs"><button id="newterm" title="New terminal">+</button><div id="tablist" style="display:flex"></div><span class="grow"></span><button id="layoutbtn" title="Move terminal">⬓</button></div>
   <div id="termhost"><div id="termmsg">No terminals<br><br>Press + to launch Claude Code in a project</div></div>
   <div id="picker" hidden></div>
   <div id="splitter"></div>
@@ -268,6 +279,7 @@ function ingest(e) {
       const role = roleFor(e.agent_type);
       const i = g.pending.findIndex((p) => p.role === role);
       const spawn = i >= 0 ? g.pending.splice(i, 1)[0] : null;
+      if (!spawn) ensureRole(g, role).calls++; // started without a visible dispatch (e.g. background agents)
       const n = ensureInst(g, e);
       n.status = "running"; n.start = e.ts;
       if (spawn) { n.prompt = spawn.prompt; n.desc = spawn.desc; n.label = spawn.desc || n.label; }
@@ -763,7 +775,9 @@ function setTermsOpen(open) {
   document.body.classList.toggle("with-terms", open);
   $("tbtn").classList.toggle("on", open);
   try { localStorage.setItem("axa.terms", open ? "1" : "0"); } catch {}
-  if (open && activeTab) requestAnimationFrame(() => fitTab(tabs.get(activeTab)));
+  if (open && activeTab) requestAnimationFrame(() => { const t = tabs.get(activeTab); fitTab(t); t?.term.focus(); });
+  // the map follows the active terminal only while the terminal pane is open
+  focusCwd = open && activeTab ? tabs.get(activeTab)?.info.cwd || null : null; pinned = false; autoFit = true; dirty = true;
 }
 $("tbtn").onclick = () => setTermsOpen(!document.body.classList.contains("with-terms"));
 $("ibtn").onclick = () => { const off = document.body.classList.toggle("no-intel"); $("ibtn").classList.toggle("on", !off); try { localStorage.setItem("axa.intel", off ? "0" : "1"); } catch {} };
@@ -803,7 +817,7 @@ function openTab(info) {
 function activate(id) {
   activeTab = id;
   for (const [k, t] of tabs) { t.el.classList.toggle("active", k === id); t.tab.classList.toggle("active", k === id); }
-  termMsg(tabs.size ? "" : "No terminals<br><br>Press + to launch Claude Code in a project");
+  if (tabs.size) termMsg(""); else showEmpty();
   const t = tabs.get(id);
   if (t) {
     requestAnimationFrame(() => { fitTab(t); t.term.focus(); });
@@ -818,7 +832,7 @@ async function closeTab(id) {
   if (t.info.alive && !t.tab.classList.contains("dead") && !confirm(`Close ${t.info.name}? This ends its process.`)) return;
   await fetch(`/api/terms/${id}`, { method: "DELETE" });
   t.ws?.close(); t.term.dispose(); t.el.remove(); t.tab.remove(); tabs.delete(id);
-  if (activeTab === id) { const next = [...tabs.keys()].pop(); if (next) activate(next); else { activeTab = null; focusCwd = null; termMsg("No terminals<br><br>Press + to launch Claude Code in a project"); } }
+  if (activeTab === id) { const next = [...tabs.keys()].pop(); if (next) activate(next); else { activeTab = null; focusCwd = null; showEmpty(); } }
 }
 
 async function launch(cwd, mode) {
@@ -829,40 +843,67 @@ async function launch(cwd, mode) {
   openTab(body); activate(body.id); setTermsOpen(true);
 }
 
+// project list with Claude / Shell launch buttons (used by the + popover and the empty pane)
+async function renderProjects(el, onEscape) {
+  const r = await fetch("/api/projects");
+  const projects = r.ok ? await r.json() : [];
+  el.innerHTML = `<p class="title">Launch in project</p>` + projects.map((p, i) => `
+    <div class="proj"><div><b>${esc(p.name)}</b><small>${esc(p.path.replace(/^\/Users\/[^/]+/, "~"))}</small></div>
+    <button data-i="${i}" data-m="claude">Claude</button><button data-i="${i}" data-m="shell">Shell</button></div>`).join("") +
+    `<input class="custompath" placeholder="or type a path, e.g. ~/projects/n2s-platform/dashboard  ↵">`;
+  el.querySelectorAll("button").forEach((b) => (b.onclick = () => launch(projects[b.dataset.i].path, b.dataset.m)));
+  el.querySelector(".custompath").onkeydown = (ev) => { if (ev.key === "Enter" && ev.target.value.trim()) launch(ev.target.value.trim(), "claude"); if (ev.key === "Escape") onEscape?.(); };
+}
 async function showPicker() {
   const pk = $("picker");
   if (!pk.hidden) { pk.hidden = true; return; }
-  const r = await fetch("/api/projects");
-  const projects = r.ok ? await r.json() : [];
-  pk.innerHTML = `<p class="title">Launch in project</p>` + projects.map((p, i) => `
-    <div class="proj"><div><b>${esc(p.name)}</b><small>${esc(p.path.replace(/^\/Users\/[^/]+/, "~"))}</small></div>
-    <button data-i="${i}" data-m="claude">Claude</button><button data-i="${i}" data-m="shell">Shell</button></div>`).join("") +
-    `<input id="custompath" placeholder="or type a path, e.g. ~/projects/n2s-platform/dashboard  ↵">`;
-  pk.querySelectorAll("button").forEach((b) => (b.onclick = () => launch(projects[b.dataset.i].path, b.dataset.m)));
-  pk.querySelector("#custompath").onkeydown = (ev) => { if (ev.key === "Enter" && ev.target.value.trim()) launch(ev.target.value.trim(), "claude"); if (ev.key === "Escape") pk.hidden = true; };
+  await renderProjects(pk, () => (pk.hidden = true));
   pk.hidden = false;
 }
+function showEmpty() {
+  termMsg(`No terminal open<div class="list" id="emptylist"></div>`);
+  renderProjects($("emptylist"));
+}
 $("newterm").onclick = showPicker;
+
+// terminal along the bottom (default) or beside the map
+function setLayout(mode) {
+  const bottom = mode === "bottom";
+  document.body.classList.toggle("term-bottom", bottom);
+  $("layoutbtn").textContent = bottom ? "◫" : "⬓";
+  $("layoutbtn").title = bottom ? "Put terminal beside the map" : "Put terminal along the bottom";
+  try { localStorage.setItem("axa.layout", mode); } catch {}
+  requestAnimationFrame(() => { const t = tabs.get(activeTab); fitTab(t); t?.term.focus(); });
+}
+$("layoutbtn").onclick = () => setLayout(document.body.classList.contains("term-bottom") ? "side" : "bottom");
 
 // draggable divider between terminals and the map
 $("splitter").addEventListener("pointerdown", (ev) => {
   const sp = $("splitter"); sp.classList.add("drag"); sp.setPointerCapture(ev.pointerId);
-  const move = (e) => { const w = Math.max(320, Math.min(window.innerWidth - 420, e.clientX)); document.body.style.setProperty("--tw", w + "px"); };
-  const up = () => { sp.classList.remove("drag"); sp.removeEventListener("pointermove", move); sp.removeEventListener("pointerup", up); fitTab(tabs.get(activeTab)); try { localStorage.setItem("axa.tw", document.body.style.getPropertyValue("--tw")); } catch {} };
+  const bottom = document.body.classList.contains("term-bottom");
+  const move = (e) => bottom
+    ? document.body.style.setProperty("--th", Math.max(160, Math.min(window.innerHeight - 220, window.innerHeight - e.clientY)) + "px")
+    : document.body.style.setProperty("--tw", Math.max(320, Math.min(window.innerWidth - 420, e.clientX)) + "px");
+  const up = () => {
+    sp.classList.remove("drag"); sp.removeEventListener("pointermove", move); sp.removeEventListener("pointerup", up); fitTab(tabs.get(activeTab));
+    try { localStorage.setItem(bottom ? "axa.th" : "axa.tw", document.body.style.getPropertyValue(bottom ? "--th" : "--tw")); } catch {}
+  };
   sp.addEventListener("pointermove", move); sp.addEventListener("pointerup", up);
 });
 
 async function initTerms() {
   let prefs = {};
-  try { prefs = { open: localStorage.getItem("axa.terms"), intel: localStorage.getItem("axa.intel"), tw: localStorage.getItem("axa.tw"), active: localStorage.getItem("axa.activeTab") }; } catch {}
+  try { prefs = { open: localStorage.getItem("axa.terms"), intel: localStorage.getItem("axa.intel"), tw: localStorage.getItem("axa.tw"), th: localStorage.getItem("axa.th"), layout: localStorage.getItem("axa.layout"), active: localStorage.getItem("axa.activeTab") }; } catch {}
   if (prefs.tw) document.body.style.setProperty("--tw", prefs.tw);
+  if (prefs.th) document.body.style.setProperty("--th", prefs.th);
+  setLayout(prefs.layout || "bottom");
   if (prefs.intel === "0") { document.body.classList.add("no-intel"); $("ibtn").classList.remove("on"); }
   if (typeof Terminal === "undefined") { $("tbtn").title = "Terminals need: npm install in the console folder"; termMsg("Terminals unavailable<br><br>Run npm install in the AXA console folder, then restart it"); return; }
   const r = await fetch("/api/terms");
   if (!r.ok) { termMsg(esc((await r.json().catch(() => ({}))).error || "Terminals unavailable")); return; }
   const list = await r.json();
   list.forEach(openTab);
-  if (list.length) activate(list.some((t) => t.id === prefs.active) ? prefs.active : list[list.length - 1].id);
+  if (list.length) activate(list.some((t) => t.id === prefs.active) ? prefs.active : list[list.length - 1].id); else showEmpty();
   setTermsOpen(prefs.open === "1" || (prefs.open === null && list.length > 0));
 }
 
