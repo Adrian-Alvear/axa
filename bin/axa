@@ -3,11 +3,12 @@
 //   axa            start the AXA commander here (starts the console in the background if needed)
 //   axa console    start the console if needed and open it in your browser
 //   axa status     list the sessions AXA is running and what each is doing
-//   axa stop       stop the console (and every session running in it)
-import { readFileSync, existsSync, realpathSync } from "node:fs";
+//   axa stop       stop the console (sessions keep running in tmux; the next start shows them again)
+//   axa stop --all stop the console and end every session
+import { readFileSync, existsSync, realpathSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 
 const root = join(dirname(realpathSync(fileURLToPath(import.meta.url))), "..");
 const { ensureConsole, home, port, readToken, openUrl } = await import(join(root, "console", "ensure.mjs"));
@@ -30,8 +31,16 @@ if (cmd === "console") {
   for (const s of sessions) console.log(`${s.id}  ${s.name.padEnd(14)} ${s.status.padEnd(8)} ${s.doing || (s.last_report || "").replace(/\s+/g, " ").slice(0, 80)}`);
 } else if (cmd === "stop") {
   const pidFile = join(home, "console.pid");
-  if (!existsSync(pidFile)) { console.log("The console isn't running."); process.exit(0); }
-  try { process.kill(Number(readFileSync(pidFile, "utf8")), "SIGTERM"); console.log("Console stopped."); } catch { console.log("The console isn't running."); }
+  const all = rest.includes("--all");
+  if (!existsSync(pidFile)) console.log("The console isn't running.");
+  else try { process.kill(Number(readFileSync(pidFile, "utf8")), "SIGTERM"); console.log("Console stopped."); } catch { console.log("The console isn't running."); }
+  if (all) {
+    // Sessions live on AXA's own tmux socket: ending that server ends them all (your own tmux is untouched)
+    await new Promise((r) => setTimeout(r, 300));
+    spawnSync("tmux", ["-L", `axa-${port}`, "kill-server"], { stdio: "ignore" });
+    rmSync(join(home, "sessions.json"), { force: true });
+    console.log("All sessions ended.");
+  } else console.log("Sessions keep running; `axa console` shows them again. `axa stop --all` ends them too.");
 } else if (!cmd || cmd.startsWith("-")) {
   // The commander: Claude Code with the AXA plugin and the commander brief, in this terminal
   await ensureConsole();
@@ -40,5 +49,5 @@ if (cmd === "console") {
   const child = spawn("claude", args, { stdio: "inherit", env });
   child.on("exit", (code) => process.exit(code ?? 0));
 } else {
-  console.log("Usage: axa [console|status|stop]   (no argument starts the commander here)");
+  console.log("Usage: axa [console|status|stop [--all]]   (no argument starts the commander here)");
 }

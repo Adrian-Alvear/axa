@@ -93,6 +93,10 @@ function statusOf(id) {
 }
 function track(e) {
   if (!e?.terminal) return;
+  // Remember which Claude chat each session runs, so it can be resumed after a machine restart
+  // Only a session's own start (or /clear) names its chat, so a Claude run *inside* a session
+  // (e.g. `claude -p` from its Bash tool) can't replace the chat that gets resumed after a reboot
+  if (e.session && e.event === "SessionStart" && e.role && e.source !== "compact") T?.noteSession?.(e.terminal, e.session);
   const s = sessions.get(e.terminal) || { inflight: new Map() };
   s.at = e.ts;
   switch (e.event) {
@@ -114,7 +118,7 @@ function track(e) {
 const clients = new Set();
 let offset = statSync(logPath).size;
 let partial = "";
-// Rebuild statuses from recent history (sessions keep running only while this server does)
+// Rebuild statuses from recent history (sessions in tmux keep running across console restarts)
 for (const line of readRange(Math.max(0, offset - HISTORY_BYTES), offset).split("\n")) { try { track(JSON.parse(line)); } catch {} }
 setInterval(() => {
   let size;
@@ -237,8 +241,12 @@ for (const sig of ["SIGINT", "SIGTERM"]) process.on(sig, () => { T?.killAll(); t
 
 server.listen(port, "127.0.0.1", () => {
   writeFileSync(pidPath, String(process.pid));
+  // Sessions still running in tmux show up again; after a machine restart, Claude sessions resume
+  let restored = [];
+  try { restored = T?.restoreTerms?.() || []; } catch (e) { console.log(`  couldn't restore sessions: ${e.message}`); }
   console.log(`AXA console → ${unlockUrl}`);
   console.log(`  events: ${logPath}`);
-  console.log(`  terminals: ${T ? "enabled" : "disabled — " + termError}`);
+  console.log(`  terminals: ${T ? `enabled (${T.backend === "tmux" ? "tmux: sessions survive restarts" : "no tmux: sessions end with the console"})` : "disabled — " + termError}`);
+  if (restored.length) console.log(`  restored sessions: ${restored.join(", ")}`);
   openBrowser();
 });

@@ -17,7 +17,7 @@ live console shows you every agent, skill and tool call as it happens.
 |---|---|
 | `skills/axa` | The orchestrator playbook: decompose → assign from your roster → run in parallel → verify → short report. Triggers on `/axa`, "split this up", "use agents", etc. |
 | `agents/` | `axa:builder`, `axa:reviewer` (read-only), `axa:researcher` (web). |
-| `bin/axa` | The commander from any terminal: `axa` starts it, `axa console` opens the dashboard, `axa status` lists sessions, `axa stop` stops everything. |
+| `bin/axa` | The commander from any terminal: `axa` starts it, `axa console` opens the dashboard, `axa status` lists sessions, `axa stop` stops the console (sessions keep running), `axa stop --all` ends them too. |
 | `mcp/` | The commander's session tools: open a session per project, give it a goal, check its status and last report, read its screen, close it. |
 | `hooks/` | Logs every prompt, tool, skill and subagent event to `~/.axa/events.jsonl`. Async — never slows Claude down. |
 | `console/` | Local web UI: AXA in the center, agents appearing as they're dispatched, a live progress dock, and embedded Claude Code terminals for any project. |
@@ -92,6 +92,7 @@ or run it yourself: `node console/server.mjs --open` → http://localhost:4747
 - **Session picker** follows your most recent session automatically.
 
 - **Terminals:** press **Terminals → +** to launch Claude Code (or a plain shell) in any project, right inside the dashboard. Sessions started here are traced and run in auto mode. Run several projects side by side; the map follows whichever tab you're in. Terminals keep running if you reload the page.
+- **Sessions survive restarts:** each session runs in tmux (on AXA's own socket, `tmux -L axa-<port>`, so your tmux setup is untouched). Stopping or restarting the console (`axa stop`) leaves them running, and the next start shows them again with the same ids. After a machine restart, Claude sessions are relaunched resuming their chat (marked `recovered`); plain shells are dropped. `axa stop --all` ends every session. Without tmux (e.g. a Mac without it installed), sessions end with the console as before; `AXA_NO_TMUX=1` forces that.
 
 Env: `AXA_PORT` (default 4747), `AXA_HOME` (default `~/.axa`). The event log is capped at 50MB
 (the previous one is kept as `events.1.jsonl`).
@@ -114,6 +115,32 @@ AXA also protects you while it works:
   session unless you approved that exact command.
 - **Stuck sessions are flagged.** A session with a step running and no activity for 20 minutes
   (`AXA_STUCK_MINUTES`) shows as stuck and counts toward "needs you".
+
+### Permission policy (so project sessions don't keep stopping for you)
+
+Project sessions that AXA starts check every tool call against a policy before running it:
+
+- **Auto-approved:** reading, searching and editing inside the project; builds, tests and installs
+  (`npm test`, `npm run build`, `npx tsc`, `pytest`, `cargo test`…); everyday git (`status`, `diff`,
+  `log`, `add`, `commit`, new branches, pushing a branch that isn't `main`/`master`).
+- **Refused, with a reason the agent can act on:** the dangerous-command list above, editing files
+  outside the project, `.git` internals, or secret files (`.env*`, keys, credentials), and reading secrets.
+- **Everything else** (pushing to `main`, deploy/publish scripts, `docker`, `sudo`, `curl`, unknown
+  tools…) goes through Claude Code's normal permission mode, which may ask you.
+
+It only applies to project sessions AXA starts, never to the commander or your own Claude sessions.
+Every decision is logged. To tune it, create `~/.axa/policy.json`:
+
+```json
+{
+  "default": { "allowBash": ["make test", "docker compose up -d"], "denyBash": ["terraform apply"] },
+  "projects": { "launches": { "mode": "strict" }, "~/experiments/sandbox": { "mode": "off" } }
+}
+```
+
+`allowBash` entries must match the whole command; `denyBash` matches anywhere. `mode`: `normal`
+(default), `strict` (only refuses, never auto-approves) or `off`. Projects are matched by folder
+name or full path.
 
 Some of these patterns are adapted from ECC (MIT); see [CREDITS.md](CREDITS.md).
 
