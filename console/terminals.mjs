@@ -1,6 +1,6 @@
 // Embedded terminals for the AXA console: real PTYs (node-pty) streamed to xterm.js over WebSocket.
 // Terminals live in this server process, so reloading the page reattaches with scrollback.
-import { chmodSync, existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { createRequire } from "node:module";
@@ -71,6 +71,47 @@ export function listProjects(rosterFile) {
   return [...seen.values()];
 }
 
+// ---------- previous Claude Code chats (to continue one as the commander) ----------
+const CHAT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const head = (file, bytes = 64 * 1024) => {
+  const fd = openSync(file, "r");
+  const buf = Buffer.alloc(bytes);
+  const n = readSync(fd, buf, 0, bytes, 0);
+  closeSync(fd);
+  return buf.subarray(0, n).toString("utf8");
+};
+// Most recent chats first: id, title (Claude's own title, else the first message), folder, last update
+export function listChats(limit = 12) {
+  const root = join(homedir(), ".claude", "projects");
+  const files = [];
+  try {
+    for (const dir of readdirSync(root, { withFileTypes: true })) {
+      if (!dir.isDirectory()) continue;
+      for (const f of readdirSync(join(root, dir.name))) {
+        if (f.endsWith(".jsonl") && CHAT_ID.test(f.slice(0, -6))) {
+          const path = join(root, dir.name, f);
+          files.push({ path, id: f.slice(0, -6), updated: statSync(path).mtimeMs });
+        }
+      }
+    }
+  } catch {}
+  const chats = [];
+  for (const f of files.sort((a, b) => b.updated - a.updated)) {
+    if (chats.length >= limit) break;
+    let title, cwd;
+    for (const line of head(f.path).split("\n")) {
+      let o;
+      try { o = JSON.parse(line); } catch { continue; }
+      title ??= o.aiTitle || o.agentName;
+      cwd ??= o.cwd;
+      if (!title && o.type === "user" && typeof o.message?.content === "string") title = o.message.content.slice(0, 80);
+      if (title && cwd) break;
+    }
+    if (cwd && inHome(cwd) && existsSync(cwd)) chats.push({ id: f.id, title: title || "Untitled chat", cwd, updated: f.updated });
+  }
+  return chats;
+}
+
 // Live status per session comes from its traced events (set by the server); the screen check is a backup
 let statusOf = () => null;
 export const setStatusSource = (fn) => (statusOf = fn);
@@ -119,7 +160,10 @@ export async function sendToTerm(id, text, { enter = true } = {}) {
 }
 export const listTerms = () => [...terms.values()].map(summary);
 
-export function createTerm({ cwd, mode = "claude", cols = 100, rows = 30 }) {
+// resume: continue a previous chat (an id from listChats) instead of starting a new one
+export function createTerm({ cwd, mode = "claude", cols = 100, rows = 30, resume }) {
+  if (resume !== undefined && !CHAT_ID.test(String(resume))) throw new Error("not a chat id");
+  const resumeArg = resume ? ` --resume ${resume}` : "";
   const dir = expand(cwd || homedir());
   let isDir = false;
   try { isDir = statSync(dir).isDirectory(); } catch {}
@@ -127,8 +171,8 @@ export function createTerm({ cwd, mode = "claude", cols = 100, rows = 30 }) {
   const shell = process.env.SHELL || "/bin/bash";
   const id = randomUUID().slice(0, 8);
   // claude/axa: run Claude Code (traced), and drop to a normal shell if it exits
-  const args = mode === "claude" ? ["-l", "-c", `${claudeCmd("worker")}; exec "$SHELL" -l`]
-    : mode === "axa" ? ["-l", "-c", `${claudeCmd("commander")}; exec "$SHELL" -l`]
+  const args = mode === "claude" ? ["-l", "-c", `${claudeCmd("worker")}${resumeArg}; exec "$SHELL" -l`]
+    : mode === "axa" ? ["-l", "-c", `${claudeCmd("commander")}${resumeArg}; exec "$SHELL" -l`]
     : ["-l"];
   // AXA_TERMINAL_ID tags this session's events so the console knows its status
   const env = { ...cleanEnv(), AXA_TERMINAL_ID: id, AXA_ROLE: mode === "axa" ? "commander" : "worker" };

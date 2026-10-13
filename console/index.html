@@ -840,9 +840,9 @@ async function closeTab(id) {
   if (activeTab === id) { const next = [...tabs.keys()].pop(); if (next) activate(next); else { activeTab = null; focusCwd = null; showEmpty(); } }
 }
 
-async function launch(cwd, mode) {
+async function launch(cwd, mode, extra = {}) {
   $("picker").hidden = true;
-  const r = await fetch("/api/terms", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ cwd, mode }) });
+  const r = await fetch("/api/terms", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ cwd, mode, ...extra }) });
   const body = await r.json();
   if (!r.ok) return alert(body.error || "Could not start terminal");
   openTab(body); activate(body.id); setTermsOpen(true);
@@ -850,14 +850,19 @@ async function launch(cwd, mode) {
 
 // project list with Claude / Shell launch buttons (used by the + popover and the empty pane)
 async function renderProjects(el, onEscape) {
-  const r = await fetch("/api/projects");
+  const [r, rc] = await Promise.all([fetch("/api/projects"), fetch("/api/chats")]);
   const projects = r.ok ? await r.json() : [];
-  el.innerHTML = `<div class="proj axa-row"><div><b>AXA commander</b><small>one Claude session that sees and drives every terminal</small></div><button class="axa-go" data-m="axa">Launch</button><span></span></div>
+  const chats = rc.ok ? await rc.json() : [];
+  const ago = (t) => { const m = Math.round((Date.now() - t) / 60000); return m < 60 ? `${m}m ago` : m < 1440 ? `${Math.round(m / 60)}h ago` : `${Math.round(m / 1440)}d ago`; };
+  el.innerHTML = `<div class="proj axa-row"><div><b>AXA commander</b><small>one Claude session that sees and drives every terminal</small></div><button class="axa-go" data-m="axa">Launch</button><span></span></div>` +
+    (chats.length ? `<p class="title" style="margin-top:12px">Continue a chat as AXA</p><small class="hint">Close it wherever else it's open first: a chat runs in one place at a time.</small>` +
+      chats.map((c, i) => `<div class="proj"><div><b>${esc(c.title)}</b><small>${esc(c.cwd.replace(/^\/(Users|home)\/[^/]+/, "~"))} · ${ago(c.updated)}</small></div><button data-c="${i}">Continue</button><span></span></div>`).join("") : "") + `
     <p class="title" style="margin-top:12px">Launch in project</p>` + projects.map((p, i) => `
     <div class="proj"><div><b>${esc(p.name)}</b><small>${esc(p.path.replace(/^\/(Users|home)\/[^/]+/, "~"))}</small></div>
     <button data-i="${i}" data-m="claude">Claude</button><button data-i="${i}" data-m="shell">Shell</button></div>`).join("") +
     `<input class="custompath" placeholder="or type a path, e.g. ~/projects/n2s-platform/dashboard  ↵">`;
   el.querySelectorAll("button[data-i]").forEach((b) => (b.onclick = () => launch(projects[b.dataset.i].path, b.dataset.m)));
+  el.querySelectorAll("button[data-c]").forEach((b) => (b.onclick = () => launch(null, "axa", { resume: chats[b.dataset.c].id })));
   el.querySelector(".axa-go").onclick = () => { const open = [...tabs.values()].find((t) => t.info.mode === "axa" && t.info.alive); if (open) { activate(open.info.id); $("picker").hidden = true; } else launch("~", "axa"); };
   el.querySelector(".custompath").onkeydown = (ev) => { if (ev.key === "Enter" && ev.target.value.trim()) launch(ev.target.value.trim(), "claude"); if (ev.key === "Escape") onEscape?.(); };
 }

@@ -174,10 +174,17 @@ const server = createServer(async (req, res) => {
   if (path.startsWith("/api/")) {
     if (!T) return json(res, 503, { error: termError });
     if (path === "/api/projects") return json(res, 200, T.listProjects(rosterFile()));
+    if (path === "/api/chats") return json(res, 200, T.listChats());
     if (path === "/api/terms" && req.method === "GET") return json(res, 200, T.listTerms());
     if (path === "/api/terms" && req.method === "POST") {
       try {
         const body = await readBody(req);
+        // Continuing a previous chat: it must run in that chat's own folder
+        if (body.resume) {
+          const chat = T.listChats(200).find((c) => c.id === body.resume);
+          if (!chat) return json(res, 404, { error: "No such chat" });
+          body.cwd = chat.cwd;
+        }
         // A project can be named instead of a folder ("launches")
         if (!body.cwd && body.project) {
           const p = T.listProjects(rosterFile()).find((x) => x.name.toLowerCase() === String(body.project).toLowerCase());
