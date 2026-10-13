@@ -102,6 +102,21 @@ The console can open terminals, so it is locked down: it listens on `127.0.0.1` 
 requests from other hosts or websites, and needs a secret token (stored in `~/.axa/console-token`)
 that the server's unlock link exchanges for a strict same-site cookie. Don't share the unlock link.
 
+AXA also protects you while it works:
+
+- **Secrets stay out of the log.** Tokens, keys, passwords and auth headers are replaced with
+  `[REDACTED]` before anything is written, and `~/.axa` is readable only by you. Set
+  `AXA_LOG_PROMPTS=0` to leave prompt and reply text out of the log entirely.
+- **Other sessions can't give orders.** Text from a session's screen or report reaches the
+  commander cleaned of hidden characters and marked as untrusted data, never instructions.
+- **Dangerous shell commands need your OK.** The commander won't type recursive deletes,
+  force-pushes, `reset --hard`, piped installers, or anything touching `.env`/keys into a shell
+  session unless you approved that exact command.
+- **Stuck sessions are flagged.** A session with a step running and no activity for 20 minutes
+  (`AXA_STUCK_MINUTES`) shows as stuck and counts toward "needs you".
+
+Some of these patterns are adapted from ECC (MIT); see [CREDITS.md](CREDITS.md).
+
 ## Privacy
 
 Everything stays on your machine. Events are a local JSONL file; prompts and agent

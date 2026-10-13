@@ -14,7 +14,7 @@ built-ins (`Explore`, `Plan`, `general-purpose`), this plugin's agents
 |------|---------------|-------|---------|----------------|
 | scout | Explore | haiku | Finding files, mapping a codebase, "where is X" | — |
 | planner | Plan | opus | Designing an approach before a big change | — |
-| researcher | axa:researcher | sonnet | Web/docs research, comparing libraries, API lookups | — |
+| researcher | axa:researcher | sonnet | Web/docs research, comparing libraries, API lookups; checking for an existing library/tool before a new feature is built | — |
 | builder | axa:builder | opus | Writing/changing code, one feature per builder | — |
 | reviewer | axa:reviewer | sonnet | Reading a finished diff, running build + typecheck, finding bugs | — |
 | generalist | general-purpose | sonnet | Anything that fits no other role | — |

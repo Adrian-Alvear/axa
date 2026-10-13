@@ -39,6 +39,7 @@
   .tab.active { color: var(--text); border-bottom-color: var(--accent); background: rgba(79,216,255,.05); }
   .tab .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 6px var(--accent); }
   .tab.dead .dot { background: var(--dim); box-shadow: none; }
+  .tab.waiting .dot { background: var(--amber); box-shadow: 0 0 8px var(--amber); animation: blink 1s infinite; }
   .tab .mode { color: var(--dim); font-size: 9px; letter-spacing: .2em; text-transform: uppercase; }
   .tab.axa { color: var(--accent); letter-spacing: .2em; }
   .tab.axa .dot { border-radius: 1px; transform: rotate(45deg); }
@@ -130,6 +131,36 @@
   .row.prompt .what { color: #fff; }
   .row b { font-weight: 500; color: #fff; }
 
+  /* ---------- mission view: projects as planets around AXA ---------- */
+  #planets { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+  body.detail #planets, body.detail #now { display: none; }
+  .planet { position: absolute; left: 0; top: 0; width: 210px; transform: translate(-50%, -50%); pointer-events: auto; cursor: pointer;
+    border: 1px solid var(--line2); border-top: 2px solid var(--c, var(--dim)); background: rgba(6,14,21,.9); padding: 9px 11px 10px; backdrop-filter: blur(4px); }
+  .planet:hover { border-color: var(--c, var(--line2)); }
+  .planet.dragging { cursor: grabbing; opacity: .85; z-index: 2; }
+  .planet .pn { display: flex; justify-content: space-between; gap: 8px; color: #e9fbff; font-size: 11px; letter-spacing: .25em; text-transform: uppercase; }
+  .planet .ps { color: var(--c, var(--dim)); font-size: 10px; letter-spacing: .12em; text-transform: uppercase; margin-top: 3px; }
+  .planet .pd { color: var(--text); margin-top: 5px; font-size: 11px; line-height: 1.35; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .planet .pe { color: var(--red); font-size: 10px; margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .planet.working { --c: #4fd8ff; } .planet.working .ps::before { content: "● "; animation: blink 1.2s infinite; }
+  .planet.done { --c: #5ef2c2; } .planet.ready, .planet.starting { --c: #8fb3c4; } .planet.exited { --c: #4f6b7a; opacity: .6; }
+  .planet.stuck { --c: #ff8a5c; box-shadow: 0 0 0 1px #ff8a5c; animation: stuckpulse 3s ease-in-out infinite; }
+  @keyframes stuckpulse { 50% { box-shadow: 0 0 0 1px rgba(255,138,92,.4), 0 0 14px rgba(255,138,92,.25); } }
+  .planet.waiting { --c: var(--amber); box-shadow: 0 0 0 1px var(--amber), 0 0 22px rgba(255,181,71,.35); animation: needs 1.6s ease-in-out infinite; }
+  @keyframes blink { 50% { opacity: .2; } }
+  @keyframes needs { 50% { box-shadow: 0 0 0 1px var(--amber), 0 0 6px rgba(255,181,71,.15); } }
+  #now { position: absolute; left: 0; right: 0; bottom: 0; display: flex; align-items: center; gap: 12px; padding: 10px 18px 12px;
+    background: linear-gradient(to top, rgba(4,7,11,.96) 60%, rgba(4,7,11,0)); font-size: 12px; }
+  #now .k { color: var(--accent); letter-spacing: .3em; font-size: 9px; text-transform: uppercase; }
+  #now .legend { color: var(--dim); font-size: 10px; white-space: nowrap; } #now .legend i { font-style: normal; margin-left: 8px; }
+  #now .ls { color: #ff8a5c; } #now .lw { color: #4fd8ff; } #now .ld { color: #5ef2c2; } #now .ln { color: var(--amber); } #now .lt { color: #5ef2c2; }
+  #now.needs .txt { color: var(--amber); } #now.turn .txt { color: #5ef2c2; } #now.working .txt { color: #9fe9ff; }
+  #bell { padding: 3px 8px; letter-spacing: 0; font-size: 12px; } #bell.on { border-color: var(--accent); }
+  @media (max-width: 1100px) { #now .legend { display: none; } }
+  #now .txt { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #needs { display: none; border-color: var(--amber); color: var(--amber); }
+  #needs.on { display: inline-block; animation: needs 1.6s ease-in-out infinite; }
+
   @media (max-width: 860px) {
     body { display: flex; flex-direction: column; overflow: auto; height: auto; }
     #terms { height: 60vh; border-right: 0; border-bottom: 1px solid var(--line); }
@@ -144,14 +175,16 @@
 <header>
   <div class="brand"><h1>AXA</h1><span>orchestration console</span></div>
   <span id="live">offline</span>
-  <div class="stat"><small>agents</small><b id="s-agents">0</b></div>
-  <div class="stat"><small>active</small><b id="s-running">0</b></div>
-  <div class="stat"><small>calls</small><b id="s-calls">0</b></div>
+  <div class="stat"><small>sessions</small><b id="s-agents">0</b></div>
+  <div class="stat"><small>working</small><b id="s-running">0</b></div>
+  <div class="stat"><small>done</small><b id="s-calls">0</b></div>
+  <button id="needs" title="A session is waiting for your approval: open it">⚠ <span id="needsn">0</span> needs you</button>
   <span class="spacer"></span>
   <button id="tbtn" title="Show terminals">Terminals</button>
   <button id="ibtn" class="on" title="Show the intel panel">Intel</button>
+  <button id="viewbtn" title="Show every tool call on the map">Detail</button>
   <button id="demo" title="Play a simulated orchestration">Demo</button>
-  <button id="fit" title="Fit graph to view">Center</button>
+  <button id="fit" title="Fit the view · double-click: put moved cards back">Center</button>
   <select id="session" title="session"></select>
 </header>
 <section id="terms">
@@ -162,6 +195,10 @@
 </section>
 <main id="stage">
   <canvas id="cv"></canvas>
+  <div id="planets"></div>
+  <div id="now"><span class="k">Now</span><span class="txt" id="nowtxt">Ready</span>
+    <span class="legend"><i class="lw">●</i> working <i class="ld">✓</i> done <i class="ln">⚠</i> needs you <i class="ls">⏳</i> stuck <i class="lt">◆</i> your turn</span>
+    <button id="bell" title="Desktop notification when something needs you or AXA finishes">🔔</button></div>
   <div id="dock"><div class="mission"><span>Mission</span><span class="bar"><i id="mbar"></i></span><span id="mtext"></span></div><div id="cards"></div></div>
   <div id="empty">Standing by<br><br>Start a Claude Code session with AXA enabled — or run the demo</div>
 </main>
@@ -174,10 +211,39 @@
 const $ = (id) => document.getElementById(id);
 
 // ---------- palette: one cool family, amber = needs you, red = failed ----------
-const ACCENT = "#4fd8ff", AMBER = "#ffb547", RED = "#ff5468", BG = "#04070b";
+const ACCENT = "#4fd8ff"; window.ACCENT_BASE = ACCENT; const AMBER = "#ffb547", RED = "#ff5468", BG = "#04070b";
 const ROLE_COLORS = { scout: "#4fd8ff", researcher: "#9db8ff", builder: "#5ef2c2", reviewer: "#c3a6ff", planner: "#ffd38a", generalist: "#8fe3ff" };
 const PALETTE = ["#4fd8ff", "#9db8ff", "#5ef2c2", "#c3a6ff", "#8fe3ff", "#7fc8ff"];
 const hash = (s) => [...String(s)].reduce((h, c) => (h * 31 + c.charCodeAt(0)) >>> 0, 7);
+
+// ---------- plain English for what a session is doing ----------
+const SESSION_TOOLS = { list_sessions: "Checking on sessions", read_session: "Reading a session's screen", send_to_session: "Sending instructions to a session",
+  start_goal: "Giving a session a goal", open_session: "Opening a session", close_session: "Closing a session",
+  list_terminals: "Checking on sessions", read_terminal: "Reading a session's screen", send_to_terminal: "Sending instructions to a session", open_terminal: "Opening a session" };
+// Claude Code's own bookkeeping: not worth showing on the map
+const PLUMBING = /^(ToolSearch|TodoWrite|TaskCreate|TaskUpdate|TaskList|TaskGet|TaskOutput|EnterPlanMode|ExitPlanMode|ListMcpResourcesTool|ReadMcpResourceTool)$/;
+function toolName(tool) {
+  const m = /^mcp__(.+?)__(.+)$/.exec(tool || "");
+  if (!m) return tool;
+  return SESSION_TOOLS[m[2]] || `${m[2].replace(/_/g, " ")} · ${m[1].replace(/^plugin_/, "").replace(/_/g, " ")}`;
+}
+function humanAction(tool, summary, skill) {
+  if (skill) return `Using the ${skill} skill`;
+  if (!tool || PLUMBING.test(tool)) return null;
+  if (tool.startsWith("mcp__")) return toolName(tool);
+  const s = summary ? String(summary) : "";
+  switch (tool) {
+    case "Bash": return s ? `Running: ${s}` : "Running a command";
+    case "Read": return `Reading ${s || "a file"}`;
+    case "Edit": case "Write": case "NotebookEdit": return `Editing ${s || "a file"}`;
+    case "Grep": case "Glob": return s ? `Searching for ${s}` : "Searching";
+    case "WebSearch": return `Searching the web: ${s}`;
+    case "WebFetch": return `Reading a web page: ${s}`;
+    case "Agent": case "Task": return `Starting a helper: ${s}`;
+    case "Skill": return `Using the ${s} skill`;
+  }
+  return s ? `${tool}: ${s}` : tool;
+}
 
 // ---------- roster ----------
 let roster = [];
@@ -247,14 +313,21 @@ function ingest(e) {
   let g = sessions.get(e.session);
   if (!g) { g = newGraph(e.session, e.cwd); sessions.set(e.session, g); }
   g.last = e.ts; g.cwd = e.cwd || g.cwd;
+  if (e.role) g.role = e.role;
+  if (e.terminal) g.terminal = e.terminal;
+  if (e.event === "PreToolUse" && !e.agent_id) { const a = humanAction(e.tool, e.summary, e.skill); if (a) g.doing = a; }
+  if (e.event === "UserPromptSubmit") g.doing = "Thinking";
+  if (e.event === "Stop") g.doing = null;
   const axa = g.nodes.get("axa");
   const owner = e.agent_id ? ensureInst(g, e) : axa;
   const isSpawn = e.tool === "Agent" || e.tool === "Task";
   const now = performance.now();
 
   switch (e.event) {
-    case "UserPromptSubmit": if (!/^\s*<task-notification>/.test(e.prompt || "")) axa.prompt = e.prompt; axa.status = "running"; break;
-    case "Stop": axa.status = "idle"; axa.message = e.message; break;
+    case "UserPromptSubmit":
+      if (!/^\s*<task-notification>/.test(e.prompt || "")) { axa.prompt = e.prompt; g.turnStart = e.ts; }
+      axa.status = "running"; axa.yourTurn = false; axa.perm = null; break;
+    case "Stop": axa.status = "idle"; axa.message = e.message; axa.yourTurn = true; axa.perm = null; axa.doneAt = e.ts; break;
     case "PermissionRequest": owner.perm = e.tool || true; break;
     case "PreToolUse": {
       g.calls++; owner.perm = null;
@@ -265,15 +338,16 @@ function ingest(e) {
         g.pending.push({ role, prompt: e.prompt, desc: e.summary });
         break;
       }
-      const name = e.skill ? e.skill : e.tool;
-      if (owner.kind === "inst") { owner.steps = (owner.steps || 0) + 1; owner.now = (e.skill ? "◆ " + e.skill : e.tool) + (e.summary && !e.skill ? " " + e.summary : ""); owner.fail = false; }
+      if (!e.skill && PLUMBING.test(e.tool || "")) break;
+      const name = e.skill ? e.skill : toolName(e.tool);
+      if (owner.kind === "inst") { owner.steps = (owner.steps || 0) + 1; owner.now = humanAction(e.tool, e.summary, e.skill); owner.fail = false; }
       const leaf = ensureLeaf(g, owner, name, e.skill ? "skill" : "tool");
       if (leaf) { leaf.count++; leaf.hotUntil = now + 1100; leaf.fail = false; leaf.recent.unshift(e.summary || ""); leaf.recent.length = Math.min(leaf.recent.length, 5); }
       break;
     }
     case "PostToolUse": owner.perm = null; break;
     case "PostToolUseFailure": {
-      const leaf = g.nodes.get(owner.id + "|" + (e.skill || e.tool));
+      const leaf = g.nodes.get(owner.id + "|" + (e.skill || toolName(e.tool)));
       if (leaf) { leaf.fail = true; leaf.hotUntil = 0; leaf.error = e.error; }
       if (owner.kind === "inst") owner.fail = e.error || true;
       owner.perm = null;
@@ -303,7 +377,12 @@ function ingest(e) {
 }
 
 // collapsed = leaves of a job that finished a while ago (kept in data, hidden from the map)
+const HELPER_KEEP_MS = 10000;
 function hidden(g, n) {
+  if (mission && n.kind !== "axa") {
+    if (n.kind !== "inst") return true;
+    return n.status === "done" && Date.now() - n.end > HELPER_KEEP_MS && selectedId !== n.id;
+  }
   if (n.kind !== "leaf") return false;
   const p = g.nodes.get(n.parent);
   return p && p.kind === "inst" && p.status === "done" && Date.now() - p.end > COLLAPSE_MS && selectedId !== p.id;
@@ -350,6 +429,12 @@ new ResizeObserver(resize).observe(cv);
 const toWorld = (sx, sy) => [(sx - Wd / 2) / cam.k + cam.x, (sy - Ht / 2) / cam.k + cam.y];
 
 function fit(g, instant) {
+  if (mission) {
+    const R = PLANET_R + 150, k = Math.min(1.2, Math.min(Wd / (2 * R + 40), (Ht - 50) / (2 * (PLANET_R + 90) + 40)));
+    const t = instant ? 1 : 0.06;
+    cam.x += (0 - cam.x) * t; cam.y += (10 - cam.y) * t; cam.k += (k - cam.k) * t;
+    return;
+  }
   let x0 = -160, y0 = -160, x1 = 160, y1 = 160; // keep AXA's rings in frame even when alone
   for (const n of g.nodes.values()) if (!n.hide) { x0 = Math.min(x0, n.x); y0 = Math.min(y0, n.y); x1 = Math.max(x1, n.x); y1 = Math.max(y1, n.y); }
   const dockH = $("dock").classList.contains("on") ? $("dock").offsetHeight : 0;
@@ -392,7 +477,7 @@ function drawBackdrop(now) {
 }
 
 function drawRange(now) {
-  // range rings + bearing ticks around AXA, and a slow radar sweep
+  // range rings + bearing ticks around AXA
   for (const r of [210, 330, 450]) {
     ctx.setLineDash([2, 8]); arc(0, 0, r, 0, Math.PI * 2, ACCENT, 1 / cam.k, 0.12); ctx.setLineDash([]);
   }
@@ -401,16 +486,11 @@ function drawRange(now) {
     const a = (i / 72) * Math.PI * 2, r0 = 450, r1 = i % 6 ? 456 : 464;
     ctx.beginPath(); ctx.moveTo(Math.cos(a) * r0, Math.sin(a) * r0); ctx.lineTo(Math.cos(a) * r1, Math.sin(a) * r1); ctx.stroke();
   }
-  const sweep = (now / 1000) * 0.35;
-  const sg = ctx.createConicGradient ? ctx.createConicGradient(sweep, 0, 0) : null;
-  if (sg) {
-    sg.addColorStop(0, "rgba(79,216,255,0.10)"); sg.addColorStop(0.08, "rgba(79,216,255,0)"); sg.addColorStop(1, "rgba(79,216,255,0)");
-    ctx.fillStyle = sg; ctx.beginPath(); ctx.arc(0, 0, 450, 0, Math.PI * 2); ctx.fill();
-  }
 }
 
 function drawAxa(n, now) {
   const t = now / 1000, on = n.status === "running", pulse = 0.5 + 0.5 * Math.sin(t * 3);
+  const ACCENT = n.perm ? AMBER : n.yourTurn ? "#5ef2c2" : window.ACCENT_BASE;
   ctx.save(); ctx.translate(n.x, n.y);
   // core glow
   const glow = ctx.createRadialGradient(0, 0, 0, 0, 0, 60);
@@ -433,7 +513,35 @@ function drawAxa(n, now) {
   }
   ctx.restore();
   text("AXA", n.x, n.y + 78, { size: 13, weight: 500, color: ACCENT, spacing: 7 });
-  text(on ? "PROCESSING" : "STANDING BY", n.x, n.y + 93, { size: 8, color: on ? "#9fe9ff" : "#3f5b6a", spacing: 3 });
+  const state = n.perm ? "⚠ NEEDS YOUR APPROVAL" : on ? "● WORKING" : n.yourTurn ? "◆ YOUR TURN" : "READY";
+  text(state, n.x, n.y + 93, { size: 9, weight: 500, color: n.perm ? AMBER : on ? "#9fe9ff" : n.yourTurn ? "#5ef2c2" : "#5d7a89", spacing: 2.5 });
+}
+
+// A tag on a branch off AXA saying, in words, what state it's in: waiting on you, or what it's doing
+function drawAxaCallout(n, g, now) {
+  calloutBox = null;
+  let label, c, urgent = false;
+  if (n.perm) { label = "⚠ WAITING ON YOU · approve it in the AXA tab"; c = AMBER; urgent = true; }
+  else if (n.status === "running") { label = "● " + trunc(g.doing || "Thinking", 52); c = window.ACCENT_BASE; }
+  else if (n.yourTurn) { label = "◆ WAITING ON YOU · your turn to reply"; c = "#5ef2c2"; urgent = true; }
+  else return;
+  const pulse = urgent ? 0.5 + 0.5 * Math.sin(now / 260) : 1;
+  // The tag sits where you put it (drag it; default up and to the right). The branch leaves the
+  // ring toward it, then runs a short horizontal step into the tag's nearest side.
+  const { dx, dy } = mapLayout.callout || { dx: 118, dy: -96 };
+  const ax = n.x + dx, ay = n.y + dy, right = dx >= 0, side = right ? 1 : -1;
+  const a = Math.atan2(dy, dx), x0 = n.x + Math.cos(a) * 62, y0 = n.y + Math.sin(a) * 62;
+  ctx.strokeStyle = rgba(c, 0.75); ctx.lineWidth = 1.2 / Math.max(cam.k, 0.6);
+  ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(ax - side * 14, ay); ctx.lineTo(ax, ay); ctx.stroke();
+  ctx.fillStyle = c; ctx.beginPath(); ctx.arc(x0, y0, 2.5, 0, 7); ctx.fill();
+  ctx.font = `500 11px ui-monospace, "SF Mono", Menlo, monospace`;
+  const w = ctx.measureText(label).width + 20, h = 24, bx = right ? ax : ax - w, by = ay - h / 2;
+  calloutBox = { x: bx, y: by, w, h, ax, ay };
+  ctx.shadowColor = c; ctx.shadowBlur = urgent ? 6 + pulse * 12 : 4;
+  ctx.fillStyle = "rgba(4,10,16,.94)"; ctx.fillRect(bx, by, w, h);
+  ctx.strokeStyle = c; ctx.lineWidth = 1; ctx.strokeRect(bx, by, w, h); ctx.shadowBlur = 0;
+  ctx.fillStyle = c; ctx.fillRect(bx, by, 3, h);
+  text(label, bx + 12, by + 16, { size: 11, weight: 500, color: urgent ? c : "#e3f6fc", align: "left", alpha: urgent ? 0.75 + 0.25 * pulse : 1 });
 }
 
 function drawRole(g, n, now) {
@@ -485,9 +593,13 @@ function draw(g, now) {
   drawRange(now);
 
   // links: draw outward from the parent as the node appears, then carry data packets while active
+  if (mission) drawPlanetLinks(now);
+  if (mission) text("click to talk", 0, 108, { size: 8, color: "#3f5b6a", spacing: 2 });
   for (const l of g.links) {
-    const a = g.nodes.get(l.a), b = g.nodes.get(l.b);
+    let a = g.nodes.get(l.a);
+    const b = g.nodes.get(l.b);
     if (!a || !b || b.hide) continue;
+    if (a.hide) a = g.nodes.get("axa");
     const grow = ease((now - b.born) / 500), on = active(b, now);
     const ex = a.x + (b.x - a.x) * grow, ey = a.y + (b.y - a.y) * grow;
     ctx.strokeStyle = rgba(b.fail ? RED : b.color, on ? 0.6 : b.kind === "leaf" ? 0.16 : 0.26);
@@ -506,7 +618,7 @@ function draw(g, now) {
 
   const order = { leaf: 0, inst: 1, role: 2, axa: 3 };
   for (const n of [...g.nodes.values()].filter((n) => !n.hide).sort((a, b) => order[a.kind] - order[b.kind])) {
-    if (n.kind === "axa") drawAxa(n, now);
+    if (n.kind === "axa") { drawAxa(n, now); drawAxaCallout(n, g, now); }
     else if (n.kind === "role") drawRole(g, n, now);
     else if (n.kind === "inst") drawInst(n, now);
     else drawLeaf(n, now);
@@ -540,7 +652,16 @@ function hit(g, sx, sy) {
   return best;
 }
 cv.addEventListener("pointerdown", (ev) => {
-  const g = sessions.get(current); if (!g) return;
+  const g = sessions.get(current) || (mission ? idle : null); if (!g) return;
+  // AXA's status tag can be dragged anywhere around it
+  if (mission && calloutBox) {
+    const [wx, wy] = toWorld(ev.offsetX, ev.offsetY), b = calloutBox;
+    if (wx >= b.x && wx <= b.x + b.w && wy >= b.y && wy <= b.y + b.h) {
+      drag = { callout: true, grab: [wx - b.ax, wy - b.ay], sx: ev.offsetX, sy: ev.offsetY, moved: false };
+      cv.setPointerCapture(ev.pointerId); cv.classList.add("drag");
+      return;
+    }
+  }
   const n = hit(g, ev.offsetX, ev.offsetY);
   drag = { node: n && !n.fixed ? n : null, sx: ev.offsetX, sy: ev.offsetY, cx: cam.x, cy: cam.y, moved: false, clicked: n };
   cv.setPointerCapture(ev.pointerId); cv.classList.add("drag");
@@ -549,11 +670,22 @@ cv.addEventListener("pointermove", (ev) => {
   if (!drag) return;
   const dx = ev.offsetX - drag.sx, dy = ev.offsetY - drag.sy;
   if (Math.abs(dx) + Math.abs(dy) > 3) drag.moved = true;
+  if (drag.callout) {
+    const axa = (sessions.get(current) || idle).nodes.get("axa"), [wx, wy] = toWorld(ev.offsetX, ev.offsetY);
+    mapLayout.callout = { dx: wx - drag.grab[0] - axa.x, dy: wy - drag.grab[1] - axa.y };
+    return;
+  }
   if (drag.node) { const [x, y] = toWorld(ev.offsetX, ev.offsetY); drag.node.x = x; drag.node.y = y; }
   else if (drag.moved) { autoFit = false; cam.x = drag.cx - dx / cam.k; cam.y = drag.cy - dy / cam.k; }
 });
 cv.addEventListener("pointerup", () => {
+  if (drag?.callout) { if (drag.moved) saveMapLayout(); drag = null; cv.classList.remove("drag"); return; }
   if (drag && !drag.moved) { selectedId = drag.clicked ? drag.clicked.id : "axa"; dirty = true; }
+  // In the mission view, clicking AXA opens the commander's terminal: that's where you talk to it
+  if (drag && !drag.moved && mission && drag.clicked?.kind === "axa") {
+    const cmd = [...tabs.values()].find((t) => t.info.mode === "axa" && t.info.alive);
+    if (cmd) { setTermsOpen(true); activate(cmd.info.id); }
+  }
   drag = null; cv.classList.remove("drag");
 });
 cv.addEventListener("wheel", (ev) => {
@@ -563,6 +695,7 @@ cv.addEventListener("wheel", (ev) => {
   cam.x = wx - (ev.offsetX - Wd / 2) / cam.k; cam.y = wy - (ev.offsetY - Ht / 2) / cam.k;
 }, { passive: false });
 $("fit").onclick = () => { autoFit = true; };
+$("fit").ondblclick = () => { mapLayout = { planets: {}, callout: null }; saveMapLayout(); autoFit = true; };
 
 // ---------- side panel ----------
 const esc = (t) => String(t ?? "").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
@@ -605,16 +738,17 @@ function describe(e) {
   const isSpawn = e.tool === "Agent" || e.tool === "Task";
   switch (e.event) {
     case "UserPromptSubmit": return /^\s*<task-notification>/.test(e.prompt || "") ? ["", "background task finished"] : ["prompt", "directive: " + esc(e.prompt)];
-    case "Stop": return ["", "standing by"];
+    case "Stop": return ["", "done, waiting for you"];
     case "SessionStart": return ["", "session " + esc(e.source || "start")];
     case "SubagentStart": return ["", "online"];
     case "SubagentStop": return ["", "reported back"];
-    case "PermissionRequest": return ["perm", `awaiting approval · ${esc(e.tool)} ${esc(e.summary || "")}`];
-    case "PostToolUseFailure": return ["fail", `${esc(e.tool)} failed · ${esc(e.error)}`];
-    case "PreToolUse":
-      if (e.skill) return ["", `skill <b>${esc(e.skill)}</b>`];
-      if (isSpawn) return ["call", `dispatch <b>${esc(roleFor(e.subagent_type))}</b> · ${esc(e.summary)}`];
-      return ["", `<b>${esc(e.tool)}</b> ${esc(e.summary || "")}`];
+    case "PermissionRequest": return ["perm", `needs your approval: ${esc(humanAction(e.tool, e.summary) || e.tool)}`];
+    case "PostToolUseFailure": return ["fail", `${esc(toolName(e.tool))} failed: ${esc(e.error)}`];
+    case "PreToolUse": {
+      if (isSpawn) return ["call", `started a helper (<b>${esc(roleFor(e.subagent_type))}</b>): ${esc(e.summary)}`];
+      const a = humanAction(e.tool, e.summary, e.skill);
+      return a ? ["", esc(a)] : null;
+    }
   }
   return null;
 }
@@ -645,7 +779,9 @@ const DOCK_KEEP_MS = 20000;
 const cardEls = new Map();
 function renderDock(g) {
   const dock = $("dock"), wrap = $("cards");
-  const jobs = g ? [...g.nodes.values()].filter((n) => n.kind === "inst" && (n.status === "running" || Date.now() - n.end < DOCK_KEEP_MS)).sort((a, b) => (a.status === "running") - (b.status === "running") || (a.end || a.start) - (b.end || b.start)).reverse() : [];
+  // Mission view: helpers from this turn stay until your next message, so you can see what they found
+  const keepDone = (n) => (mission ? n.end >= (g.turnStart || 0) : Date.now() - n.end < DOCK_KEEP_MS);
+  const jobs = g ? [...g.nodes.values()].filter((n) => n.kind === "inst" && (n.status === "running" || keepDone(n))).sort((a, b) => (a.status === "running") - (b.status === "running") || (a.end || a.start) - (b.end || b.start)).reverse() : [];
   dock.classList.toggle("on", jobs.length > 0);
   const all = g ? [...g.nodes.values()].filter((n) => n.kind === "inst") : [];
   const done = all.filter((n) => n.status === "done").length;
@@ -664,25 +800,32 @@ function renderDock(g) {
     }
     wrap.appendChild(el);
     const state = j.status === "done" ? "done" : j.perm ? "perm" : j.fail ? "fail" : "run";
-    el.className = `card ${state}${j.status === "done" && Date.now() - j.end > DOCK_KEEP_MS / 2 ? " fading" : ""}`;
+    el.className = `card ${state}${!mission && j.status === "done" && Date.now() - j.end > DOCK_KEEP_MS / 2 ? " fading" : ""}`;
     el.style.setProperty("--c", j.color);
     el.querySelector(".role").textContent = j.role;
     el.querySelector(".time").textContent = dur((j.end || Date.now()) - j.start);
     el.querySelector(".task").textContent = j.desc || "working…";
     el.querySelector(".task").title = j.desc || "";
-    el.querySelector(".now span").innerHTML = j.status === "done" ? `<b>${j.steps || 0}</b> steps` : j.perm ? `needs ok: <b>${esc(j.perm === true ? "tool" : j.perm)}</b>` : `<b>${esc(j.now || "starting")}</b>`;
-    el.querySelector(".st").textContent = { done: "✓ done", perm: "approval", fail: "retrying", run: `${j.steps || 0} steps` }[state];
+    el.querySelector(".now span").innerHTML = j.status === "done" ? (j.message ? esc(j.message.replace(/\s+/g, " ").slice(0, 140)) : `<b>${j.steps || 0}</b> steps`) : j.perm ? `needs ok: <b>${esc(j.perm === true ? "tool" : j.perm)}</b>` : `<b>${esc(j.now || "starting")}</b>`;
+    el.querySelector(".st").textContent = { done: "✓ done", perm: "⚠ needs you", fail: "retrying", run: `● ${j.steps || 0} steps` }[state];
+    el.title = j.status === "done" ? "Click to read its full report" : "";
   }
 }
 
 function renderChrome(g) {
   renderDock(g);
-  $("empty").style.display = g ? "none" : "grid";
+  $("empty").style.display = g || mission ? "none" : "grid";
   if (!g && !locked) $("empty").innerHTML = focusCwd ? `Standing by<br><br>No activity in ${esc(focusCwd.split("/").pop())} yet` : "Standing by<br><br>Start a Claude Code session with AXA enabled — or run the demo";
-  const roles = g ? [...g.nodes.values()].filter((n) => n.kind === "role") : [];
-  $("s-agents").textContent = roles.length;
-  $("s-running").textContent = g ? [...g.nodes.values()].filter((n) => n.kind === "inst" && n.status === "running").length : 0;
-  $("s-calls").textContent = g ? g.calls : 0;
+  const projects = projectSessions();
+  $("s-agents").textContent = projects.length;
+  $("s-running").textContent = projects.filter((p) => p.status === "working").length;
+  $("s-calls").textContent = projects.filter((p) => p.status === "done").length;
+  // "Needs you": waiting on an approval, or stuck long enough to need a look
+  const waiting = projects.filter((p) => p.status === "waiting" || p.status === "stuck");
+  $("needs").classList.toggle("on", waiting.length > 0);
+  $("needsn").textContent = waiting.length;
+  $("needs").title = waiting.length ? waiting.map((p) => `${p.name}: ${p.status === "stuck" ? "stuck" : "waiting for your approval"}`).join(" · ") : "";
+  renderNow(g, waiting);
   const sel = $("session");
   const list = [...sessions.values()].sort((a, b) => b.last - a.last).slice(0, 30);
   const sig = list.map((s) => s.id).join();
@@ -702,6 +845,13 @@ $("session").onchange = (ev) => { current = ev.target.value; pinned = true; focu
 let focusCwd = null; // set while a terminal tab is active: the map follows that project
 function follow() {
   if (pinned && sessions.has(current)) return;
+  if (mission) {
+    let best = null;
+    for (const s of sessions.values()) if (s.role === "commander" && (!best || s.last > best.last)) best = s;
+    if (!best) for (const s of sessions.values()) if (s.role !== "worker" && (!best || s.last > best.last)) best = s;
+    if (best && best.id !== current) { current = best.id; selectedId = "axa"; dirty = true; }
+    return;
+  }
   let best = null;
   for (const s of sessions.values()) {
     if (focusCwd && !(s.cwd || "").startsWith(focusCwd)) continue;
@@ -713,14 +863,172 @@ function follow() {
 
 // ---------- loop ----------
 let dirty = true, lastPanel = 0;
+const idle = newGraph("idle", "");
 function frame(now) {
   follow();
-  const g = sessions.get(current);
+  const g = sessions.get(current) || (mission ? idle : undefined);
   if (g) { step(g); if (autoFit) fit(g); }
   draw(g, now);
+  placePlanets();
   if (dirty || now - lastPanel > 1000) { renderDetail(g); renderFeed(g); renderChrome(g); dirty = false; lastPanel = now; }
   requestAnimationFrame(frame);
 }
+
+// ---------- map layout you choose (drag cards and AXA's tag; remembered in this browser) ----------
+let mapLayout = { planets: {}, callout: null };
+try { mapLayout = { planets: {}, callout: null, ...JSON.parse(localStorage.getItem("axa.mapLayout") || "{}") }; } catch {}
+const saveMapLayout = () => { try { localStorage.setItem("axa.mapLayout", JSON.stringify(mapLayout)); } catch {} };
+let calloutBox = null; // where AXA's tag was last drawn (world coordinates), for grabbing it
+
+// ---------- mission view: project sessions around AXA ----------
+let mission = true;
+try { mission = localStorage.getItem("axa.view") !== "detail"; } catch {}
+const PLANET_R = 300;
+let terms = []; // latest /api/terms
+const projectSessions = () => terms.filter((t) => t.mode !== "axa");
+const planetEls = new Map();
+const STATUS_TEXT = { starting: "starting", ready: "ready", working: "working", done: "✓ done", waiting: "⚠ needs you", stuck: "⏳ stuck", exited: "exited" };
+const ago = (ms) => { const s = Math.round(ms / 1000); return s < 60 ? `${s}s` : s < 3600 ? `${Math.round(s / 60)}m` : `${Math.round(s / 3600)}h`; };
+function planetPos(i, n, p) {
+  if (p && mapLayout.planets[p.name]) return mapLayout.planets[p.name];
+  const a = -Math.PI / 2 + (i * Math.PI * 2) / Math.max(n, 1) + (n === 2 ? Math.PI / 2 : 0);
+  return [Math.cos(a) * PLANET_R, Math.sin(a) * PLANET_R * 0.78];
+}
+function planetDetail(p) {
+  if (p.status === "waiting") return humanAction(p.tool, p.summary) ? `Wants to: ${humanAction(p.tool, p.summary)}` : "Waiting for your approval in its terminal";
+  if (p.status === "working") return humanAction(p.tool, p.summary, p.skill) || "Thinking";
+  if (p.status === "stuck") return `No activity for a while · running ${p.stuck_minutes ?? "?"}m: ${humanAction(p.tool, p.summary, p.skill) || "a step"}`;
+  if (p.status === "done") return p.last_report ? p.last_report.replace(/\s+/g, " ") : "Finished";
+  if (p.status === "exited") return "Session ended";
+  return p.mode === "shell" ? "Shell" : "Waiting for instructions";
+}
+function renderPlanets() {
+  const host = $("planets"), list = projectSessions();
+  const keep = new Set(list.map((p) => p.id));
+  for (const [id, el] of planetEls) if (!keep.has(id)) { el.remove(); planetEls.delete(id); }
+  for (const p of list) {
+    let el = planetEls.get(p.id);
+    if (!el) {
+      el = document.createElement("div");
+      el.innerHTML = `<div class="pn"><span class="name"></span><span class="mode"></span></div><div class="ps"></div><div class="pd"></div><div class="pe"></div>`;
+      // Drag to move it (remembered per project); a plain click opens its terminal
+      el.onpointerdown = (ev) => {
+        if (ev.button !== 0) return;
+        const start = { x: ev.clientX, y: ev.clientY, moved: false };
+        el.setPointerCapture(ev.pointerId);
+        el.onpointermove = (e) => {
+          if (!start.moved && Math.abs(e.clientX - start.x) + Math.abs(e.clientY - start.y) < 5) return;
+          start.moved = true; el.classList.add("dragging");
+          const r = cv.getBoundingClientRect();
+          mapLayout.planets[p.name] = toWorld(e.clientX - r.left, e.clientY - r.top);
+        };
+        el.onpointerup = () => {
+          el.onpointermove = el.onpointerup = null; el.classList.remove("dragging");
+          if (start.moved) saveMapLayout();
+          else { setTermsOpen(true); if (!tabs.has(p.id)) openTab(p); activate(p.id); }
+        };
+      };
+      host.appendChild(el); planetEls.set(p.id, el);
+    }
+    el.className = `planet ${p.status}`;
+    el.querySelector(".name").textContent = p.name;
+    el.querySelector(".mode").textContent = p.mode === "shell" ? "sh" : "";
+    const since = p.status === "working" ? "" : ` · ${ago(p.idle_seconds * 1000)}`;
+    el.querySelector(".ps").textContent = (STATUS_TEXT[p.status] || p.status) + since;
+    el.querySelector(".pd").textContent = planetDetail(p);
+    el.querySelector(".pe").textContent = p.error && p.status !== "done" ? `last error: ${p.error}` : "";
+    el.title = `${p.name} · ${p.cwd}\nClick to open its terminal`;
+  }
+}
+function placePlanets() {
+  if (!mission) return;
+  const list = projectSessions();
+  list.forEach((p, i) => {
+    const el = planetEls.get(p.id); if (!el) return;
+    const [wx, wy] = planetPos(i, list.length, p);
+    el.style.transform = `translate(${(wx - cam.x) * cam.k + Wd / 2}px, ${(wy - cam.y) * cam.k + Ht / 2}px) translate(-50%, -50%)`;
+  });
+}
+const STATUS_COLOR = { working: "#4fd8ff", done: "#5ef2c2", waiting: "#ffb547", stuck: "#ff8a5c", exited: "#4f6b7a" };
+function drawPlanetLinks(now) {
+  const list = projectSessions();
+  list.forEach((p, i) => {
+    const [x, y] = planetPos(i, list.length, p), c = STATUS_COLOR[p.status] || "#8fb3c4", on = p.status === "working";
+    ctx.strokeStyle = rgba(c, on ? 0.55 : p.status === "waiting" ? 0.6 : 0.22); ctx.lineWidth = (on ? 1.5 : 1) / Math.max(cam.k, 0.6);
+    ctx.setLineDash(p.status === "exited" ? [3, 6] : []);
+    ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(x, y); ctx.stroke(); ctx.setLineDash([]);
+    if (on) { // data packets flowing out to a working session
+      const len = Math.hypot(x, y), ux = x / len, uy = y / len;
+      ctx.strokeStyle = "#eaffff"; ctx.lineWidth = 2 / Math.max(cam.k, 0.6); ctx.shadowColor = c; ctx.shadowBlur = 8;
+      for (let k = 0; k < 3; k++) { const t = ((now / 1000) * 0.5 + k / 3) % 1; ctx.beginPath(); ctx.moveTo(x * t, y * t); ctx.lineTo(x * t + ux * 10, y * t + uy * 10); ctx.stroke(); }
+      ctx.shadowBlur = 0;
+    }
+  });
+}
+function renderNow(g, waiting) {
+  if (!mission) return;
+  const axa = g?.nodes.get("axa");
+  let txt = axa?.perm ? "⚠ AXA needs your approval: answer it in the AXA tab"
+    : axa?.status === "running" ? `● AXA · ${g.doing || "Thinking"}`
+    : axa?.yourTurn ? `◆ Your turn · AXA finished${axa.message ? ": " + axa.message.replace(/\s+/g, " ").slice(0, 160) : ""}`
+    : "AXA is ready for your next instruction";
+  const helpers = g ? [...g.nodes.values()].filter((n) => n.kind === "inst" && n.status === "running").length : 0;
+  if (helpers) txt += ` · ${helpers} helper${helpers > 1 ? "s" : ""} working`;
+  const working = projectSessions().filter((p) => p.status === "working");
+  if (working.length) txt += ` · ${working.length} session${working.length > 1 ? "s" : ""} working (${working.map((p) => p.name).join(", ")})`;
+  const approvals = waiting.filter((p) => p.status === "waiting"), stuck = waiting.filter((p) => p.status === "stuck");
+  if (approvals.length) txt += ` · ⚠ ${approvals.map((p) => p.name).join(", ")} needs your approval`;
+  if (stuck.length) txt += ` · ⏳ ${stuck.map((p) => p.name).join(", ")} looks stuck`;
+  $("nowtxt").textContent = txt;
+  $("now").className = axa?.perm || waiting.length ? "needs" : axa?.status === "running" ? "working" : axa?.yourTurn ? "turn" : "";
+  signal(axa?.perm || waiting.length ? "needs" : axa?.status === "running" ? "working" : axa?.yourTurn ? "turn" : "ready", axa, waiting);
+}
+// The browser tab says whose turn it is, and (if allowed) a desktop notification fires when
+// something starts needing you or AXA finishes.
+let lastSignal = "", lastWaiting = "";
+function signal(state, axa, waiting) {
+  const names = waiting.map((p) => p.name).join(", ");
+  document.title = state === "needs" ? `⚠ Needs you · AXA` : state === "turn" ? `◆ Your turn · AXA` : state === "working" ? `● Working · AXA` : "AXA Console";
+  const notify = (title, body) => { if (bellOn && "Notification" in window && Notification.permission === "granted" && document.hidden) new Notification(title, { body, tag: "axa" }); };
+  if (names && names !== lastWaiting) notify("AXA: a session needs you", `${names} is waiting for your approval`);
+  if (state === "needs" && lastSignal !== "needs" && axa?.perm) notify("AXA needs your approval", "Answer it in the AXA tab");
+  if (state === "turn" && lastSignal === "working") notify("AXA finished", (axa?.message || "Your turn").slice(0, 180));
+  lastSignal = state; lastWaiting = names;
+}
+let bellOn = false;
+try { bellOn = localStorage.getItem("axa.bell") === "1"; } catch {}
+$("bell").classList.toggle("on", bellOn);
+$("bell").onclick = async () => {
+  if (!bellOn && "Notification" in window && Notification.permission !== "granted") await Notification.requestPermission();
+  bellOn = !bellOn && "Notification" in window && Notification.permission === "granted";
+  $("bell").classList.toggle("on", bellOn);
+  try { localStorage.setItem("axa.bell", bellOn ? "1" : "0"); } catch {}
+};
+
+async function pollTerms() {
+  try {
+    const r = await fetch("/api/terms");
+    if (r.ok) {
+      terms = await r.json();
+      for (const t of terms) if (!tabs.has(t.id) && typeof Terminal !== "undefined") openTab(t); // sessions AXA opened show up as tabs too
+      for (const [id, t] of tabs) { const info = terms.find((x) => x.id === id); if (info) { t.info = info; t.tab.classList.toggle("dead", !info.alive); t.tab.classList.toggle("waiting", info.status === "waiting"); } }
+      renderPlanets(); dirty = true;
+    }
+  } catch {}
+  setTimeout(pollTerms, 2000);
+}
+function setView(m) {
+  mission = m;
+  document.body.classList.toggle("detail", !m);
+  $("viewbtn").classList.toggle("on", !m);
+  try { localStorage.setItem("axa.view", m ? "mission" : "detail"); } catch {}
+  pinned = false; autoFit = true; dirty = true;
+}
+$("viewbtn").onclick = () => setView(!mission);
+$("needs").onclick = () => {
+  const w = projectSessions().find((p) => p.status === "waiting") || projectSessions().find((p) => p.status === "stuck");
+  if (w) { setTermsOpen(true); if (!tabs.has(w.id)) openTab(w); activate(w.id); }
+};
 
 // ---------- demo: a scripted orchestration so the console can be seen without a live run ----------
 function demo() {
@@ -935,7 +1243,7 @@ function connect() {
 }
 loadRoster().then(() => {
   if (locked) { $("empty").innerHTML = "Console locked<br><br>Open it with /axa:console — or the unlock link the server prints"; $("live").textContent = "locked"; requestAnimationFrame(frame); return; }
-  initTerms(); connect(); requestAnimationFrame(frame); if (new URLSearchParams(location.search).has("demo")) demo(); });
+  setView(mission); initTerms().then(pollTerms); connect(); requestAnimationFrame(frame); if (new URLSearchParams(location.search).has("demo")) demo(); });
 </script>
 </body>
 </html>

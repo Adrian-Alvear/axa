@@ -37,6 +37,8 @@ For each subtask pick a role from `roster.md` by matching the work to the role's
 - which skill(s), if any, the agent should invoke first (e.g. `wrangler` before deploy commands, `cloudflare` for Workers work, `dataviz` before charts)
 - whether it needs `isolation: "worktree"` — required when two or more agents edit the same repo at the same time, so they don't overwrite each other
 
+For a new feature, search first: have the researcher look for an existing library, tool, or pattern before a builder writes it from scratch, and pass what it finds into the builder's prompt.
+
 ## 3. Show the plan (briefly), then go
 
 Post a compact table, then launch immediately — don't wait for approval unless something is destructive or outward-facing (pushing, deploying, deleting, writing to a database):
@@ -62,6 +64,20 @@ Subagents can't see this conversation. Each prompt must carry everything:
 
 ## 5. Check the work, then report
 
-When agents finish, don't just relay their claims. Spot-check: read the diff, rerun the build/typecheck if code changed, confirm files exist. If something failed or conflicts, fix it or send a follow-up (SendMessage to the same agent keeps its context — cheaper than a fresh one).
+When agents finish, don't just relay their claims. Spot-check: read the diff, confirm files exist, and if code changed, verify with the project's own commands (or have the reviewer do it):
+- build, typecheck, lint, tests — whichever the project has
+- a quick grep of the diff for secrets (keys, tokens, passwords, `.env` values)
+- a read of the diff for stray debug code, unrelated edits, and missing wiring
 
-Final message to the user: short. What each agent did (one line each), what you verified, anything that failed or needs their call. No long explanations.
+```
+| Check | Result | Notes |
+|-------|--------|-------|
+| Build | PASS | |
+| Tests | FAIL | 2 failing in auth.test.ts |
+```
+
+**Second opinion for risky work.** For outward-facing or risky changes — deploys, publishing, pushing to shared branches, migrations, security-sensitive code — run two reviewers in parallel with the same brief. Both must APPROVE. On WARN/BLOCK, fix and re-review; after 2 rounds still failing, stop and ask the user.
+
+If something failed or conflicts, fix it or send a follow-up (SendMessage to the same agent keeps its context — cheaper than a fresh one). Stop retrying and tell the user what's blocked, with the options, when: two rounds pass with no progress, the same failure repeats, the scope or cost is drifting past the ask, or a merge conflict needs a call on whose change wins.
+
+Final message to the user: short. What each agent did (one line each), the check table if code changed, anything that failed or needs their call. No long explanations.

@@ -6,6 +6,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from "node:pat
 import { createRequire } from "node:module";
 import { randomUUID } from "node:crypto";
 import { pluginRoot } from "./ensure.mjs";
+import { cleanText, dangerousShell, redact } from "../lib/safety.mjs";
 
 const require = createRequire(import.meta.url);
 const pty = require("node-pty");
@@ -116,13 +117,20 @@ export function listChats(limit = 12) {
 let statusOf = () => null;
 export const setStatusSource = (fn) => (statusOf = fn);
 
+// Text that came out of a session (its screen, report, current step) is shown cleaned of hidden
+// characters and secrets: it is data, never instructions
+const safe = (v) => (v == null ? v : redact(cleanText(v)));
+
 const summary = (t) => {
   const traced = statusOf(t.id);
   const waiting = t.alive && (traced?.status === "waiting" || awaitingPermission(t));
   return {
     id: t.id, name: t.name, cwd: t.cwd, mode: t.mode, alive: t.alive, created: t.created,
+    // "waiting" wins over "stuck": a prompt on screen is the more specific reason
     status: !t.alive ? "exited" : waiting ? "waiting" : traced?.status || "starting",
-    doing: traced?.doing, last_report: traced?.report, error: traced?.error,
+    stuck_minutes: traced?.stuck_minutes,
+    doing: safe(traced?.doing), tool: traced?.tool, summary: safe(traced?.summary), skill: traced?.skill,
+    last_report: safe(traced?.report), error: safe(traced?.error), last_event_at: traced?.at,
     idle_seconds: Math.round((Date.now() - t.lastOutput) / 1000),
     awaiting_permission: waiting,
   };
@@ -131,7 +139,13 @@ const summary = (t) => {
 // ---------- reading and typing into terminals (used by AXA's terminal tools) ----------
 function screenLines(t, lines = 60) {
   const b = t.screen.buffer.active, out = [];
-  for (let i = 0; i < b.length; i++) out.push(b.getLine(i)?.translateToString(true) ?? "");
+  // Rejoin lines the terminal wrapped, so a long secret split across two rows is still recognized
+  for (let i = 0; i < b.length; i++) {
+    const line = b.getLine(i);
+    const text = line?.translateToString(true) ?? "";
+    if (line?.isWrapped && out.length) out[out.length - 1] += text;
+    else out.push(text);
+  }
   while (out.length && !out[out.length - 1].trim()) out.pop();
   return out.slice(-Math.max(1, Math.min(lines, 400)));
 }
@@ -145,13 +159,18 @@ function awaitingPermission(t) { return PERMISSION_RE.test(screenLines(t, 25).jo
 export function readTerm(id, lines = 60) {
   const t = terms.get(id);
   if (!t) return null;
-  return { ...summary(t), screen: screenLines(t, lines).join("\n") };
+  return { ...summary(t), screen: safe(screenLines(t, lines).join("\n")) };
 }
 
-export async function sendToTerm(id, text, { enter = true } = {}) {
+// confirmed: the user explicitly approved this exact command (needed for dangerous shell commands)
+export async function sendToTerm(id, text, { enter = true, confirmed = false } = {}) {
   const t = terms.get(id);
   if (!t) return { ok: false, error: "no such terminal" };
   if (!t.alive) return { ok: false, error: "terminal has exited" };
+  // Plain shells run whatever is typed, so dangerous commands need the user's explicit OK.
+  // Claude sessions are covered by Claude Code's own permission checks instead.
+  const danger = t.mode === "shell" && dangerousShell(text);
+  if (danger && !confirmed) return { ok: false, error: `Not sent: this looks dangerous (${danger}). Ask the user to approve this exact command first, then resend with confirmed_by_user: true.` };
   if (awaitingPermission(t) || statusOf(t.id)?.status === "waiting") return { ok: false, error: "This session is waiting on a permission/trust prompt. Only the user may answer it — tell them which session needs attention." };
   t.proc.write(text);
   // submit separately so TUIs treat it as Enter, not part of a paste

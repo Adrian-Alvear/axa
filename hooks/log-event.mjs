@@ -1,11 +1,21 @@
 // Reads one Claude Code hook payload from stdin and appends a compact event to
 // $AXA_HOME/events.jsonl (default ~/.axa). Never blocks or fails the session.
-import { appendFileSync, mkdirSync } from "node:fs";
+// Secrets are blanked before anything is written; the folder and log are readable only by you.
+// AXA_LOG_PROMPTS=0 leaves prompt and reply text out of the log entirely.
+import { appendFileSync, chmodSync, existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, basename } from "node:path";
+import { redact } from "../lib/safety.mjs";
 
 const home = process.env.AXA_HOME || join(homedir(), ".axa");
-const clip = (s, n = 300) => (s == null ? undefined : String(s).length > n ? String(s).slice(0, n) + "…" : String(s));
+const MAX_INPUT = 1024 * 1024; // hook payloads are small; anything bigger is cut, never parsed whole
+const logText = process.env.AXA_LOG_PROMPTS !== "0";
+const clip = (s, n = 300) => {
+  if (s == null) return undefined;
+  // Cut first (with room for a secret that straddles the cut), then scrub, then clip
+  const t = redact(String(s).slice(0, n + 512));
+  return t.length > n ? t.slice(0, n) + "…" : t;
+};
 
 // One-line human summary of what a tool call is doing.
 function summarize(tool, input = {}) {
@@ -22,7 +32,7 @@ function summarize(tool, input = {}) {
 }
 
 let raw = "";
-process.stdin.on("data", (c) => (raw += c));
+process.stdin.on("data", (c) => { if (raw.length < MAX_INPUT) raw += c; });
 process.stdin.on("end", () => {
   try {
     const e = JSON.parse(raw);
@@ -39,8 +49,8 @@ process.stdin.on("end", () => {
       summary: e.tool_name ? summarize(e.tool_name, input) : undefined,
       skill: e.tool_name === "Skill" ? input.skill : undefined,
       subagent_type: ["Agent", "Task"].includes(e.tool_name) ? input.subagent_type || "general-purpose" : undefined,
-      prompt: clip(e.prompt || (["Agent", "Task"].includes(e.tool_name) ? input.prompt : undefined), 2000),
-      message: clip(e.last_assistant_message ?? (e.hook_event_name === "Notification" ? e.message : undefined), 2000),
+      prompt: logText ? clip(e.prompt || (["Agent", "Task"].includes(e.tool_name) ? input.prompt : undefined), 2000) : undefined,
+      message: logText ? clip(e.last_assistant_message ?? (e.hook_event_name === "Notification" ? e.message : undefined), 2000) : undefined,
       error: clip(e.error, 500),
       duration_ms: e.duration_ms,
       source: e.source,
@@ -49,8 +59,11 @@ process.stdin.on("end", () => {
       terminal: process.env.AXA_TERMINAL_ID || undefined,
       role: process.env.AXA_ROLE || undefined,
     };
-    mkdirSync(home, { recursive: true });
-    appendFileSync(join(home, "events.jsonl"), JSON.stringify(ev) + "\n");
+    const log = join(home, "events.jsonl");
+    if (!existsSync(home)) mkdirSync(home, { recursive: true, mode: 0o700 });
+    const fresh = !existsSync(log);
+    appendFileSync(log, JSON.stringify(ev) + "\n", { mode: 0o600 });
+    if (fresh) chmodSync(log, 0o600);
   } catch {}
   process.exit(0);
 });

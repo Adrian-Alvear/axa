@@ -5,7 +5,7 @@
 // Security: binds to 127.0.0.1 only, rejects foreign Host/Origin headers (DNS rebinding, other
 // websites), and requires a secret token (~/.axa/console-token) exchanged for a SameSite=Strict cookie.
 import { createServer } from "node:http";
-import { readFileSync, statSync, openSync, readSync, closeSync, existsSync, mkdirSync, writeFileSync, renameSync, unlinkSync } from "node:fs";
+import { readFileSync, statSync, openSync, readSync, closeSync, existsSync, mkdirSync, writeFileSync, renameSync, unlinkSync, chmodSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -19,8 +19,10 @@ const here = dirname(fileURLToPath(import.meta.url));
 const HISTORY_BYTES = 4 * 1024 * 1024; // replay at most the last 4MB on connect
 const MAX_LOG_BYTES = 50 * 1024 * 1024; // past this, the log moves to events.1.jsonl (one old copy kept)
 
-mkdirSync(home, { recursive: true });
-if (!existsSync(logPath)) writeFileSync(logPath, "");
+// The log holds prompts, commands and reports: only you can read the folder and the files
+mkdirSync(home, { recursive: true, mode: 0o700 });
+if (!existsSync(logPath)) writeFileSync(logPath, "", { mode: 0o600 });
+try { chmodSync(home, 0o700); chmodSync(logPath, 0o600); } catch {}
 
 const tokenPath = join(home, "console-token");
 if (!existsSync(tokenPath)) writeFileSync(tokenPath, randomBytes(24).toString("hex"), { mode: 0o600 });
@@ -76,20 +78,35 @@ function readRoster() {
 // ---------- session status (from traced events) ----------
 // Each Claude session AXA starts tags its events with AXA_TERMINAL_ID; the latest events say
 // whether it's working, done (and its last report), waiting on the user, or failed.
-const sessions = new Map(); // terminal id -> { status, doing, report, error, at }
+// "Stuck": a tool started and nothing has happened in the session for this long. Measured from the
+// session's last event (not the tool's start) so a long helper agent that is still busy isn't flagged.
+const STUCK_MS = (Number(process.env.AXA_STUCK_MINUTES) || 20) * 60_000;
+const sessions = new Map(); // terminal id -> { status, doing, report, error, at, inflight }
+function statusOf(id) {
+  const s = sessions.get(id);
+  if (!s) return s;
+  if (s.status === "working" && s.inflight?.size && Date.now() - s.at > STUCK_MS) {
+    const [first] = s.inflight.values();
+    return { ...s, status: "stuck", stuck_minutes: Math.round((Date.now() - first.since) / 60_000) };
+  }
+  return s;
+}
 function track(e) {
   if (!e?.terminal) return;
-  const s = sessions.get(e.terminal) || {};
+  const s = sessions.get(e.terminal) || { inflight: new Map() };
   s.at = e.ts;
   switch (e.event) {
-    case "SessionStart": s.status = "ready"; break;
-    case "UserPromptSubmit": s.status = "working"; s.doing = "reading the instruction"; s.error = undefined; break;
-    case "PreToolUse": s.status = "working"; s.doing = [e.tool, e.summary].filter(Boolean).join(" · "); break;
-    case "PostToolUse": if (s.status === "waiting") s.status = "working"; break;
-    case "PostToolUseFailure": s.error = [e.tool, e.error].filter(Boolean).join(": "); break;
-    case "PermissionRequest": s.status = "waiting"; s.doing = `needs approval · ${[e.tool, e.summary].filter(Boolean).join(" ")}`; break;
+    case "SessionStart": s.status = "ready"; s.inflight.clear(); break;
+    case "UserPromptSubmit": s.status = "working"; s.doing = "reading the instruction"; s.tool = s.summary = undefined; s.error = undefined; s.inflight.clear(); break;
+    case "PreToolUse":
+      s.status = "working"; s.doing = [e.tool, e.summary].filter(Boolean).join(" · "); s.tool = e.tool; s.summary = e.skill || e.summary; s.skill = e.skill;
+      if (e.tool_use_id) s.inflight.set(e.tool_use_id, { tool: e.tool, summary: e.summary, since: e.ts });
+      break;
+    case "PostToolUse": if (s.status === "waiting") s.status = "working"; s.inflight.delete(e.tool_use_id); break;
+    case "PostToolUseFailure": s.error = [e.tool, e.error].filter(Boolean).join(": "); s.inflight.delete(e.tool_use_id); break;
+    case "PermissionRequest": s.status = "waiting"; s.doing = `needs approval · ${[e.tool, e.summary].filter(Boolean).join(" ")}`; s.tool = e.tool; s.summary = e.summary; break;
     case "Notification": if (/permission/i.test(e.notification_type || e.message || "")) { s.status = "waiting"; s.doing = e.message; } break;
-    case "Stop": s.status = "done"; s.doing = undefined; if (e.message) s.report = e.message; break;
+    case "Stop": s.status = "done"; s.doing = s.tool = s.summary = s.skill = undefined; s.inflight.clear(); if (e.message) s.report = e.message; break;
   }
   sessions.set(e.terminal, s);
 }
@@ -115,7 +132,7 @@ setInterval(() => {
   }
   // Keep the log from growing forever: move it aside and start a fresh one
   if (size > MAX_LOG_BYTES) {
-    try { renameSync(logPath, logPath.replace(/\.jsonl$/, ".1.jsonl")); writeFileSync(logPath, ""); offset = 0; partial = ""; } catch {}
+    try { renameSync(logPath, logPath.replace(/\.jsonl$/, ".1.jsonl")); writeFileSync(logPath, "", { mode: 0o600 }); offset = 0; partial = ""; } catch {}
   }
 }, 250);
 
@@ -199,12 +216,12 @@ const server = createServer(async (req, res) => {
     const sm = path.match(/^\/api\/terms\/([\w-]+)\/screen$/);
     if (sm && req.method === "GET") { const r = T.readTerm(sm[1], Number(u.searchParams.get("lines")) || 60); return json(res, r ? 200 : 404, r || { error: "no such terminal" }); }
     const im = path.match(/^\/api\/terms\/([\w-]+)\/input$/);
-    if (im && req.method === "POST") { const b = await readBody(req); if (typeof b.text !== "string") return json(res, 400, { error: "text required" }); const r = await T.sendToTerm(im[1], b.text, { enter: b.enter !== false }); return json(res, r.ok ? 200 : 409, r); }
+    if (im && req.method === "POST") { const b = await readBody(req); if (typeof b.text !== "string") return json(res, 400, { error: "text required" }); const r = await T.sendToTerm(im[1], b.text, { enter: b.enter !== false, confirmed: b.confirmed_by_user === true }); return json(res, r.ok ? 200 : 409, r); }
   }
   res.writeHead(404).end();
 });
 
-if (T) { T.attachWebSocket(server, authed); T.setStatusSource((id) => sessions.get(id)); }
+if (T) { T.attachWebSocket(server, authed); T.setStatusSource(statusOf); }
 
 server.on("error", (err) => {
   if (err.code === "EADDRINUSE") {
