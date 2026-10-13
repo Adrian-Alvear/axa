@@ -1,10 +1,19 @@
 {
   "name": "axa",
   "displayName": "AXA",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "A JARVIS-style orchestrator for Claude Code: splits work across agents and skills, logs every call, and shows it live in a local console.",
-  "author": { "name": "Adrian Alvear", "url": "https://github.com/Adrian-Alvear" },
+  "author": {
+    "name": "Adrian Alvear",
+    "url": "https://github.com/Adrian-Alvear"
+  },
   "repository": "https://github.com/Adrian-Alvear/axa",
   "license": "MIT",
-  "keywords": ["orchestrator", "agents", "subagents", "observability", "dashboard"]
+  "keywords": [
+    "orchestrator",
+    "agents",
+    "subagents",
+    "observability",
+    "dashboard"
+  ]
 }

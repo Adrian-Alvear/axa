@@ -854,11 +854,11 @@ async function renderProjects(el, onEscape) {
   const projects = r.ok ? await r.json() : [];
   el.innerHTML = `<div class="proj axa-row"><div><b>AXA commander</b><small>one Claude session that sees and drives every terminal</small></div><button class="axa-go" data-m="axa">Launch</button><span></span></div>
     <p class="title" style="margin-top:12px">Launch in project</p>` + projects.map((p, i) => `
-    <div class="proj"><div><b>${esc(p.name)}</b><small>${esc(p.path.replace(/^\/Users\/[^/]+/, "~"))}</small></div>
+    <div class="proj"><div><b>${esc(p.name)}</b><small>${esc(p.path.replace(/^\/(Users|home)\/[^/]+/, "~"))}</small></div>
     <button data-i="${i}" data-m="claude">Claude</button><button data-i="${i}" data-m="shell">Shell</button></div>`).join("") +
     `<input class="custompath" placeholder="or type a path, e.g. ~/projects/n2s-platform/dashboard  ↵">`;
   el.querySelectorAll("button[data-i]").forEach((b) => (b.onclick = () => launch(projects[b.dataset.i].path, b.dataset.m)));
-  el.querySelector(".axa-go").onclick = () => { const open = [...tabs.values()].find((t) => t.info.mode === "axa" && t.info.alive); if (open) { activate(open.info.id); $("picker").hidden = true; } else launch("~/projects", "axa"); };
+  el.querySelector(".axa-go").onclick = () => { const open = [...tabs.values()].find((t) => t.info.mode === "axa" && t.info.alive); if (open) { activate(open.info.id); $("picker").hidden = true; } else launch("~", "axa"); };
   el.querySelector(".custompath").onkeydown = (ev) => { if (ev.key === "Enter" && ev.target.value.trim()) launch(ev.target.value.trim(), "claude"); if (ev.key === "Escape") onEscape?.(); };
 }
 async function showPicker() {

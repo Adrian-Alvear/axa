@@ -5,11 +5,11 @@
 // Security: binds to 127.0.0.1 only, rejects foreign Host/Origin headers (DNS rebinding, other
 // websites), and requires a secret token (~/.axa/console-token) exchanged for a SameSite=Strict cookie.
 import { createServer } from "node:http";
-import { readFileSync, statSync, openSync, readSync, closeSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { readFileSync, statSync, openSync, readSync, closeSync, existsSync, mkdirSync, writeFileSync, renameSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { exec } from "node:child_process";
+import { openUrl } from "./ensure.mjs";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 
 const port = Number(process.env.AXA_PORT || 4747);
@@ -17,6 +17,7 @@ const home = process.env.AXA_HOME || join(homedir(), ".axa");
 const logPath = join(home, "events.jsonl");
 const here = dirname(fileURLToPath(import.meta.url));
 const HISTORY_BYTES = 4 * 1024 * 1024; // replay at most the last 4MB on connect
+const MAX_LOG_BYTES = 50 * 1024 * 1024; // past this, the log moves to events.1.jsonl (one old copy kept)
 
 mkdirSync(home, { recursive: true });
 if (!existsSync(logPath)) writeFileSync(logPath, "");
@@ -34,9 +35,7 @@ let T = null, termError = null;
 try { T = await import("./terminals.mjs"); } catch (e) { termError = "Run `npm install` in " + here + " to enable terminals."; }
 
 const openBrowser = () => {
-  if (!process.argv.includes("--open")) return;
-  const cmd = process.platform === "darwin" ? "open" : process.platform === "win32" ? "start" : "xdg-open";
-  exec(`${cmd} "${unlockUrl}"`);
+  if (process.argv.includes("--open")) openUrl(unlockUrl);
 };
 
 // ---------- access control ----------
@@ -74,9 +73,32 @@ function readRoster() {
   return roles;
 }
 
+// ---------- session status (from traced events) ----------
+// Each Claude session AXA starts tags its events with AXA_TERMINAL_ID; the latest events say
+// whether it's working, done (and its last report), waiting on the user, or failed.
+const sessions = new Map(); // terminal id -> { status, doing, report, error, at }
+function track(e) {
+  if (!e?.terminal) return;
+  const s = sessions.get(e.terminal) || {};
+  s.at = e.ts;
+  switch (e.event) {
+    case "SessionStart": s.status = "ready"; break;
+    case "UserPromptSubmit": s.status = "working"; s.doing = "reading the instruction"; s.error = undefined; break;
+    case "PreToolUse": s.status = "working"; s.doing = [e.tool, e.summary].filter(Boolean).join(" · "); break;
+    case "PostToolUse": if (s.status === "waiting") s.status = "working"; break;
+    case "PostToolUseFailure": s.error = [e.tool, e.error].filter(Boolean).join(": "); break;
+    case "PermissionRequest": s.status = "waiting"; s.doing = `needs approval · ${[e.tool, e.summary].filter(Boolean).join(" ")}`; break;
+    case "Notification": if (/permission/i.test(e.notification_type || e.message || "")) { s.status = "waiting"; s.doing = e.message; } break;
+    case "Stop": s.status = "done"; s.doing = undefined; if (e.message) s.report = e.message; break;
+  }
+  sessions.set(e.terminal, s);
+}
+
 const clients = new Set();
 let offset = statSync(logPath).size;
 let partial = "";
+// Rebuild statuses from recent history (sessions keep running only while this server does)
+for (const line of readRange(Math.max(0, offset - HISTORY_BYTES), offset).split("\n")) { try { track(JSON.parse(line)); } catch {} }
 setInterval(() => {
   let size;
   try { size = statSync(logPath).size; } catch { return; }
@@ -86,7 +108,15 @@ setInterval(() => {
   offset = size;
   const lines = chunk.split("\n");
   partial = lines.pop();
-  for (const line of lines) if (line.trim()) for (const res of clients) res.write(`data: ${line}\n\n`);
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    try { track(JSON.parse(line)); } catch {}
+    for (const res of clients) res.write(`data: ${line}\n\n`);
+  }
+  // Keep the log from growing forever: move it aside and start a fresh one
+  if (size > MAX_LOG_BYTES) {
+    try { renameSync(logPath, logPath.replace(/\.jsonl$/, ".1.jsonl")); writeFileSync(logPath, ""); offset = 0; partial = ""; } catch {}
+  }
 }, 250);
 
 // ---------- http ----------
@@ -146,7 +176,16 @@ const server = createServer(async (req, res) => {
     if (path === "/api/projects") return json(res, 200, T.listProjects(rosterFile()));
     if (path === "/api/terms" && req.method === "GET") return json(res, 200, T.listTerms());
     if (path === "/api/terms" && req.method === "POST") {
-      try { return json(res, 200, T.createTerm(await readBody(req))); } catch (e) { return json(res, 400, { error: e.message }); }
+      try {
+        const body = await readBody(req);
+        // A project can be named instead of a folder ("launches")
+        if (!body.cwd && body.project) {
+          const p = T.listProjects(rosterFile()).find((x) => x.name.toLowerCase() === String(body.project).toLowerCase());
+          if (!p) return json(res, 404, { error: `No project called "${body.project}". Known: ${T.listProjects(rosterFile()).map((x) => x.name).join(", ") || "none"}` });
+          body.cwd = p.path;
+        }
+        return json(res, 200, T.createTerm(body));
+      } catch (e) { return json(res, 400, { error: e.message }); }
     }
     const m = path.match(/^\/api\/terms\/([\w-]+)$/);
     if (m && req.method === "DELETE") return json(res, T.killTerm(m[1]) ? 200 : 404, {});
@@ -158,7 +197,7 @@ const server = createServer(async (req, res) => {
   res.writeHead(404).end();
 });
 
-if (T) T.attachWebSocket(server, authed);
+if (T) { T.attachWebSocket(server, authed); T.setStatusSource((id) => sessions.get(id)); }
 
 server.on("error", (err) => {
   if (err.code === "EADDRINUSE") {
@@ -169,9 +208,11 @@ server.on("error", (err) => {
   throw err;
 });
 
-for (const sig of ["SIGINT", "SIGTERM"]) process.on(sig, () => { T?.killAll(); process.exit(0); });
+const pidPath = join(home, "console.pid");
+for (const sig of ["SIGINT", "SIGTERM"]) process.on(sig, () => { T?.killAll(); try { unlinkSync(pidPath); } catch {} process.exit(0); });
 
 server.listen(port, "127.0.0.1", () => {
+  writeFileSync(pidPath, String(process.pid));
   console.log(`AXA console → ${unlockUrl}`);
   console.log(`  events: ${logPath}`);
   console.log(`  terminals: ${T ? "enabled" : "disabled — " + termError}`);

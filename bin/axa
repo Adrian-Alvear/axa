@@ -1,0 +1,44 @@
+#!/usr/bin/env node
+// `axa`: your commander from any terminal.
+//   axa            start the AXA commander here (starts the console in the background if needed)
+//   axa console    start the console if needed and open it in your browser
+//   axa status     list the sessions AXA is running and what each is doing
+//   axa stop       stop the console (and every session running in it)
+import { readFileSync, existsSync, realpathSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { spawn } from "node:child_process";
+
+const root = join(dirname(realpathSync(fileURLToPath(import.meta.url))), "..");
+const { ensureConsole, home, port, readToken, openUrl } = await import(join(root, "console", "ensure.mjs"));
+const [cmd, ...rest] = process.argv.slice(2);
+
+async function api(path) {
+  const res = await fetch(`http://127.0.0.1:${port}${path}`, { headers: { host: `localhost:${port}`, cookie: `axa_token=${readToken()}` } });
+  return res.json();
+}
+
+if (cmd === "console") {
+  if (!(await ensureConsole())) { console.error(`Couldn't start the console; see ${join(home, "console.log")}`); process.exit(1); }
+  const url = `http://localhost:${port}/?t=${readToken()}`;
+  console.log(`AXA console → ${url}`);
+  openUrl(url);
+} else if (cmd === "status") {
+  if (!(await ensureConsole())) process.exit(1);
+  const sessions = await api("/api/terms");
+  if (!sessions.length) console.log("No sessions running.");
+  for (const s of sessions) console.log(`${s.id}  ${s.name.padEnd(14)} ${s.status.padEnd(8)} ${s.doing || (s.last_report || "").replace(/\s+/g, " ").slice(0, 80)}`);
+} else if (cmd === "stop") {
+  const pidFile = join(home, "console.pid");
+  if (!existsSync(pidFile)) { console.log("The console isn't running."); process.exit(0); }
+  try { process.kill(Number(readFileSync(pidFile, "utf8")), "SIGTERM"); console.log("Console stopped."); } catch { console.log("The console isn't running."); }
+} else if (!cmd || cmd.startsWith("-")) {
+  // The commander: Claude Code with the AXA plugin and the commander brief, in this terminal
+  await ensureConsole();
+  const env = { ...process.env, AXA_ROLE: "commander" };
+  const args = ["--plugin-dir", root, "--append-system-prompt-file", join(root, "commander.md"), ...process.argv.slice(2)];
+  const child = spawn("claude", args, { stdio: "inherit", env });
+  child.on("exit", (code) => process.exit(code ?? 0));
+} else {
+  console.log("Usage: axa [console|status|stop]   (no argument starts the commander here)");
+}

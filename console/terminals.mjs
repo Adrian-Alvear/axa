@@ -2,9 +2,10 @@
 // Terminals live in this server process, so reloading the page reattaches with scrollback.
 import { chmodSync, existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { createRequire } from "node:module";
 import { randomUUID } from "node:crypto";
+import { pluginRoot } from "./ensure.mjs";
 
 const require = createRequire(import.meta.url);
 const pty = require("node-pty");
@@ -31,9 +32,20 @@ function cleanEnv() {
 }
 
 const shq = (s) => "'" + s.replace(/'/g, "'\\''") + "'";
-const AXA_BRIEF = "You are AXA, the user's commander session in the AXA console. You can see and drive every terminal open in the console with the axa terminal tools (list_terminals, read_terminal, send_to_terminal, open_terminal). Each terminal is usually its own Claude Code session in a different project. When the user asks for work across projects, open or reuse the right terminals, send each a clear self-contained instruction, check their screens for progress, and report back briefly. Never answer another terminal's permission or trust prompt — tell the user which terminal needs them. Follow the axa skill for planning.";
+// Every Claude session AXA starts loads the AXA plugin, so its hooks trace it (and the commander gets
+// its session tools). Project sessions run in auto mode: they work on their own, and Claude Code still
+// stops for risky actions, which the user approves in that session.
+const claudeCmd = (role) =>
+  role === "commander"
+    ? `claude --plugin-dir ${shq(pluginRoot)} --append-system-prompt-file ${shq(join(pluginRoot, "commander.md"))}`
+    : `claude --plugin-dir ${shq(pluginRoot)} --permission-mode auto`;
 
 const expand = (p) => resolve(p.replace(/^~(?=$|\/)/, homedir()));
+// Inside the home folder (a real containment check: "/home/me2" is not inside "/home/me")
+const inHome = (p) => {
+  const rel = relative(homedir(), p);
+  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+};
 
 export function listProjects(rosterFile) {
   const seen = new Map();
@@ -41,7 +53,7 @@ export function listProjects(rosterFile) {
     const p = expand(path);
     try { if (statSync(p).isDirectory() && !seen.has(p)) seen.set(p, { name: basename(p), path: p }); } catch {}
   };
-  // projects named in the roster first, then everything in ~/projects
+  // projects named in the roster first, then git repos in ~/projects and directly in your home folder
   if (rosterFile && existsSync(rosterFile)) {
     let inProjects = false;
     for (const line of readFileSync(rosterFile, "utf8").split("\n")) {
@@ -51,11 +63,29 @@ export function listProjects(rosterFile) {
   }
   const root = join(homedir(), "projects");
   try { for (const d of readdirSync(root, { withFileTypes: true })) if (d.isDirectory() && !d.name.startsWith(".")) add(join(root, d.name)); } catch {}
+  try {
+    for (const d of readdirSync(homedir(), { withFileTypes: true })) {
+      if (d.isDirectory() && !d.name.startsWith(".") && existsSync(join(homedir(), d.name, ".git"))) add(join(homedir(), d.name));
+    }
+  } catch {}
   return [...seen.values()];
 }
 
-const summary = (t) => ({ id: t.id, name: t.name, cwd: t.cwd, mode: t.mode, alive: t.alive, created: t.created,
-  idle_seconds: Math.round((Date.now() - t.lastOutput) / 1000), awaiting_permission: t.alive && awaitingPermission(t) });
+// Live status per session comes from its traced events (set by the server); the screen check is a backup
+let statusOf = () => null;
+export const setStatusSource = (fn) => (statusOf = fn);
+
+const summary = (t) => {
+  const traced = statusOf(t.id);
+  const waiting = t.alive && (traced?.status === "waiting" || awaitingPermission(t));
+  return {
+    id: t.id, name: t.name, cwd: t.cwd, mode: t.mode, alive: t.alive, created: t.created,
+    status: !t.alive ? "exited" : waiting ? "waiting" : traced?.status || "starting",
+    doing: traced?.doing, last_report: traced?.report, error: traced?.error,
+    idle_seconds: Math.round((Date.now() - t.lastOutput) / 1000),
+    awaiting_permission: waiting,
+  };
+};
 
 // ---------- reading and typing into terminals (used by AXA's terminal tools) ----------
 function screenLines(t, lines = 60) {
@@ -64,8 +94,11 @@ function screenLines(t, lines = 60) {
   while (out.length && !out[out.length - 1].trim()) out.pop();
   return out.slice(-Math.max(1, Math.min(lines, 400)));
 }
-// Claude Code's permission dialogs: AXA must never answer these on the user's behalf.
-const PERMISSION_RE = /Do you want to (proceed|make this edit|create|allow)|Do you trust the files|trust this folder|Yes, and don't ask again|❯\s*1\.\s*Yes/i;
+// Claude Code's permission dialogs: AXA must never answer these on the user's behalf. The traced
+// PermissionRequest/Notification events are the main signal; this screen check is a backup.
+// Any of Claude Code's choice dialogs counts (permission, folder trust, new MCP server...): they all
+// end with "Enter to confirm · Esc to cancel/exit" and number their options.
+const PERMISSION_RE = /Do you want to (proceed|make this edit|create|allow)|Do you trust the files|trust this folder|Yes, and don't ask again|❯\s*1\.\s*Yes|MCP servers? found|Enter to confirm · Esc to (cancel|exit)/i;
 function awaitingPermission(t) { return PERMISSION_RE.test(screenLines(t, 25).join("\n")); }
 
 export function readTerm(id, lines = 60) {
@@ -78,7 +111,7 @@ export async function sendToTerm(id, text, { enter = true } = {}) {
   const t = terms.get(id);
   if (!t) return { ok: false, error: "no such terminal" };
   if (!t.alive) return { ok: false, error: "terminal has exited" };
-  if (awaitingPermission(t)) return { ok: false, error: "This terminal is waiting on a permission/trust prompt. Only the user may answer it — tell them which terminal needs attention." };
+  if (awaitingPermission(t) || statusOf(t.id)?.status === "waiting") return { ok: false, error: "This session is waiting on a permission/trust prompt. Only the user may answer it — tell them which session needs attention." };
   t.proc.write(text);
   // submit separately so TUIs treat it as Enter, not part of a paste
   if (enter) { await new Promise((r) => setTimeout(r, 60)); t.proc.write("\r"); }
@@ -88,15 +121,20 @@ export const listTerms = () => [...terms.values()].map(summary);
 
 export function createTerm({ cwd, mode = "claude", cols = 100, rows = 30 }) {
   const dir = expand(cwd || homedir());
-  if (!dir.startsWith(homedir()) || !statSync(dir).isDirectory()) throw new Error("cwd must be a directory in your home folder");
-  const shell = process.env.SHELL || "/bin/zsh";
-  // claude mode: run Claude Code, and drop to a normal shell if it exits
-  const args = mode === "claude" ? ["-l", "-c", 'claude; exec "$SHELL" -l']
-    : mode === "axa" ? ["-l", "-c", `claude --append-system-prompt ${shq(AXA_BRIEF)}; exec "$SHELL" -l`]
+  let isDir = false;
+  try { isDir = statSync(dir).isDirectory(); } catch {}
+  if (!inHome(dir) || !isDir) throw new Error("cwd must be an existing folder in your home folder");
+  const shell = process.env.SHELL || "/bin/bash";
+  const id = randomUUID().slice(0, 8);
+  // claude/axa: run Claude Code (traced), and drop to a normal shell if it exits
+  const args = mode === "claude" ? ["-l", "-c", `${claudeCmd("worker")}; exec "$SHELL" -l`]
+    : mode === "axa" ? ["-l", "-c", `${claudeCmd("commander")}; exec "$SHELL" -l`]
     : ["-l"];
-  const proc = pty.spawn(shell, args, { name: "xterm-256color", cols, rows, cwd: dir, env: cleanEnv() });
+  // AXA_TERMINAL_ID tags this session's events so the console knows its status
+  const env = { ...cleanEnv(), AXA_TERMINAL_ID: id, AXA_ROLE: mode === "axa" ? "commander" : "worker" };
+  const proc = pty.spawn(shell, args, { name: "xterm-256color", cols, rows, cwd: dir, env });
   const screen = new Headless({ cols, rows, scrollback: 2000, allowProposedApi: true });
-  const t = { id: randomUUID().slice(0, 8), name: mode === "axa" ? "AXA" : basename(dir), cwd: dir, mode, proc, screen, buf: "", alive: true, created: Date.now(), lastOutput: Date.now(), sockets: new Set() };
+  const t = { id, name: mode === "axa" ? "AXA" : basename(dir), cwd: dir, mode, proc, screen, buf: "", alive: true, created: Date.now(), lastOutput: Date.now(), sockets: new Set() };
   proc.onData((d) => {
     t.buf = (t.buf + d).slice(-SCROLLBACK);
     t.lastOutput = Date.now();

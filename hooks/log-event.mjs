@@ -40,10 +40,14 @@ process.stdin.on("end", () => {
       skill: e.tool_name === "Skill" ? input.skill : undefined,
       subagent_type: ["Agent", "Task"].includes(e.tool_name) ? input.subagent_type || "general-purpose" : undefined,
       prompt: clip(e.prompt || (["Agent", "Task"].includes(e.tool_name) ? input.prompt : undefined), 2000),
-      message: clip(e.last_assistant_message, 2000),
+      message: clip(e.last_assistant_message ?? (e.hook_event_name === "Notification" ? e.message : undefined), 2000),
       error: clip(e.error, 500),
       duration_ms: e.duration_ms,
       source: e.source,
+      notification_type: e.notification_type,
+      // Set by AXA when it starts a session: which console terminal it is, and commander or worker
+      terminal: process.env.AXA_TERMINAL_ID || undefined,
+      role: process.env.AXA_ROLE || undefined,
     };
     mkdirSync(home, { recursive: true });
     appendFileSync(join(home, "events.jsonl"), JSON.stringify(ev) + "\n");

@@ -1,55 +1,94 @@
-// AXA terminal tools: a zero-dependency MCP server (stdio) that lets any Claude Code session see
-// and drive the terminals open in the AXA console. It talks to the console's local API using the
-// token in ~/.axa/console-token, so the console must be running (/axa:console).
-import { readFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
+// AXA session tools: a zero-dependency MCP server (stdio) that lets the AXA commander see and drive
+// the Claude Code sessions running in the AXA console, one per project. It talks to the console's
+// local API with the token in ~/.axa/console-token, and starts the console if it isn't running.
+// Project sessions also load the AXA plugin (for tracing) but get no tools here (AXA_ROLE=worker),
+// so only the commander can drive other sessions.
 import { createInterface } from "node:readline";
+import { ensureConsole, port, readToken } from "../console/ensure.mjs";
 
-const home = process.env.AXA_HOME || join(homedir(), ".axa");
-const port = Number(process.env.AXA_PORT || 4747);
+const isWorker = process.env.AXA_ROLE === "worker";
+const GOAL_LIMIT = 4000; // Claude Code's /goal condition limit
 
 async function api(path, { method = "GET", body } = {}) {
-  let token;
-  try { token = readFileSync(join(home, "console-token"), "utf8").trim(); }
-  catch { throw new Error("AXA console has never been started. Ask the user to run /axa:console."); }
-  let res;
-  try {
-    res = await fetch(`http://127.0.0.1:${port}${path}`, {
-      method,
-      headers: { host: `localhost:${port}`, cookie: `axa_token=${token}`, ...(body ? { "content-type": "application/json" } : {}) },
-      body: body ? JSON.stringify(body) : undefined,
-    });
-  } catch { throw new Error("AXA console is not running. Ask the user to run /axa:console."); }
+  if (!(await ensureConsole())) throw new Error("The AXA console isn't running and couldn't be started. Ask the user to run `axa console`.");
+  const res = await fetch(`http://127.0.0.1:${port}${path}`, {
+    method,
+    headers: { host: `localhost:${port}`, cookie: `axa_token=${readToken()}`, ...(body ? { "content-type": "application/json" } : {}) },
+    body: body ? JSON.stringify(body) : undefined,
+  });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || `console returned ${res.status}`);
   return data;
 }
 
+// One line per session for the commander: what it is, its status, what it's doing or last said
+function describe(s) {
+  const head = `[${s.id}] ${s.name} (${s.mode}) · ${s.status}${s.status === "waiting" ? " — NEEDS THE USER'S APPROVAL" : ""} · idle ${s.idle_seconds}s · ${s.cwd}`;
+  const lines = [head];
+  if (s.doing) lines.push(`  now: ${s.doing}`);
+  if (s.error) lines.push(`  last error: ${s.error}`);
+  if (s.last_report) lines.push(`  last report: ${s.last_report.replace(/\s+/g, " ").slice(0, 600)}`);
+  return lines.join("\n");
+}
+
 const TOOLS = [
   {
-    name: "list_terminals",
-    description: "List every terminal open in the AXA console: id, project name, folder, mode (claude/shell/axa), whether it is alive, seconds since it last printed anything (a rough 'is it still working' signal), and whether it is waiting on a permission prompt the user must answer.",
+    name: "list_sessions",
+    description:
+      "List every session open in the AXA console (usually one Claude Code session per project) with its status: starting, ready, working (and what it's doing), done (with its last report), waiting (needs the user's approval), or exited. Also lists the known projects you can open.",
     inputSchema: { type: "object", properties: {} },
-    run: async () => api("/api/terms"),
+    run: async () => {
+      const [sessions, projects] = await Promise.all([api("/api/terms"), api("/api/projects")]);
+      const open = sessions.length ? sessions.map(describe).join("\n") : "No sessions open.";
+      return `${open}\n\nProjects: ${projects.map((p) => `${p.name} (${p.path})`).join(", ") || "none found"}`;
+    },
   },
   {
-    name: "read_terminal",
-    description: "Read the current screen of one terminal as plain text (the last N lines). Use it to see what a Claude session in another project is doing, whether it finished, or what it asked.",
-    inputSchema: { type: "object", properties: { id: { type: "string", description: "Terminal id from list_terminals" }, lines: { type: "number", description: "How many trailing lines to return (default 60, max 400)" } }, required: ["id"] },
-    run: async ({ id, lines }) => api(`/api/terms/${encodeURIComponent(id)}/screen?lines=${lines || 60}`),
+    name: "read_session",
+    description: "Read the current screen of one session as plain text (the last N lines), to see in detail what it's doing, what it finished, or what it asked.",
+    inputSchema: { type: "object", properties: { id: { type: "string", description: "Session id from list_sessions" }, lines: { type: "number", description: "Trailing lines to return (default 60, max 400)" } }, required: ["id"] },
+    run: async ({ id, lines }) => {
+      const s = await api(`/api/terms/${encodeURIComponent(id)}/screen?lines=${lines || 60}`);
+      return `${describe(s)}\n---\n${s.screen}`;
+    },
   },
   {
-    name: "send_to_terminal",
-    description: "Type a message into a terminal and press Enter — e.g. give the Claude session in another project an instruction, or run a command in a shell. Write instructions to Claude sessions as complete, self-contained requests. Refuses if that terminal is showing a permission or trust prompt: never try to answer those; tell the user which terminal needs them.",
+    name: "send_to_session",
+    description:
+      "Type a message into a session and press Enter: a quick, complete, self-contained instruction for the Claude session there (it can't see this conversation), or a command in a shell session. Refuses if the session is waiting on a permission or trust prompt: never try to answer those; tell the user which session needs them.",
     inputSchema: { type: "object", properties: { id: { type: "string" }, text: { type: "string", description: "What to type" }, enter: { type: "boolean", description: "Press Enter after typing (default true)" } }, required: ["id", "text"] },
     run: async ({ id, text, enter }) => api(`/api/terms/${encodeURIComponent(id)}/input`, { method: "POST", body: { text, enter } }),
   },
   {
-    name: "open_terminal",
-    description: "Open a new terminal in the AXA console in a project folder. mode 'claude' starts Claude Code there (the usual choice), 'shell' starts a plain shell. Returns the new terminal's id. Note: the first time Claude opens in a folder it shows a trust prompt that only the user can answer.",
-    inputSchema: { type: "object", properties: { cwd: { type: "string", description: "Project folder, e.g. ~/projects/n2s-platform" }, mode: { type: "string", enum: ["claude", "shell"] } }, required: ["cwd"] },
-    run: async ({ cwd, mode }) => api("/api/terms", { method: "POST", body: { cwd, mode: mode || "claude" } }),
+    name: "start_goal",
+    description:
+      `Give a session a long-running goal with Claude Code's /goal: it keeps working on its own until the condition is met. Write the condition as what "done" looks like, self-contained, under ${GOAL_LIMIT} characters; for a long spec, have the session write it to a file first and make the goal point to that file.`,
+    inputSchema: { type: "object", properties: { id: { type: "string" }, goal: { type: "string", description: "The goal condition: what done looks like" } }, required: ["id", "goal"] },
+    run: async ({ id, goal }) => {
+      const text = String(goal).replace(/\s*\n\s*/g, " ").trim();
+      if (text.length > GOAL_LIMIT) throw new Error(`Goal is ${text.length} characters; /goal allows ${GOAL_LIMIT}. Put the details in a file in that project and point the goal at it.`);
+      return api(`/api/terms/${encodeURIComponent(id)}/input`, { method: "POST", body: { text: `/goal ${text}` } });
+    },
+  },
+  {
+    name: "open_session",
+    description:
+      "Open a new session in the AXA console for a project: by project name (from list_sessions) or folder. mode 'claude' (default) starts a traced Claude Code session in auto mode; 'shell' starts a plain shell. Returns the session id. The first time Claude opens in a folder it shows a trust prompt only the user can answer.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        project: { type: "string", description: "Project name, e.g. launches" },
+        cwd: { type: "string", description: "Or a folder, e.g. ~/launches" },
+        mode: { type: "string", enum: ["claude", "shell"] },
+      },
+    },
+    run: async ({ project, cwd, mode }) => api("/api/terms", { method: "POST", body: { project, cwd, mode: mode || "claude" } }),
+  },
+  {
+    name: "close_session",
+    description: "Close a session (stops whatever is running in it). Only when the user asked, or the session is finished and no longer needed.",
+    inputSchema: { type: "object", properties: { id: { type: "string" } }, required: ["id"] },
+    run: async ({ id }) => api(`/api/terms/${encodeURIComponent(id)}`, { method: "DELETE" }).then(() => `closed ${id}`),
   },
 ];
 
@@ -60,28 +99,31 @@ const fail = (id, code, message) => send({ jsonrpc: "2.0", id, error: { code, me
 
 createInterface({ input: process.stdin }).on("line", async (line) => {
   let msg;
-  try { msg = JSON.parse(line); } catch { return; }
+  try {
+    msg = JSON.parse(line);
+  } catch {
+    return;
+  }
   const { id, method, params } = msg;
   if (id === undefined) return; // notifications (e.g. notifications/initialized)
   if (method === "initialize") {
     return reply(id, {
       protocolVersion: params?.protocolVersion || "2025-06-18",
       capabilities: { tools: {} },
-      serverInfo: { name: "axa-terminals", version: "0.3.0" },
-      instructions: "Tools to see and drive the terminals open in the AXA console. Each terminal is usually a separate Claude Code session in a different project. Never answer another terminal's permission prompt.",
+      serverInfo: { name: "axa-sessions", version: "0.4.0" },
+      instructions: isWorker
+        ? "This is a project session started by AXA; session tools are only available to the AXA commander."
+        : "Tools to see and drive the sessions open in the AXA console, usually one Claude Code session per project. Never answer another session's permission prompt.",
     });
   }
   if (method === "ping") return reply(id, {});
-  if (method === "tools/list") return reply(id, { tools: TOOLS.map(({ run, ...t }) => t) });
+  if (method === "tools/list") return reply(id, { tools: isWorker ? [] : TOOLS.map(({ run, ...t }) => t) });
   if (method === "tools/call") {
-    const tool = TOOLS.find((t) => t.name === params?.name);
+    const tool = !isWorker && TOOLS.find((t) => t.name === params?.name);
     if (!tool) return fail(id, -32602, `unknown tool ${params?.name}`);
     try {
       const out = await tool.run(params.arguments || {});
-      const text = typeof out?.screen === "string"
-        ? `[${out.name} · ${out.mode} · ${out.alive ? "alive" : "exited"}${out.awaiting_permission ? " · WAITING ON USER PERMISSION" : ""} · idle ${out.idle_seconds}s]\n${out.screen}`
-        : JSON.stringify(out, null, 2);
-      return reply(id, { content: [{ type: "text", text }] });
+      return reply(id, { content: [{ type: "text", text: typeof out === "string" ? out : JSON.stringify(out, null, 2) }] });
     } catch (e) {
       return reply(id, { content: [{ type: "text", text: e.message }], isError: true });
     }
