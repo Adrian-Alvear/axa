@@ -328,7 +328,11 @@ function ingest(e) {
       if (!/^\s*<task-notification>/.test(e.prompt || "")) { axa.prompt = e.prompt; g.turnStart = e.ts; }
       axa.status = "running"; axa.yourTurn = false; axa.perm = null; break;
     case "Stop": axa.status = "idle"; axa.message = e.message; axa.yourTurn = true; axa.perm = null; axa.doneAt = e.ts; break;
-    case "PermissionRequest": owner.perm = e.tool || true; break;
+    // A permission request goes to AXA's approver first; it only needs you if AXA escalates it
+    // (or the prompt is actually on screen)
+    case "PermissionRequest": owner.reviewing = e.tool || true; break;
+    case "AxaDecision": owner.reviewing = null; owner.perm = e.decision === "escalate" ? e.tool || true : null; break;
+    case "Notification": if (/permission/i.test(e.notification_type || e.message || "")) owner.perm = owner.reviewing || owner.perm || true; break;
     case "PreToolUse": {
       g.calls++; owner.perm = null;
       if (isSpawn && !e.agent_id) {
@@ -742,7 +746,12 @@ function describe(e) {
     case "SessionStart": return ["", "session " + esc(e.source || "start")];
     case "SubagentStart": return ["", "online"];
     case "SubagentStop": return ["", "reported back"];
-    case "PermissionRequest": return ["perm", `needs your approval: ${esc(humanAction(e.tool, e.summary) || e.tool)}`];
+    case "PermissionRequest": return ["", `asked AXA to approve: ${esc(humanAction(e.tool, e.summary) || e.tool)}`];
+    case "AxaDecision":
+      return e.decision === "allow" ? ["", `AXA approved: ${esc(e.reason)}`]
+        : e.decision === "deny" ? ["fail", `AXA declined: ${esc(e.reason)}`]
+        : ["perm", `needs your approval (${esc(e.reason)}): ${esc(e.summary)}`];
+    case "Notification": return /permission/i.test(e.notification_type || "") ? ["perm", "waiting for your approval"] : null;
     case "PostToolUseFailure": return ["fail", `${esc(toolName(e.tool))} failed: ${esc(e.error)}`];
     case "PreToolUse": {
       if (isSpawn) return ["call", `started a helper (<b>${esc(roleFor(e.subagent_type))}</b>): ${esc(e.summary)}`];

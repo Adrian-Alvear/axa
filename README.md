@@ -47,9 +47,16 @@ have the feed fix its phone layout"): it opens a session per project in the cons
 work (`/goal` for long runs), tracks their status, and reports back. The same commander is in the
 console under **Terminals → AXA commander**, and every session shows up there live.
 
-Project sessions run in Claude Code's **auto mode** and load AXA only for tracing (they can't drive
-other sessions). When one needs your approval, the commander tells you which; you answer it in that
-session's tab. The commander never answers permission, trust, or setup prompts itself.
+Project sessions run in **accept-edits mode** under AXA's permission policy and approver (below), and
+load AXA only for tracing (they can't drive other sessions). Routine approvals are handled by AXA;
+only one-way doors (shipping to main, deploying, publishing, accounts, spending) wait for you, and the
+commander tells you which session and why. The commander never answers prompts itself.
+
+**AXA wakes itself.** When a project session finishes, gets stuck, exits or needs you, the console
+sends the commander session an automatic update: it checks the work, verifies the claims, gives the
+next step if it's within what you asked, and reports back, without you having to ask. It only types
+when the commander is idle and you haven't typed in its tab for 30 seconds, and at most
+`AXA_WAKES_PER_HOUR` (default 30) times an hour. `AXA_SUPERVISOR=0` turns it off.
 
 ## Make it yours
 
@@ -125,8 +132,13 @@ Project sessions that AXA starts check every tool call against a policy before r
   `log`, `add`, `commit`, new branches, pushing a branch that isn't `main`/`master`).
 - **Refused, with a reason the agent can act on:** the dangerous-command list above, editing files
   outside the project, `.git` internals, or secret files (`.env*`, keys, credentials), and reading secrets.
-- **Everything else** (pushing to `main`, deploy/publish scripts, `docker`, `sudo`, `curl`, unknown
-  tools…) goes through Claude Code's normal permission mode, which may ask you.
+- **Everything else goes to AXA's approver** (`hooks/approver.mjs`), so you aren't asked:
+  - **One-way doors always come to you:** pushing to `main`/production, deploying, publishing
+    packages, changing things on GitHub or in cloud/payment accounts, sending data to websites,
+    `sudo`/system changes, connecting to other machines, global installs.
+  - **The rest is decided by AXA:** a quick, tool-less Claude call (~3 seconds) weighs the request
+    against the session's goal and approves it, declines it with a reason the session sees (it then
+    finds another way), or passes it to you if unsure. Each decision shows in the console feed.
 
 It only applies to project sessions AXA starts, never to the commander or your own Claude sessions.
 Every decision is logged. To tune it, create `~/.axa/policy.json`:
@@ -140,7 +152,10 @@ Every decision is logged. To tune it, create `~/.axa/policy.json`:
 
 `allowBash` entries must match the whole command; `denyBash` matches anywhere. `mode`: `normal`
 (default), `strict` (only refuses, never auto-approves) or `off`. Projects are matched by folder
-name or full path.
+name or full path. Approver settings go in the same places: `"approver": { "mode": "off" }` sends
+every leftover prompt to you, `"approver": { "model": "haiku" }` picks its model (default `sonnet`),
+`"rules": "never add new dependencies"` gives it standing instructions, and `"escalate": ["regex"]`
+always asks you for matching requests.
 
 Some of these patterns are adapted from ECC (MIT); see [CREDITS.md](CREDITS.md).
 

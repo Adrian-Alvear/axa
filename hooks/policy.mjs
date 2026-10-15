@@ -108,7 +108,19 @@ function bash(cmd, ctx, ok) {
   if (/[`$]|<\(|>\(|<<|&>|\\\n/.test(cmd)) return null;
   const segments = split(cmd);
   if (!segments) return null;
-  for (const words of segments) if (!safeSegment(words, ctx)) return null;
+  // `cd <folder in the project>` is fine. Later segments are checked from every folder they could
+  // run in (with `;` the next one runs even if cd failed).
+  let cwds = [ctx.cwd];
+  for (const words of segments) {
+    if (words[0] === "cd") {
+      if (words.length !== 2 || words[1] === "-") return null;
+      const next = cwds.map((cwd) => pathOf(words[1], { ...ctx, cwd }));
+      if (!next.every((p) => inside(p, ctx.root))) return null;
+      cwds = [...new Set([...cwds, ...next])];
+      continue;
+    }
+    if (!cwds.every((cwd) => safeSegment(words, { ...ctx, cwd }))) return null;
+  }
   return ok("safe command");
 }
 const safeRe = (s, anchored = false) => { try { return new RegExp(anchored ? `^(?:${s})$` : s); } catch { return null; } };

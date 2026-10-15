@@ -5,7 +5,7 @@
 // Security: binds to 127.0.0.1 only, rejects foreign Host/Origin headers (DNS rebinding, other
 // websites), and requires a secret token (~/.axa/console-token) exchanged for a SameSite=Strict cookie.
 import { createServer } from "node:http";
-import { readFileSync, statSync, openSync, readSync, closeSync, existsSync, mkdirSync, writeFileSync, renameSync, unlinkSync, chmodSync } from "node:fs";
+import { readFileSync, statSync, openSync, readSync, closeSync, existsSync, mkdirSync, writeFileSync, renameSync, unlinkSync, chmodSync, appendFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -81,10 +81,13 @@ function readRoster() {
 // "Stuck": a tool started and nothing has happened in the session for this long. Measured from the
 // session's last event (not the tool's start) so a long helper agent that is still busy isn't flagged.
 const STUCK_MS = (Number(process.env.AXA_STUCK_MINUTES) || 20) * 60_000;
-const sessions = new Map(); // terminal id -> { status, doing, report, error, at, inflight }
+const APPROVER_MS = 75_000; // longer than the approver hook's own timeout
+const sessions = new Map(); // terminal id -> { status, doing, report, error, at, inflight, asking }
 function statusOf(id) {
   const s = sessions.get(id);
   if (!s) return s;
+  // AXA's approver normally answers within seconds; a request still open after that is on screen
+  if (s.status === "working" && s.asking && Date.now() - s.asking > APPROVER_MS) return { ...s, status: "waiting" };
   if (s.status === "working" && s.inflight?.size && Date.now() - s.at > STUCK_MS) {
     const [first] = s.inflight.values();
     return { ...s, status: "stuck", stuck_minutes: Math.round((Date.now() - first.since) / 60_000) };
@@ -101,16 +104,27 @@ function track(e) {
   s.at = e.ts;
   switch (e.event) {
     case "SessionStart": s.status = "ready"; s.inflight.clear(); break;
-    case "UserPromptSubmit": s.status = "working"; s.doing = "reading the instruction"; s.tool = s.summary = undefined; s.error = undefined; s.inflight.clear(); break;
+    case "UserPromptSubmit": s.status = "working"; s.doing = "reading the instruction"; s.tool = s.summary = undefined; s.error = undefined; s.asking = null; s.inflight.clear(); break;
     case "PreToolUse":
       s.status = "working"; s.doing = [e.tool, e.summary].filter(Boolean).join(" · "); s.tool = e.tool; s.summary = e.skill || e.summary; s.skill = e.skill;
       if (e.tool_use_id) s.inflight.set(e.tool_use_id, { tool: e.tool, summary: e.summary, since: e.ts });
       break;
-    case "PostToolUse": if (s.status === "waiting") s.status = "working"; s.inflight.delete(e.tool_use_id); break;
-    case "PostToolUseFailure": s.error = [e.tool, e.error].filter(Boolean).join(": "); s.inflight.delete(e.tool_use_id); break;
-    case "PermissionRequest": s.status = "waiting"; s.doing = `needs approval · ${[e.tool, e.summary].filter(Boolean).join(" ")}`; s.tool = e.tool; s.summary = e.summary; break;
-    case "Notification": if (/permission/i.test(e.notification_type || e.message || "")) { s.status = "waiting"; s.doing = e.message; } break;
-    case "Stop": s.status = "done"; s.doing = s.tool = s.summary = s.skill = undefined; s.inflight.clear(); if (e.message) s.report = e.message; break;
+    case "PostToolUse": if (s.status === "waiting") s.status = "working"; s.asking = null; s.inflight.delete(e.tool_use_id); break;
+    case "PostToolUseFailure": s.error = [e.tool, e.error].filter(Boolean).join(": "); s.asking = null; s.inflight.delete(e.tool_use_id); break;
+    // A permission request goes to AXA's approver first (hooks/approver.mjs). The session only waits
+    // on the user when the approver escalates it, or the prompt is still open after APPROVER_MS.
+    case "PermissionRequest":
+      if (e.role === "worker") { s.status = "working"; s.asking = e.ts; s.doing = `AXA reviewing · ${[e.tool, e.summary].filter(Boolean).join(" ")}`; }
+      else { s.status = "waiting"; s.doing = `needs approval · ${[e.tool, e.summary].filter(Boolean).join(" ")}`; }
+      s.tool = e.tool; s.summary = e.summary; break;
+    case "AxaDecision":
+      s.asking = null;
+      if (e.decision === "escalate") { s.status = "waiting"; s.doing = `needs your approval · ${e.reason}`; }
+      else s.doing = `AXA ${e.decision === "allow" ? "approved" : "declined"} · ${e.reason}`;
+      s.decisions = [...(s.decisions || []), { ts: e.ts, decision: e.decision, reason: e.reason, summary: e.summary, by: e.by }].slice(-20);
+      break;
+    case "Notification": if (/permission/i.test(e.notification_type || e.message || "")) { s.status = "waiting"; s.asking = null; s.doing = e.message; } break;
+    case "Stop": s.status = "done"; s.doing = s.tool = s.summary = s.skill = undefined; s.asking = null; s.inflight.clear(); if (e.message) s.report = e.message; break;
   }
   sessions.set(e.terminal, s);
 }
@@ -139,6 +153,53 @@ setInterval(() => {
     try { renameSync(logPath, logPath.replace(/\.jsonl$/, ".1.jsonl")); writeFileSync(logPath, "", { mode: 0o600 }); offset = 0; partial = ""; } catch {}
   }
 }, 250);
+
+// ---------- supervisor: AXA wakes itself ----------
+// When a project session finishes, gets stuck, exits, or needs the user, the console tells the AXA
+// commander session (if one is open) so it can check the work, take the next step and report, without
+// the user having to ask. The note is written here, never copied from a session's screen, so it
+// carries no untrusted text. It's only typed when the commander is idle and the user hasn't typed
+// into it for a while; updates queue up meanwhile. AXA_SUPERVISOR=0 turns this off.
+const SUPERVISE = process.env.AXA_SUPERVISOR !== "0";
+const QUIET_MS = 30_000; // don't type while the user is typing in the commander tab
+const WAKES_PER_HOUR = Number(process.env.AXA_WAKES_PER_HOUR) || 30;
+const NOTABLE = { done: "finished its turn", waiting: "needs the user's approval", stuck: "looks stuck", exited: "exited" };
+const lastSeen = new Map(), pending = new Map(), wakes = [];
+let primed = false;
+
+function supervise() {
+  if (!T || !SUPERVISE) return;
+  const list = T.listTerms();
+  for (const s of list) {
+    if (s.mode !== "claude") continue;
+    const prev = lastSeen.get(s.id);
+    lastSeen.set(s.id, s.status);
+    // the first pass only learns the current states; afterwards, report changes into a notable state
+    if (!primed || prev === undefined || prev === s.status) continue;
+    if (NOTABLE[s.status]) pending.set(s.id, { name: s.name, status: s.status });
+    else pending.delete(s.id); // back to work before AXA got to it
+  }
+  for (const id of lastSeen.keys()) if (!list.some((s) => s.id === id)) { lastSeen.delete(id); pending.delete(id); }
+  primed = true;
+  if (!pending.size) return;
+
+  const cmd = list.find((s) => s.mode === "axa" && s.alive);
+  if (!cmd || !["ready", "done"].includes(cmd.status) || cmd.awaiting_permission) return;
+  if (Date.now() - (T.lastInputAt?.(cmd.id) || 0) < QUIET_MS) return;
+  while (wakes.length && Date.now() - wakes[0] > 3600_000) wakes.shift();
+  if (wakes.length >= WAKES_PER_HOUR) return; // a runaway loop: updates wait (the needs-you badge still shows them)
+
+  const items = [...pending.entries()].map(([id, p]) => `${p.name} (${id}) ${NOTABLE[p.status]}`);
+  const text = `[AXA supervisor: automatic update from the console, not typed by the user] ${items.join("; ")}. Handle this under your supervisor rules: check each one, verify any claims, take the next step if it is within what the user asked, and end with a short report for the user.`;
+  T.sendToTerm(cmd.id, text).then((r) => {
+    if (!r.ok) return;
+    wakes.push(Date.now());
+    pending.clear();
+    const ev = { ts: Date.now(), event: "SupervisorWake", terminal: cmd.id, role: "console", items };
+    try { appendFileSync(logPath, JSON.stringify(ev) + "\n"); } catch {}
+  });
+}
+setInterval(supervise, 3000);
 
 // ---------- http ----------
 const json = (res, code, body) => { res.writeHead(code, { "content-type": "application/json" }); res.end(JSON.stringify(body)); };

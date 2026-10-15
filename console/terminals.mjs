@@ -173,7 +173,8 @@ export function noteSession(terminalId, sessionId) {
 
 const summary = (t) => {
   const traced = statusOf(t.id);
-  const waiting = t.alive && (traced?.status === "waiting" || awaitingPermission(t));
+  // While AXA's approver is deciding, the prompt is already drawn on screen: not the user's turn yet
+  const waiting = t.alive && (traced?.status === "waiting" || (!traced?.asking && awaitingPermission(t)));
   return {
     id: t.id, name: t.name, cwd: t.cwd, mode: t.mode, alive: t.alive, created: t.created,
     // "waiting" wins over "stuck": a prompt on screen is the more specific reason
@@ -259,6 +260,8 @@ export async function sendToTerm(id, text, { enter = true, confirmed = false } =
   return { ok: true };
 }
 export const listTerms = () => [...terms.values()].map(summary);
+// When the user last typed into a session from the browser (the supervisor waits until they stop)
+export const lastInputAt = (id) => terms.get(id)?.lastInput || 0;
 
 const isDir = (p) => { try { return statSync(p).isDirectory(); } catch { return false; } };
 
@@ -412,7 +415,7 @@ export function attachWebSocket(server, authorize) {
       ws.on("message", (raw) => {
         let msg; try { msg = JSON.parse(raw); } catch { return; }
         if (!t.alive) return;
-        if (msg.t === "i" && typeof msg.d === "string") t.proc.write(msg.d);
+        if (msg.t === "i" && typeof msg.d === "string") { t.proc.write(msg.d); t.lastInput = Date.now(); }
         if (msg.t === "r" && msg.c > 0 && msg.r > 0) { const c = Math.min(msg.c, 500), r = Math.min(msg.r, 300); t.proc.resize(c, r); t.screen?.resize(c, r); t.capture = null; }
       });
       ws.on("close", () => t.sockets.delete(ws));
