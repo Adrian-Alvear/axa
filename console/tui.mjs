@@ -26,7 +26,9 @@ const THEMES = {
   mono: { title: "1", accent: "1", wait: "1;4", waitSoft: "1", stuck: "1", work: "0", done: "0", idle: "0", off: "2", dim: "2", sel: "7", rule: "2", tag: "7", add: "1", del: "2", hunk: "1" },
 };
 const PREFIXES = { "C-b": 0x02, "C-a": 0x01, "C-g": 0x07, "C-\\": 0x1c };
-const DEFAULTS = { theme: "terminal", prefix: "C-b", sidebar: "left", sidebarWidth: 30, bell: true, newSession: "claude" };
+const DEFAULTS = { theme: "terminal", prefix: "C-b", sidebar: "left", sidebarWidth: 30, bell: true, newSession: "claude", feed: true };
+const FEED_ROWS = 5; // the activity strip: a rule plus the latest 4 events
+const SPARK = "▁▂▃▄▅▆▇█", SPARK_BUCKETS = 10, SPARK_MIN = 3; // activity over the last 30 minutes, 3 minutes per bar
 
 export async function runTui({ port, readToken, openUrl, root, home }) {
   const pty = require("node-pty");
@@ -99,14 +101,15 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
     const sideX = cfg.sidebar === "right" ? W - side : 0; // 0-based column of the sidebar
     const mainX = side && cfg.sidebar !== "right" ? side + 1 : 0, mainW = W - (side ? side + 1 : 0);
     const alert = alertFor(), alertRows = alert ? 2 : 0;
-    const mainH = H - 1 - alertRows; // rows above the alert bar and status line
+    const feedRows = cfg.feed && H >= 24 ? FEED_ROWS : 0;
+    const mainH = H - 1 - alertRows - feedRows; // rows above the alert bar, the activity strip and the status line
     const panes = [];
     if (views.length < 2) panes.push({ x: mainX, y: 0, w: mainW, h: mainH });
     else if (mainW >= 100) { const a = Math.floor((mainW - 1) / 2); panes.push({ x: mainX, y: 0, w: a, h: mainH }, { x: mainX + a + 1, y: 0, w: mainW - a - 1, h: mainH }); }
     else { const a = Math.floor(mainH / 2); panes.push({ x: mainX, y: 0, w: mainW, h: a }, { x: mainX, y: a, w: mainW, h: mainH - a }); }
     // each pane: a header row, then the session's rows
     for (const p of panes) { p.cols = Math.max(10, p.w); p.rows = Math.max(3, p.h - 1); }
-    return { side, sideX, mainX, mainW, mainH, panes, alert, alertRows };
+    return { side, sideX, mainX, mainW, mainH, panes, alert, alertRows, feedRows };
   }
 
   // ---------- live panes: a tmux client in a PTY, drawn through a headless terminal ----------
@@ -217,8 +220,14 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
       const isSel = s.id === selId(), shown = onScreen(s.id), num = s.mode === "axa" ? "0" : nums.get(s.id);
       const head = `${shown && !isSel ? "▸" : " "}${num} ${g} ${cut(nameOf(s), w - 7)}`;
       const sub = `     ${cut(s.status === "waiting" && s.choices ? question(s.choices) : (s.mode === "axa" && ["ready", "starting"].includes(s.status)) || (s.mode === "shell" && word === "shell") ? what(s) : `${word} · ${what(s)}`, w - 6)}`;
-      const meta = s.mode === "axa" ? null : `     ${cut([gitText(s.git), s.usage?.tokens ? `${fmtTok(s.usage.tokens)} tok${s.usage.over_budget ? "!" : ""}` : ""].filter(Boolean).join(" · "), w - 6)}`;
-      for (const [t, r] of [[head, role], [sub, "dim"], ...(meta !== null ? [[meta, "dim"]] : [])]) rows.push(isSel ? sgr("sel", pad(t, w)) : sgr(r, pad(t, w)));
+      // the activity sparkline sits at the right end of the session's name row
+      const sp = spark(s.id), spW = sp ? SPARK_BUCKETS + 1 : 0;
+      const metaText = s.mode === "axa" ? null : `     ${cut([gitText(s.git), s.usage?.tokens ? `${fmtTok(s.usage.tokens)} tok${s.usage.over_budget ? "!" : ""}` : ""].filter(Boolean).join(" · "), w - 6)}`;
+      const lines = [[head, role, true], [sub, "dim", false], ...(metaText !== null ? [[metaText, "dim", false]] : [])];
+      for (const [t, r, withSpark] of lines) {
+        const body = withSpark && sp ? pad(t, w - spW) : pad(t, w);
+        rows.push(isSel ? sgr("sel", body + (withSpark && sp ? " " + sp : "")) : sgr(r, body) + (withSpark && sp ? " " + sgr(role === "off" ? "dim" : "work", sp) : ""));
+      }
     }
     if (!list.some((s) => s.mode !== "axa")) rows.push(sgr("dim", pad("   no sessions yet: Ctrl-b c", w)));
     while (rows.length < H - 3) rows.push(" ".repeat(w));
@@ -240,7 +249,7 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
     const k = cfg.prefix.replace("C-", "Ctrl-");
     const tag = prefix ? " PREFIX " : "";
     const keys = prefix
-      ? " : palette · s browse · j/k move · 0-9 pick · % split · Tab pane · z zoom · y/x answer · ! go · c new · w worktree · g goal · d diff · v verify · , settings · q quit · ? help"
+      ? " : palette · s browse · / search · j/k move · 0-9 pick · % split · Tab pane · z zoom · f feed · y/x answer · ! go · c new · w worktree · g goal · d diff · v verify · , settings · q quit · ? help"
       : ` ${k} : palette · ${k} s browse · ${k} ? help · ${k} q leave (sessions keep running)`;
     const clock = new Date().toLocaleTimeString([], { hour12: false });
     const room = Math.max(0, W - 10 - tag.length);
@@ -258,13 +267,7 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
       for (let y = 0; y < H - 1; y++) o += `${ESC}[${y + 1};${L.sideX + 1}H${side[y] || " ".repeat(L.side)}${ESC}[${y + 1};${cfg.sidebar === "right" ? L.sideX : L.side + 1}H${sgr("rule", "│")}`;
       void bx;
     }
-    if (overlay) {
-      // overlays take the whole main area
-      const p = { x: L.mainX, y: 0, cols: L.mainW, rows: L.mainH - 1 };
-      const rows = overlayRows(p);
-      for (let y = 0; y < L.mainH; y++) o += `${ESC}[${y + 1};${L.mainX + 1}H${rows[y] ?? " ".repeat(L.mainW)}`;
-      views.forEach((v) => v && (v.lastRows = []));
-    } else {
+    {
       L.panes.forEach((p, i) => {
         const v = views[i];
         o += `${ESC}[${p.y + 1};${p.x + 1}H${paneHeader(v, p, i === focus)}`;
@@ -281,7 +284,10 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
         if (b.x > a.x) for (let y = 0; y < L.mainH; y++) o += `${ESC}[${y + 1};${b.x}H${sgr("rule", "│")}`;
       }
     }
+    // panels float over the live sessions (which keep running and drawing underneath)
+    if (overlay) o += floatingPanel(L);
     if (L.alert) alertRows(L).forEach((r, i) => (o += `${ESC}[${L.mainH + 1 + i};${L.mainX + 1}H${r}`));
+    if (L.feedRows) feedStripRows(L).forEach((r, i) => (o += `${ESC}[${L.mainH + L.alertRows + 1 + i};${L.mainX + 1}H${r}`));
     o += `${ESC}[${H};1H${statusRow()}`;
     // the focused session's own cursor, when it shows one
     const v = views[focus], p = L.panes[focus];
@@ -295,8 +301,19 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
     out.write(o);
   }
 
+  // A bordered panel centered over the main area ("large" panels, like browse, take nearly all of it)
+  function floatingPanel(L) {
+    const big = overlay.size === "large";
+    const w = Math.max(30, Math.min(L.mainW - (big ? 2 : 4), big ? 400 : 108)), h = Math.max(8, Math.min(L.mainH - (big ? 1 : 2), big ? 400 : 32));
+    const x = L.mainX + Math.floor((L.mainW - w) / 2), y = Math.floor((L.mainH - h) / 2);
+    const rows = overlayRows({ x: x + 1, y: y + 1, cols: w - 2, rows: h - 3 });
+    let o = `${ESC}[${y + 1};${x + 1}H${sgr("accent", "╭" + "─".repeat(w - 2) + "╮")}`;
+    for (let i = 0; i < h - 2; i++) o += `${ESC}[${y + 2 + i};${x + 1}H${sgr("accent", "│")}${rows[i] ?? " ".repeat(w - 2)}${sgr("accent", "│")}`;
+    return o + `${ESC}[${y + h};${x + 1}H${sgr("accent", "╰" + "─".repeat(w - 2) + "╯")}`;
+  }
+
   // ---------- overlays ----------
-  // { title, lines: [string | {text, role}], scroll, hint, onKey(k) -> handled?, input?, prompt?, onSubmit?, render?(p) }
+  // { title, lines: [string | {text, role}], scroll, hint, onKey(k) -> handled?, input?, prompt?, onSubmit?, render?(p), size? }
   function overlayRows(p) {
     const ov = overlay, rows = [];
     if (ov.render) ov.render(p);
@@ -314,12 +331,13 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
     if (ov.input !== undefined) {
       const pr = ` ${ov.prompt || "›"} `;
       rows.push(pad(pr + ov.input, p.cols));
-      ov.cursor = [rows.length, p.x + width(pr) + width(ov.input) + 1];
+      ov.cursor = [p.y + rows.length, p.x + width(pr) + width(ov.input) + 1];
     } else ov.cursor = null;
     rows.push(sgr("dim", pad(` ${ov.hint || (lines.length > body ? "j/k ↑/↓ space scroll · q close" : "q close")}`, p.cols)));
     return rows;
   }
-  const closeOverlay = () => { overlay?.onClose?.(); overlay = null; schedule(); };
+  // closing a panel repaints the sessions it covered
+  const closeOverlay = () => { overlay?.onClose?.(); overlay = null; fullRedraw = true; schedule(); };
   function overlayKey(k) {
     const ov = overlay;
     if (ov.onKey && ov.onKey(k)) return schedule();
@@ -352,7 +370,8 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
     "  s          browse sessions with a live preview (peek)      ,   settings: theme, prefix key, sidebar, bell",
     "  j / k      next / previous session      0  AXA commander   1 … 9  a session by number",
     "  %          split: a second session side by side (again to close it)    Tab  switch pane",
-    "  z          zoom: hide the sidebar",
+    "  z          zoom: hide the sidebar       f  show / hide the activity strip",
+    "  /          search every session's screen and recent history",
     "  y / x      answer the prompt in the yellow bar: its Yes… / No… option (the bar names them)",
     "  !          jump to whatever needs you",
     "  c          new session in a project     w  new session in its own git worktree",
@@ -375,6 +394,123 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
     views.forEach((v) => { const s = v && list.find((x) => x.id === v.id); if (v && !v.dead && (!s || !s.alive)) v.dead = "Session ended."; });
     schedule();
   }
+  // ---------- the event stream: activity sparklines and the activity strip ----------
+  const feed = []; // described events, newest last
+  const activity = new Map(); // terminal id -> event times (last 30 minutes)
+  const PLUMBING = /^(ToolSearch|TodoWrite|TaskCreate|TaskUpdate|TaskList|TaskGet|TaskOutput|EnterPlanMode|ExitPlanMode)$/;
+  const clip = (s, n) => cut(clean(s), n);
+  function humanAction(tool, summary, skill) {
+    if (skill) return `using the ${skill} skill`;
+    if (!tool || PLUMBING.test(tool)) return null;
+    const s = clip(summary, 90);
+    const m = /^mcp__(.+?)__(.+)$/.exec(tool);
+    if (m) return `${m[2].replace(/_/g, " ")} (${m[1].replace(/^plugin_/, "").replace(/_/g, " ")})`;
+    return { Bash: s ? `ran: ${s}` : "ran a command", Read: `read ${s || "a file"}`, Edit: `edited ${s || "a file"}`, Write: `wrote ${s || "a file"}`, Grep: `searched for ${s}`, Glob: `looked for ${s}`, WebSearch: `searched the web: ${s}`, WebFetch: `read a web page: ${s}`, Agent: `started a helper: ${s}`, Task: `started a helper: ${s}`, Skill: `using the ${s} skill` }[tool] || (s ? `${tool}: ${s}` : tool);
+  }
+  function describe(e) {
+    switch (e.event) {
+      case "UserPromptSubmit": return /^\s*(\[AXA supervisor|<task-notification>)/.test(e.prompt || "") ? null : { text: `got an instruction: ${clip(e.prompt, 80)}`, role: "accent" };
+      case "PreToolUse": { const a = e.agent_id ? null : humanAction(e.tool, e.summary, e.skill); return a ? { text: a, role: "" } : null; }
+      case "PostToolUseFailure": return { text: `${e.tool || "a step"} failed: ${clip(e.error, 80)}`, role: "del" };
+      case "AxaDecision": return e.decision === "allow" ? { text: `AXA approved: ${clip(e.reason, 80)}`, role: "dim" } : e.decision === "deny" ? { text: `AXA declined: ${clip(e.reason, 80)}`, role: "stuck" } : { text: `needs your approval: ${clip(e.reason, 80)}`, role: "wait" };
+      case "PolicyDecision": return e.decision === "deny" ? { text: `policy refused: ${clip(e.reason, 80)}`, role: "stuck" } : null;
+      case "Notification": return /permission/i.test(e.notification_type || "") ? { text: "waiting for your approval", role: "wait" } : null;
+      case "Stop": return { text: `finished${e.message ? `: ${clip(e.message, 80)}` : ""}`, role: "done" };
+      case "VerifyGate": return { text: "verify gate: sent back to check its work", role: "waitSoft" };
+      case "UserAnswer": return { text: `you answered: ${clip(e.answer, 60)}`, role: "accent" };
+      case "SupervisorWake": return { text: `AXA woke up: ${clip((e.items || []).join("; "), 90)}`, role: "accent" };
+    }
+    return null;
+  }
+  function ingest(e) {
+    if (!e?.terminal) return;
+    const t = activity.get(e.terminal) || [];
+    t.push(e.ts || Date.now()); activity.set(e.terminal, t);
+    const d = describe(e);
+    if (d) { feed.push({ ts: e.ts || Date.now(), terminal: e.terminal, commander: e.role === "commander", ...d }); if (feed.length > 300) feed.splice(0, feed.length - 300); }
+  }
+  // the console's live event stream (Server-Sent Events); reconnects on its own
+  async function streamEvents() {
+    for (;;) {
+      try {
+        const res = await fetch(`http://127.0.0.1:${port}/events`, { headers: { host: `localhost:${port}`, cookie: `axa_token=${readToken()}` } });
+        const reader = res.body.getReader(), dec = new TextDecoder();
+        let buf = "";
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buf += dec.decode(value, { stream: true });
+          let i;
+          while ((i = buf.indexOf("\n\n")) >= 0) {
+            const block = buf.slice(0, i); buf = buf.slice(i + 2);
+            const kind = /^event: (\w+)/m.exec(block)?.[1], data = block.split("\n").filter((l) => l.startsWith("data: ")).map((l) => l.slice(6)).join("\n");
+            if (!data) continue;
+            try { const v = JSON.parse(data); kind === "history" ? v.forEach(ingest) : ingest(v); } catch {}
+          }
+          schedule();
+        }
+      } catch {}
+      if (quitting) return;
+      await new Promise((r) => setTimeout(r, 3000));
+    }
+  }
+  // "  ▂▅█ ▃": events per 3 minutes over the last 30
+  function spark(id) {
+    const now = Date.now(), span = SPARK_MIN * 60_000, b = Array(SPARK_BUCKETS).fill(0);
+    const ts = (activity.get(id) || []).filter((t) => now - t < span * SPARK_BUCKETS);
+    activity.set(id, ts);
+    for (const t of ts) b[SPARK_BUCKETS - 1 - Math.floor((now - t) / span)]++;
+    const max = Math.max(...b);
+    return max ? b.map((n) => (n ? SPARK[Math.min(7, Math.ceil((n / max) * 7))] : " ")).join("") : "";
+  }
+  function feedStripRows(L) {
+    const rows = [sgr("rule", "─ activity " + "─".repeat(Math.max(0, L.mainW - 11)))];
+    const name = (f) => { const s = list.find((x) => x.id === f.terminal); return f.commander || s?.mode === "axa" ? "AXA" : s ? clean(s.name) : f.terminal.slice(0, 8); };
+    const last = feed.slice(-(L.feedRows - 1));
+    for (let i = 0; i < L.feedRows - 1; i++) {
+      const f = last[i - (L.feedRows - 1 - last.length)];
+      if (!f) { rows.push(" ".repeat(L.mainW)); continue; }
+      const time = new Date(f.ts).toLocaleTimeString([], { hour12: false, hour: "2-digit", minute: "2-digit" });
+      const head = ` ${time} ${pad(name(f), 14)} `;
+      rows.push(sgr("dim", head) + sgr(f.role || "idle", pad(f.text, Math.max(0, L.mainW - width(head)))));
+    }
+    return rows;
+  }
+
+  // ---------- search every session's screen and recent history ----------
+  async function searchAll() {
+    const ov = { title: "Search every session · type to filter · ↑/↓ choose · Enter go there · Esc close", input: "", prompt: "/", sel: 0, lines: [], size: "large", hint: "searches each session's screen and recent history" };
+    const texts = [];
+    let hits = [], loading = true;
+    ov.render = (p) => {
+      const q = ov.input.trim().toLowerCase();
+      hits = q ? texts.filter((x) => x.t.toLowerCase().includes(q)).slice(-500) : [];
+      ov.sel = Math.min(ov.sel, Math.max(0, hits.length - 1));
+      if (loading) { ov.lines = [{ text: "  reading sessions…", role: "dim" }]; return; }
+      if (!q) { ov.lines = [{ text: `  ${texts.length} lines across ${new Set(texts.map((x) => x.s.id)).size} sessions: type to search`, role: "dim" }]; return; }
+      if (!hits.length) { ov.lines = [{ text: "  no match", role: "dim" }]; return; }
+      ov.lines = hits.map((h, i) => {
+        const left = pad(`${i === ov.sel ? "›" : " "} ${nameOf(h.s)}`, 18), rest = cut(h.t, Math.max(0, p.cols - 21));
+        const at = rest.toLowerCase().indexOf(q), mark = at >= 0 ? rest.slice(0, at) + sgr("wait", rest.slice(at, at + q.length)) + rest.slice(at + q.length) : rest;
+        const line = (i === ov.sel ? sgr("sel", left) : sgr("accent", left)) + sgr("rule", " │ ") + mark;
+        return { raw: line + " ".repeat(Math.max(0, p.cols - 21 - width(rest))) };
+      });
+      ov.follow = ov.sel;
+    };
+    ov.onInput = () => { ov.sel = 0; };
+    ov.onKey = (k) => {
+      if (k === "\x1b[B" || k === "\x0e") { ov.sel = Math.min(hits.length - 1, ov.sel + 1); return true; }
+      if (k === "\x1b[A" || k === "\x10") { ov.sel = Math.max(0, ov.sel - 1); return true; }
+      if (k === "\r") { const h = hits[ov.sel]; closeOverlay(); if (h) show(h.s); return true; }
+      return false;
+    };
+    overlay = ov; schedule();
+    await Promise.all(ordered().map(async (s) => {
+      try { const r = await api(`/api/terms/${s.id}/screen?lines=400`); for (const l of String(r.screen || "").split("\n")) { const t = clean(l); if (t) texts.push({ s, t }); } } catch {}
+    }));
+    loading = false; schedule();
+  }
+
   async function answerAlert(which) {
     const a = alertFor() || (sel()?.status === "waiting" && sel()?.choices ? sel() : null);
     if (!a) return flash("Nothing to answer", ["No session is waiting on a prompt right now."]);
@@ -452,7 +588,7 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
   function browse() {
     const o = ordered();
     if (!o.length) return flash("No sessions", ["Start one with Ctrl-b c."]);
-    const ov = { title: "Sessions · ↑/↓ preview · Enter show here · % show in a split · d diff · g goal · Esc close", sel: Math.max(0, o.findIndex((s) => s.id === selId())), lines: [], hint: "the preview is read-only and live" };
+    const ov = { title: "Sessions · ↑/↓ preview · Enter show here · % show in a split · d diff · g goal · Esc close", sel: Math.max(0, o.findIndex((s) => s.id === selId())), lines: [], hint: "the preview is read-only and live", size: "large" };
     let screen = [], timerId = null, last = null;
     const fetchScreen = async () => {
       const s = o[ov.sel]; if (!s) return;
@@ -497,6 +633,8 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
     add("Split: second session side by side", toggleSplit, "%");
     add(zoom ? "Show the sidebar" : "Zoom: hide the sidebar", () => { zoom = !zoom; fullRedraw = true; schedule(); }, "z");
     add("Jump to whatever needs you", () => action("!"), "!");
+    add("Search every session", searchAll, "/");
+    add(cfg.feed ? "Hide the activity strip" : "Show the activity strip", () => action("f"), "f");
     add("Settings: theme, prefix key, sidebar, bell", settings, ",");
     add("Open the web console", () => action("o"), "o");
     add("Help: all keys", () => action("?"), "?");
@@ -523,7 +661,7 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
     ov.onKey = (k) => {
       if (k === "\x1b[B" || k === "\x0e") { ov.sel = Math.min(hits.length - 1, ov.sel + 1); render(); return true; }
       if (k === "\x1b[A" || k === "\x10") { ov.sel = Math.max(0, ov.sel - 1); render(); return true; }
-      if (k === "\r") { const a = hits[ov.sel]; overlay = null; if (a) a.run(); schedule(); return true; }
+      if (k === "\r") { const a = hits[ov.sel]; overlay = null; fullRedraw = true; if (a) a.run(); schedule(); return true; }
       return false;
     };
     render(); overlay = ov; schedule();
@@ -538,6 +676,7 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
       { key: "sidebarWidth", label: "Sidebar width", values: [24, 26, 28, 30, 34, 38, 42, 48] },
       { key: "bell", label: "Bell when something needs you", values: [true, false] },
       { key: "newSession", label: "New sessions start as", values: ["claude", "shell"] },
+      { key: "feed", label: "Activity strip", values: [true, false], about: "the latest events across sessions, under the panes" },
     ];
     const ov = { title: "Settings · ↑/↓ choose · ←/→ or Enter change · saved as you go · Esc close", sel: 0, lines: [] };
     const fmt = (v) => (v === true ? "on" : v === false ? "off" : String(v));
@@ -575,6 +714,8 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
     if (k === "%") return toggleSplit();
     if (k === "\t" || k === "\x1b[Z") { if (views.length > 1) { focus = (focus + 1) % views.length; schedule(); } return; }
     if (k === "z") { zoom = !zoom; fullRedraw = true; return schedule(); }
+    if (k === "/") return searchAll();
+    if (k === "f") { cfg.feed = !cfg.feed; saveCfg(); fullRedraw = true; return schedule(); }
     if (k === "y") return answerAlert("yes");
     if (k === "x") return answerAlert("no");
     if (k === "c") return newSession(false);
@@ -656,5 +797,6 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
   show(list.find((s) => s.status === "waiting" && s.mode !== "axa") || cmd || ordered()[0], 0);
   if (cmdError) flash("Couldn't start the AXA commander", [cmdError, "", "Sessions still work; start it later from the web console (Ctrl-b o)."]);
   setInterval(poll, 1000);
+  streamEvents();
   setInterval(schedule, 1000); // the clock
 }

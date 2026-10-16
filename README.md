@@ -108,6 +108,14 @@ built in:
   it a goal.
 - **Split and zoom:** `Ctrl-b %` puts a second live session side by side (stacked on narrow
   windows), and `Tab` switches which one you're typing into. `Ctrl-b z` hides the sidebar.
+- **Search every session:** `Ctrl-b /` searches what's on each session's screen and its recent
+  history, highlighting matches. Enter jumps to that session.
+- **Activity at a glance:** each session's name row ends with a sparkline of its activity over the
+  last 30 minutes. A strip under the panes shows the latest events across sessions in plain words:
+  "AXA approved: …", "policy refused: …", "verify gate: sent back to check its work", "finished: …",
+  "you answered: …". `Ctrl-b f` shows or hides the strip.
+- **Floating panels:** help, the palette, diffs, checks, settings, search and browse open as panels
+  over the live sessions, which keep running underneath.
 - **Actions:** press **Ctrl-b**, then `j`/`k` (or `0`–`9`) to switch sessions, `c` new session,
   `w` new session in its own worktree, `g` give a goal, `d` its diff, `v` run the project's
   checks, `o` the web console, `X` close it, `q` leave (sessions keep running), `?` for all keys.
