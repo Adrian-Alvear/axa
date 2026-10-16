@@ -245,7 +245,12 @@
     #needs.on { margin-left: auto; padding: 8px 12px; }
     aside { display: contents; }
     #inbox { order: 1; max-height: none; border-bottom: 1px solid var(--line); padding: 14px 16px 8px; scroll-margin-top: 56px; }
-    #terms { order: 2; height: 70vh; height: 70dvh; border-right: 0; border-bottom: 1px solid var(--line); scroll-margin-top: 56px; }
+    /* the terminal fills exactly the space between the header and the bottom nav: tabs, output (which
+       shrinks), and the key bar as its last row, all visible when you jump to it */
+    body { --hdr: calc(46px + env(safe-area-inset-top)); --nav: calc(57px + env(safe-area-inset-bottom)); }
+    #terms { order: 2; height: calc(100vh - var(--hdr) - var(--nav)); height: calc(100dvh - var(--hdr) - var(--nav)); border-right: 0; border-bottom: 1px solid var(--line); scroll-margin-top: var(--hdr); }
+    /* and wherever the page is scrolled, the key bar stays above the bottom nav while the terminal is on screen */
+    #keybar { position: sticky; bottom: var(--nav); z-index: 4; }
     #stage { order: 3; height: 60vh; height: 60dvh; flex: none; scroll-margin-top: 56px; }
     #feedwrap { order: 4; min-height: 50vh; scroll-margin-top: 56px; }
     #detail { order: 5; max-height: none; }
