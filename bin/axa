@@ -86,7 +86,10 @@ async function attach(s) {
     const detach = () => { const r = p._pty && spawnSync("tmux", ["-L", `axa-${port}`, "detach-client", "-t", p._pty], { stdio: "ignore" }); if (!r || r.status !== 0) p.kill(); };
     const utf = new StringDecoder("utf8"); // a pasted character can arrive split across chunks
     const onIn = (d) => { if (d.includes(0x1d)) return detach(); p.write(utf.write(d)); };
-    const onResize = () => { try { p.resize(out.columns, out.rows); } catch {} };
+    // the session's window takes this terminal's size while attached (the console re-sizes it on focus)
+    const fitWindow = () => spawnSync("tmux", ["-L", `axa-${port}`, "resize-window", "-t", `=axa-${s.id}:`, "-x", String(out.columns || 100), "-y", String(out.rows || 30)], { stdio: "ignore" });
+    fitWindow();
+    const onResize = () => { try { p.resize(out.columns, out.rows); } catch {} fitWindow(); };
     p.onData((d) => out.write(d));
     process.stdin.on("data", onIn); out.on("resize", onResize);
     p.onExit(() => {

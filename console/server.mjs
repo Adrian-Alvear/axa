@@ -232,6 +232,9 @@ const VENDOR = {
   "/vendor/xterm.js": ["@xterm/xterm/lib/xterm.js", "text/javascript"],
   "/vendor/xterm.css": ["@xterm/xterm/css/xterm.css", "text/css"],
   "/vendor/addon-fit.js": ["@xterm/addon-fit/lib/addon-fit.js", "text/javascript"],
+  "/vendor/addon-search.js": ["@xterm/addon-search/lib/addon-search.js", "text/javascript"],
+  "/vendor/addon-web-links.js": ["@xterm/addon-web-links/lib/addon-web-links.js", "text/javascript"],
+  "/vendor/addon-webgl.js": ["@xterm/addon-webgl/lib/addon-webgl.js", "text/javascript"],
 };
 
 const server = createServer(async (req, res) => {

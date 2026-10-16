@@ -151,6 +151,13 @@ or run it yourself: `node console/server.mjs --open` → http://localhost:4747
 - **On your phone:** the sessions list comes first, with big buttons, and a bottom bar jumps to
   Sessions (with a needs-you badge), Terminal, Map and Activity. Animations stop if your system asks
   for reduced motion.
+- **Terminal comfort:** **A− / A+** set the text size (remembered per browser, a little larger on
+  phones). **⌕** or Ctrl+Shift+F searches the terminal's history. Links are clickable. On desktop the
+  terminal draws with the GPU, so long output stays fast (`localStorage["axa.webgl"]` = `"0"` turns that
+  off, `"1"` turns it on for phones too). On a phone or tablet a key bar under the terminal has what
+  the on-screen keyboard lacks: Esc (stop Claude), Ctrl (then a letter), ^C, Tab, ⇧Tab (Claude's mode
+  switch), the arrows and Enter. The terminal also takes the size of whichever screen you're using, so
+  switching between phone, desktop and `axa attach` no longer leaves it mis-sized.
 - **Terminals:** press **Terminals → +** to launch Claude Code (or a plain shell) in any project, right inside the dashboard. Sessions started here are traced and run in auto mode. Run several projects side by side; the map follows whichever tab you're in. Terminals keep running if you reload the page.
 - **Sessions survive restarts:** each session runs in tmux (on AXA's own socket, `tmux -L axa-<port>`, so your tmux setup is untouched). Stopping or restarting the console (`axa stop`) leaves them running, and the next start shows them again with the same ids. After a machine restart, Claude sessions are relaunched resuming their chat (marked `recovered`); plain shells are dropped. `axa stop --all` ends every session. Without tmux (e.g. a Mac without it installed), sessions end with the console as before; `AXA_NO_TMUX=1` forces that.
 

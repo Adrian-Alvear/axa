@@ -170,6 +170,7 @@ zero-dependency Node and plain-HTML style. Risk means risk to the user's work or
 | 16 | Spec-first goal template (requirements → design → tasks in SPEC.md) | Med | S | Low | Later |
 | 17 | One-line AI summary per session (a cheap `claude -p` per state change) | Med | S | Low (cost) | Later |
 | 18 | Container sandbox for overnight auto-approve runs | High | L | Med | Later |
-| 19 | Fix: tmux "window-size latest" leaves a dotted, mis-sized terminal in one browser after another client (phone, `axa attach`) was used last, until you type in it; resize the window on focus | Med | S | Low | Later (found while verifying) |
+| 19 | Terminal pass: the right size on every screen (the window follows the screen in use, re-claimed on focus), a phone key bar (Esc, Ctrl, ^C, Tab, ⇧Tab, arrows, Enter), text size A−/A+, search, clickable links, GPU drawing on desktop (xterm add-ons, MIT) | Med | S | Low | **Built** |
 | 20 | Auto-verify in the commander: after a supervisor "done", run `read_changes` + the verify skill in the session before reporting | Med | S | Low | Later |
 | 21 | Isolation beyond pattern checks: project sessions run as the user, so the console token and AXA's tmux are only kept out of reach by the policy and a clean env; a per-session OS user or container (see #18) would make it a hard boundary | Med | L | Low | Later (from review) |
+| 22 | Send photos/files from the phone into a session (as Claude Code Remote Control does) | Low-Med | M | Low | Later |

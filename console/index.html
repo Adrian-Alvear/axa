@@ -8,6 +8,9 @@
 <link rel="stylesheet" href="/vendor/xterm.css">
 <script src="/vendor/xterm.js"></script>
 <script src="/vendor/addon-fit.js"></script>
+<script src="/vendor/addon-search.js"></script>
+<script src="/vendor/addon-web-links.js"></script>
+<script src="/vendor/addon-webgl.js"></script>
 <style>
   :root {
     --bg: #04070b; --panel: rgba(10, 20, 28, .72); --line: rgba(79, 216, 255, .14); --line2: rgba(79, 216, 255, .28);
@@ -33,10 +36,13 @@
   body.no-intel { --aw: 0px; } body.no-intel aside { display: none; }
   button.on { border-color: var(--accent); color: var(--accent); }
 
-  #terms { grid-column: 1; grid-row: 2; display: none; grid-template-rows: auto 1fr; min-width: 0; min-height: 0; border-right: 1px solid var(--line); position: relative; background: #03060a; }
+  #terms { grid-column: 1; grid-row: 2; display: none; grid-template-rows: auto minmax(0, 1fr) auto; min-width: 0; min-height: 0; border-right: 1px solid var(--line); position: relative; background: #03060a; }
   body.with-terms #terms { display: grid; }
   #main-stage { grid-column: 2; }
-  .tabs { display: flex; align-items: stretch; border-bottom: 1px solid var(--line); min-height: 34px; overflow-x: auto; }
+  /* the tab list scrolls; +, text size, search and layout stay in reach */
+  .tabs { display: flex; align-items: stretch; border-bottom: 1px solid var(--line); min-height: 34px; overflow: hidden; }
+  .tabs > button { flex: none; }
+  #tablist { overflow-x: auto; min-width: 0; flex: 0 1 auto; scrollbar-width: none; }
   .tab { display: flex; align-items: center; gap: 8px; padding: 0 10px 0 14px; border-right: 1px solid var(--line); color: var(--dim); cursor: pointer; white-space: nowrap; font-size: 11px; letter-spacing: .08em; border-bottom: 2px solid transparent; }
   .tab:hover { color: var(--text); }
   .tab.active { color: var(--text); border-bottom-color: var(--accent); background: rgba(79,216,255,.05); }
@@ -49,6 +55,18 @@
   .axa-row { border: 1px solid var(--line2) !important; padding: 8px 8px !important; background: rgba(79,216,255,.05); }
   .axa-row b { color: var(--accent) !important; letter-spacing: .15em; }
   .tab .x { color: var(--dim); padding: 2px 4px; } .tab .x:hover { color: var(--red); }
+  /* terminal tools: text size and search */
+  .tabs .tb { border: 0; border-left: 1px solid var(--line); border-radius: 0; padding: 0 10px; font-size: 12px; letter-spacing: 0; text-transform: none; }
+  #findbar { position: absolute; top: 40px; right: 10px; z-index: 6; display: flex; gap: 4px; align-items: center; background: #07111a; border: 1px solid var(--line2); padding: 5px; box-shadow: 0 8px 24px rgba(0,0,0,.5); max-width: calc(100% - 20px); }
+  #findbar[hidden] { display: none; }
+  #findbar input { background: transparent; border: 1px solid var(--line2); color: var(--text); font: inherit; padding: 4px 6px; width: 180px; min-width: 0; flex: 1; }
+  #findbar button { padding: 3px 8px; letter-spacing: 0; }
+  #findn { color: var(--dim); min-width: 52px; text-align: center; font-size: 11px; }
+  /* phone keys: what a phone keyboard lacks (Esc stops Claude, arrows move through its menus) */
+  #keybar { display: none; gap: 6px; padding: 6px 8px; border-top: 1px solid var(--line); overflow-x: auto; background: #050b11; }
+  #keybar button { flex: 0 0 auto; min-width: 44px; min-height: 40px; padding: 0 10px; letter-spacing: 0; text-transform: none; font-size: 13px; touch-action: manipulation; }
+  #keybar button.on { background: var(--accent); color: #031018; border-color: var(--accent); }
+  @media (max-width: 860px), (pointer: coarse) { #keybar { display: flex; flex-wrap: wrap; } #keybar button { flex: 1 0 auto; } }
   #newterm { border: 0; border-right: 1px solid var(--line); border-radius: 0; padding: 0 14px; font-size: 14px; letter-spacing: 0; }
   #termhost { position: relative; min-height: 0; }
   #termhost .xt { position: absolute; inset: 8px 4px 4px 10px; display: none; }
@@ -233,6 +251,9 @@
     #detail { order: 5; max-height: none; }
     body.no-intel #inbox, body.no-intel #feedwrap { display: grid; }
     #splitter { display: none; }
+    #layoutbtn { display: none; }
+    .tabs { min-height: 44px; }
+    .tabs .tb, #newterm { min-width: 44px; }
     select { max-width: 60vw; }
     .sess { padding: 10px 12px 11px; }
     .sess .nm { font-size: 14px; }
@@ -277,8 +298,15 @@
   <select id="session" title="session"></select>
 </header>
 <section id="terms">
-  <div class="tabs"><button id="newterm" title="New terminal">+</button><div id="tablist" style="display:flex"></div><span class="grow"></span><button id="layoutbtn" title="Move terminal">⬓</button></div>
+  <div class="tabs"><button id="newterm" title="New terminal">+</button><div id="tablist" style="display:flex"></div><span class="grow"></span><button class="tb" id="fontdown" title="Smaller text">A−</button><button class="tb" id="fontup" title="Larger text">A+</button><button class="tb" id="findbtn" title="Search the terminal (Ctrl+Shift+F)">⌕</button><button id="layoutbtn" title="Move terminal">⬓</button></div>
   <div id="termhost"><div id="termmsg">No terminals<br><br>Press + to launch Claude Code in a project</div></div>
+  <div id="keybar" aria-label="Keys a phone keyboard lacks">
+    <button data-k="esc" title="Esc: stop or go back">Esc</button><button data-k="ctrl" title="Ctrl: hold for the next key">Ctrl</button><button data-k="c" title="Ctrl-C">^C</button>
+    <button data-k="tab">Tab</button><button data-k="stab" title="Shift-Tab: Claude's mode switch">⇧Tab</button>
+    <button data-k="up" title="Up">↑</button><button data-k="down" title="Down">↓</button><button data-k="left" title="Left">←</button><button data-k="right" title="Right">→</button>
+    <button data-k="enter" title="Enter">⏎</button><button data-k="kbd" title="Show the keyboard">⌨</button>
+  </div>
+  <div id="findbar" hidden><input id="findq" placeholder="Search this terminal" aria-label="Search this terminal"><span id="findn"></span><button id="findprev" title="Previous (Shift+Enter)">↑</button><button id="findnext" title="Next (Enter)">↓</button><button id="findx" title="Close (Esc)">✕</button></div>
   <div id="picker" hidden></div>
   <div id="splitter"></div>
 </section>
@@ -1306,7 +1334,10 @@ $("demo").onclick = demo;
 
 
 // ---------- terminals: real Claude Code sessions inside the dashboard ----------
-const tabs = new Map(); // id -> { info, term, fit, ws, el, tab }
+const tabs = new Map(); // id -> { info, term, fit, ws, el, tab, search }
+// terminal text size: remembered per browser; a little larger on phones
+let fontPx = 12.5;
+try { fontPx = Number(localStorage.getItem("axa.fontSize")) || (matchMedia("(max-width: 860px)").matches ? 14 : 12.5); } catch {}
 let activeTab = null;
 const XT_THEME = { background: "#03060a", foreground: "#cfe9f3", cursor: "#4fd8ff", cursorAccent: "#03060a", selectionBackground: "rgba(79,216,255,.3)",
   black: "#0b1620", brightBlack: "#4f6b7a", blue: "#4fa8ff", brightBlue: "#8fc8ff", cyan: "#4fd8ff", brightCyan: "#9fe9ff",
@@ -1336,14 +1367,27 @@ new ResizeObserver(() => fitTab(tabs.get(activeTab))).observe($("termhost"));
 function openTab(info) {
   if (tabs.has(info.id)) return tabs.get(info.id);
   const el = document.createElement("div"); el.className = "xt"; $("termhost").appendChild(el);
-  const term = new Terminal({ fontFamily: 'ui-monospace, "SF Mono", Menlo, monospace', fontSize: 12.5, lineHeight: 1.15, cursorBlink: true, theme: XT_THEME, allowProposedApi: true, scrollback: 5000 });
+  const term = new Terminal({ fontFamily: 'ui-monospace, "SF Mono", Menlo, monospace', fontSize: fontPx, lineHeight: 1.15, cursorBlink: true, theme: XT_THEME, allowProposedApi: true, scrollback: 5000 });
   const fit = new FitAddon.FitAddon(); term.loadAddon(fit); term.open(el);
+  // Optional add-ons (an older install may not have them yet): clickable links, search, GPU drawing
+  let search = null;
+  if (window.WebLinksAddon) try { term.loadAddon(new WebLinksAddon.WebLinksAddon()); } catch {}
+  if (window.SearchAddon) try { search = new SearchAddon.SearchAddon(); term.loadAddon(search); search.onDidChangeResults((r) => { if (activeTab === info.id) showFindCount(r); }); } catch {}
+  // GPU drawing on desktop screens only (phones keep the standard renderer, which is the one tested
+  // there); "axa.webgl" in localStorage: "0" turns it off, "1" turns it on anywhere
+  let gpu = matchMedia("(min-width: 861px) and (pointer: fine)").matches;
+  try { const pref = localStorage.getItem("axa.webgl"); if (pref) gpu = pref === "1"; } catch {}
+  if (gpu && window.WebglAddon) try { const gl = new WebglAddon.WebglAddon(); gl.onContextLoss(() => gl.dispose()); term.loadAddon(gl); } catch {}
+  term.attachCustomKeyEventHandler((e) => {
+    if (e.type === "keydown" && (e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === "f") { openFind(); return false; }
+    return true;
+  });
   const tab = document.createElement("div"); tab.className = "tab";
   tab.innerHTML = `<span class="dot"></span><span>${esc(info.name)}</span><span class="mode">${{ claude: "claude", axa: "commander", shell: "sh" }[info.mode] || "sh"}</span><span class="x" title="Close">✕</span>`;
   if (info.mode === "axa") { tab.classList.add("axa"); $("tablist").prepend(tab); }
   tab.onclick = (ev) => { if (ev.target.classList.contains("x")) closeTab(info.id); else activate(info.id); };
   if (info.mode !== "axa") $("tablist").appendChild(tab);
-  const t = { info, term, fit, el, tab, ws: null };
+  const t = { info, term, fit, el, tab, ws: null, search };
   tabs.set(info.id, t);
   const connectWs = () => {
     const ws = new WebSocket(`ws://${location.host}/pty/${info.id}`);
@@ -1361,7 +1405,11 @@ function openTab(info) {
     ws.onclose = () => { if (tabs.has(info.id)) tab.classList.add("dead"); };
   };
   const REPLY = /^(?:\x1b\[[?>]?[\d;]*[cRn]|\x1b\][\d;]*rgb:[^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[IO])+$/;
-  term.onData((d) => { if (t.muted && REPLY.test(d)) return; if (t.ws?.readyState === 1) t.ws.send(JSON.stringify({ t: "i", d })); });
+  term.onData((d) => {
+    if (t.muted && REPLY.test(d)) return;
+    if (ctrlArmed && d.length === 1) { d = ctrlOf(d); armCtrl(false); } // the phone key bar's Ctrl
+    sendInput(t, d);
+  });
   connectWs();
   return t;
 }
@@ -1378,6 +1426,56 @@ function activate(id) {
   }
   try { localStorage.setItem("axa.activeTab", id || ""); } catch {}
 }
+
+// ---------- terminal comfort: text size, search, phone keys, right size on every screen ----------
+const sendInput = (t, d) => { if (t?.ws?.readyState === 1) t.ws.send(JSON.stringify({ t: "i", d })); };
+function setFont(px) {
+  fontPx = Math.max(9, Math.min(24, Math.round(px * 2) / 2));
+  for (const t of tabs.values()) t.term.options.fontSize = fontPx;
+  fitTab(tabs.get(activeTab));
+  try { localStorage.setItem("axa.fontSize", String(fontPx)); } catch {}
+}
+$("fontdown").onclick = () => setFont(fontPx - 1);
+$("fontup").onclick = () => setFont(fontPx + 1);
+
+const FIND_LOOK = { matchBackground: "#5a4413", activeMatchBackground: "#0e6a85", matchOverviewRuler: "#ffb547", activeMatchColorOverviewRuler: "#4fd8ff" };
+function openFind() { if (!tabs.get(activeTab)?.search) return; $("findbar").hidden = false; $("findq").focus(); $("findq").select(); }
+function closeFind() { $("findbar").hidden = true; $("findn").textContent = ""; const t = tabs.get(activeTab); t?.search?.clearDecorations(); t?.term.focus(); }
+function find(back, incremental = false) {
+  const t = tabs.get(activeTab), q = $("findq").value;
+  if (!t?.search) return;
+  if (!q) { t.search.clearDecorations(); $("findn").textContent = ""; return; }
+  const found = back ? t.search.findPrevious(q, { decorations: FIND_LOOK }) : t.search.findNext(q, { decorations: FIND_LOOK, incremental });
+  if (!found) $("findn").textContent = "no match";
+}
+const showFindCount = (r) => { $("findn").textContent = r.resultCount ? `${r.resultIndex + 1}/${r.resultCount}` : "no match"; };
+$("findbtn").onclick = () => ($("findbar").hidden ? openFind() : closeFind());
+$("findq").oninput = () => find(false, true);
+$("findq").onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); find(e.shiftKey); } if (e.key === "Escape") closeFind(); };
+$("findnext").onclick = () => find(false);
+$("findprev").onclick = () => find(true);
+$("findx").onclick = closeFind;
+if (!window.SearchAddon) $("findbtn").hidden = true;
+
+// Phone key bar. pointerdown + preventDefault keeps focus (and the phone keyboard) on the terminal.
+let ctrlArmed = false;
+const ctrlOf = (ch) => (/^[a-z@\[\]\\^_]$/i.test(ch) ? String.fromCharCode(ch.toUpperCase().charCodeAt(0) & 0x1f) : ch);
+const armCtrl = (on) => { ctrlArmed = on; document.querySelector('#keybar [data-k="ctrl"]').classList.toggle("on", on); };
+const KEYS = { esc: "\x1b", tab: "\t", stab: "\x1b[Z", c: "\x03", enter: "\r", up: "A", down: "B", right: "C", left: "D" };
+for (const b of document.querySelectorAll("#keybar button")) b.onpointerdown = (ev) => {
+  ev.preventDefault();
+  const t = tabs.get(activeTab), k = b.dataset.k;
+  if (!t) return;
+  if (k === "kbd") return t.term.focus();
+  if (k === "ctrl") return armCtrl(!ctrlArmed);
+  let d = KEYS[k];
+  if (/^[A-D]$/.test(d)) d = (t.term.modes.applicationCursorKeysMode ? "\x1bO" : "\x1b[") + d;
+  sendInput(t, d);
+};
+
+// Coming back to this window: claim the terminal's size again (another screen may have resized it)
+window.addEventListener("focus", () => fitTab(tabs.get(activeTab)));
+document.addEventListener("visibilitychange", () => { if (!document.hidden) fitTab(tabs.get(activeTab)); });
 
 async function closeTab(id) {
   const t = tabs.get(id); if (!t) return;

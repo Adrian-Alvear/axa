@@ -641,7 +641,14 @@ export function attachWebSocket(server, authorize) {
         let msg; try { msg = JSON.parse(raw); } catch { return; }
         if (!t.alive) return;
         if (msg.t === "i" && typeof msg.d === "string") { t.proc.write(msg.d); t.lastInput = Date.now(); }
-        if (msg.t === "r" && msg.c > 0 && msg.r > 0) { const c = Math.min(msg.c, 500), r = Math.min(msg.r, 300); t.proc.resize(c, r); t.screen?.resize(c, r); t.capture = null; }
+        if (msg.t === "r" && msg.c > 0 && msg.r > 0) {
+          const c = Math.min(msg.c, 500), r = Math.min(msg.r, 300);
+          t.proc.resize(c, r); t.screen?.resize(c, r); t.capture = null;
+          // The window follows whichever screen you're using right now. tmux's own rule ("the latest
+          // client") lags until you type, and left a dotted, mis-sized terminal after the phone or
+          // `axa attach` had been used: so set the size explicitly (the page re-sends it on focus)
+          if (t.tmux) tmux("resize-window", "-t", `=${tmuxName(t.id)}:`, "-x", String(c), "-y", String(r));
+        }
       });
       ws.on("close", () => t.sockets.delete(ws));
     });
