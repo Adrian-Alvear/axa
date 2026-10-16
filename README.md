@@ -101,10 +101,23 @@ built in:
 - **Answer from anywhere:** when another session needs you, a yellow bar shows its question.
   `Ctrl-b y` / `Ctrl-b x` answer with its Yes or No option (the bar names them). `Ctrl-b !` jumps
   to it.
+- **Palette:** `Ctrl-b :` opens a searchable list of every action and session ("changes in feed",
+  "goal for launches", "answer n2s: Yes", "theme: hud"…). Type a few letters, then press Enter.
+- **Browse with previews:** `Ctrl-b s` lists every session next to a live, read-only preview of the
+  highlighted one's screen. Enter shows it, `%` opens it in a split, and `d`/`g` show its diff or give
+  it a goal.
+- **Split and zoom:** `Ctrl-b %` puts a second live session side by side (stacked on narrow
+  windows), and `Tab` switches which one you're typing into. `Ctrl-b z` hides the sidebar.
 - **Actions:** press **Ctrl-b**, then `j`/`k` (or `0`–`9`) to switch sessions, `c` new session,
   `w` new session in its own worktree, `g` give a goal, `d` its diff, `v` run the project's
   checks, `o` the web console, `X` close it, `q` leave (sessions keep running), `?` for all keys.
   `Ctrl-b Ctrl-b` sends a literal Ctrl-b.
+- **Settings and themes:** `Ctrl-b ,` changes them live, and they're saved in `~/.axa/ui.json`.
+  - **Theme:** `terminal` (default: your terminal's own colors), `hud` (the console's cyan look),
+    `light`, `contrast` and `mono`. `NO_COLOR` always means no colors.
+  - **Prefix key:** Ctrl-b, Ctrl-a, Ctrl-g or Ctrl-\.
+  - **Sidebar:** left or right, and its width.
+  - **Bell** on or off, and whether new sessions start as Claude or a shell.
 - **Mouse:** click a session to select it. Scrolling and clicks inside the session go to it; hold Shift
   to select text with your terminal.
 - It rings the bell and puts ⚠ in the window title when something starts needing you.
