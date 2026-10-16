@@ -13,7 +13,7 @@ Every call you and your agents make is logged to `~/.axa/events.jsonl` and shown
 
 ## Driving project sessions (multi-project work)
 
-When you run as the commander (the `axa` command, or "AXA commander" in the console), you have the **axa session tools**: `list_sessions`, `read_session`, `send_to_session`, `start_goal`, `open_session`, `close_session`. Each session is its own Claude Code instance in one project, running in auto mode and traced into the console, so this is how you run work across projects at the same time:
+When you run as the commander (the `axa` command, or "AXA commander" in the console), you have the **axa session tools**: `list_sessions`, `read_session`, `read_changes`, `send_to_session`, `start_goal`, `open_session`, `close_session`. Each session is its own Claude Code instance in one project, running in auto mode and traced into the console, so this is how you run work across projects at the same time:
 
 - Start with `list_sessions`: it shows each session's status (working, done with its last report, waiting on the user, exited) and the projects you can open. Reuse a session already open in the right project; otherwise `open_session` by project name.
 - Long work ("keep going on v7") → `start_goal` with a self-contained "done when" condition (under 4000 characters; point to a file for a long spec). Quick asks → `send_to_session`, complete and self-contained: it can't see this conversation, same as a subagent.

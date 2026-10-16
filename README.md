@@ -16,10 +16,12 @@ live console shows you every agent, skill and tool call as it happens.
 | Piece | What it does |
 |---|---|
 | `skills/axa` | The orchestrator playbook: decompose → assign from your roster → run in parallel → verify → short report. Triggers on `/axa`, "split this up", "use agents", etc. |
+| `skills/verify` | Runs the project's own checks (typecheck, lint, tests, build, syntax checks) as one PASS/FAIL table, plus screenshots for UI changes. |
 | `agents/` | `axa:builder`, `axa:reviewer` (read-only), `axa:researcher` (web). |
-| `bin/axa` | The commander from any terminal: `axa` starts it, `axa console` opens the dashboard, `axa status` lists sessions, `axa stop` stops the console (sessions keep running), `axa stop --all` ends them too. |
-| `mcp/` | The commander's session tools: open a session per project, give it a goal, check its status and last report, read its screen, close it. |
-| `hooks/` | Logs every prompt, tool, skill and subagent event to `~/.axa/events.jsonl`. Async — never slows Claude down. |
+| `bin/axa` | AXA from any terminal: `axa` opens mission control (AXA and every session, live), `axa chat` the plain commander, `axa console` opens the dashboard, `axa status` lists sessions (`--watch` for a live dashboard), `axa attach <name>` takes one over, `axa stop` stops the console (sessions keep running), `axa stop --all` ends them too. |
+| `mcp/` | The commander's session tools: open a session per project, give it a goal, check its status and last report, read its screen and its changes (git diff), close it. |
+| `scripts/shot.mjs` | Desktop and phone screenshots of the console (or any page) for a look-then-fix review loop. |
+| `hooks/` | Logs every prompt, tool, skill and subagent event to `~/.axa/events.jsonl` (async, never slows Claude down). For project sessions only: the permission policy, the approver, and the verify gate. |
 | `console/` | Local web UI: AXA in the center, agents appearing as they're dispatched, a live progress dock, and embedded Claude Code terminals for any project. |
 | `roster.example.md` | The config you customize: roles, models, house rules, your projects. |
 
@@ -41,8 +43,9 @@ ln -s ~/path/to/axa/bin/axa ~/.local/bin/axa   # once
 axa                                             # in any terminal
 ```
 
-`axa` starts the console in the background (if it isn't running) and opens a Claude Code session
-that is your commander. Tell it what you want across projects ("keep going on v7 in launches, and
+`axa` starts the console in the background (if it isn't running) and opens mission control (below)
+with your commander selected. `axa chat` opens the commander as a plain Claude Code session instead.
+Tell it what you want across projects ("keep going on v7 in launches, and
 have the feed fix its phone layout"): it opens a session per project in the console, hands each its
 work (`/goal` for long runs), tracks their status, and reports back. The same commander is in the
 console under **Terminals → AXA commander**, and every session shows up there live.
@@ -57,6 +60,72 @@ sends the commander session an automatic update: it checks the work, verifies th
 next step if it's within what you asked, and reports back, without you having to ask. It only types
 when the commander is idle and you haven't typed in its tab for 30 seconds, and at most
 `AXA_WAKES_PER_HOUR` (default 30) times an hour. `AXA_SUPERVISOR=0` turns it off.
+
+**"Done" means checked.** If a project session edits code and then tries to finish without running any
+check after its last edit, AXA's verify gate (`hooks/verify-gate.mjs`) sends it back once to run the
+project's checks and report the results. If there's genuinely nothing to run, it says so instead.
+Doc-only edits don't trigger it. The `verify` skill does the checking: one script finds and runs the
+project's typecheck, lint, tests and build (npm/pnpm/yarn/bun, Cargo, Go, pytest, `make test`) plus a
+syntax check of changed scripts, and prints a PASS/FAIL table. For UI changes it also takes desktop
+and phone screenshots. Turn the gate off with `"verifyGate": "off"` in `~/.axa/policy.json`, or
+`AXA_VERIFY_GATE=0`.
+
+**Parallel work in one project.** The commander can open a session in its own git worktree
+(`open_session` with `worktree: "fix-login"`). The session gets its own folder,
+`<repo>/.claude/worktrees/fix-login`, on branch `axa/fix-login`, so two sessions in the same repo can't
+collide. Your main checkout doesn't show the folder (it's added to `.git/info/exclude`, which is
+local only). Closing with `remove_worktree` removes the folder only if it has nothing uncommitted, and
+the branch is always kept. Nothing gets merged unless you ask.
+
+**Usage.** Each Claude session shows the tokens its chat has used so far (new input plus output; cheap
+cache re-reads are reported separately), helper agents included, read from Claude Code's own
+transcript. A resumed chat counts from its start. Set a budget per project, and AXA tells the commander when a
+session goes over it, so it stops handing that session work:
+`{ "default": { "budget": { "tokens": 5000000 } } }` in `~/.axa/policy.json` (or under
+`"projects"`).
+
+### Mission control in your terminal: `axa`
+
+```
+axa          # AXA and every session, live, in this terminal
+axa chat     # the commander as a plain Claude Code session (what `axa` used to open)
+```
+
+`axa` opens a full-screen mission control, like a terminal multiplexer for agents, with AXA's brain
+built in:
+
+- **Sidebar:** AXA (the commander) at the top, then every session sorted by what needs you. Each
+  shows a status symbol and word, what it's doing or asking, its branch and changes, and tokens used.
+- **Live session:** the selected session runs right there, fully interactive. Type into it as usual,
+  and flip between sessions instantly. If no commander is running, one starts, so you land in AXA.
+- **Answer from anywhere:** when another session needs you, a yellow bar shows its question.
+  `Ctrl-b y` / `Ctrl-b x` answer with its Yes or No option (the bar names them). `Ctrl-b !` jumps
+  to it.
+- **Actions:** press **Ctrl-b**, then `j`/`k` (or `0`–`9`) to switch sessions, `c` new session,
+  `w` new session in its own worktree, `g` give a goal, `d` its diff, `v` run the project's
+  checks, `o` the web console, `X` close it, `q` leave (sessions keep running), `?` for all keys.
+  `Ctrl-b Ctrl-b` sends a literal Ctrl-b.
+- **Mouse:** click a session to select it. Scrolling and clicks inside the session go to it; hold Shift
+  to select text with your terminal.
+- It rings the bell and puts ⚠ in the window title when something starts needing you.
+
+It shares one backend with the web console, so the terminal, the browser and your phone always show
+the same thing.
+
+### From the terminal
+
+```
+axa status            # every session, what needs you first: ⚠ needs you, ◷ stuck, ● working, ✓ done
+axa status --watch    # live: rings the bell when a session starts needing you; 1-9 attach, c console, q quit
+axa status --json     # the same list for scripts
+axa attach launches   # take over a session in this terminal (name, id or a unique prefix); Ctrl-] detaches
+```
+
+Each row shows the session's status (glyph, word and color), project, branch and uncommitted changes
+(`⎇ v7-polish 3f +40 -2`), tokens used, and what it's doing or last reported. A waiting session also
+shows its prompt and options on the next line; answer it with `axa attach`. Colors follow your terminal theme
+and turn off when the output isn't a terminal, with `NO_COLOR`, `TERM=dumb` or `--no-color`.
+Detaching leaves the session running, and the console keeps its own view of it.
 
 ## Make it yours
 
@@ -98,8 +167,34 @@ or run it yourself: `node console/server.mjs --open` → http://localhost:4747
 - **Click a node** to see the prompt it was given and what it reported back.
 - **Session picker** follows your most recent session automatically.
 
+- **Sessions list:** every project session, sorted by what needs you: needs you, stuck, working, done,
+  idle, ended. Each shows its status as a glyph and a word (never color alone), what it's doing or its
+  last report, its branch and uncommitted changes (`⎇ v7-polish · 3 files +40 −2`), and tokens used.
+  **A session waiting on you shows the prompt and its options as buttons.** Tap one to arm it and tap
+  again to send it (so a stray tap on the phone does nothing). AXA first checks the same prompt is
+  still on screen, then picks that option in the session's terminal. Only you can do this, from the
+  console page: the commander's tools refuse, and project sessions can't reach the console's controls.
+  **Open** jumps to its terminal; **Changes** shows its diff against the last commit, plus new files
+  (secret files like `.env` and keys are left out, and secrets in the diff are redacted). The
+  commander gets the same diff with its `read_changes` tool, so it checks the work before calling it done.
+- **On your phone:** the sessions list comes first, with big buttons, and a bottom bar jumps to
+  Sessions (with a needs-you badge), Terminal, Map and Activity. Animations stop if your system asks
+  for reduced motion.
+- **Terminal comfort:** **A− / A+** set the text size (remembered per browser, a little larger on
+  phones). **⌕** or Ctrl+Shift+F searches the terminal's history. Links are clickable. On desktop the
+  terminal draws with the GPU, so long output stays fast (`localStorage["axa.webgl"]` = `"0"` turns that
+  off, `"1"` turns it on for phones too). On a phone or tablet a key bar under the terminal has what
+  the on-screen keyboard lacks: Esc (stop Claude), Ctrl (then a letter), ^C, Tab, ⇧Tab (Claude's mode
+  switch), the arrows and Enter. The terminal also takes the size of whichever screen you're using, so
+  switching between phone, desktop and `axa attach` no longer leaves it mis-sized.
 - **Terminals:** press **Terminals → +** to launch Claude Code (or a plain shell) in any project, right inside the dashboard. Sessions started here are traced and run in auto mode. Run several projects side by side; the map follows whichever tab you're in. Terminals keep running if you reload the page.
 - **Sessions survive restarts:** each session runs in tmux (on AXA's own socket, `tmux -L axa-<port>`, so your tmux setup is untouched). Stopping or restarting the console (`axa stop`) leaves them running, and the next start shows them again with the same ids. After a machine restart, Claude sessions are relaunched resuming their chat (marked `recovered`); plain shells are dropped. `axa stop --all` ends every session. Without tmux (e.g. a Mac without it installed), sessions end with the console as before; `AXA_NO_TMUX=1` forces that.
+
+**Checking how it looks:** `node scripts/shot.mjs [url] [outdir]` saves `desktop.png` (1440×900)
+and `phone.png` (390×844) of the console, already unlocked. It drives any installed Chrome or
+Chromium headless (Node 22+, no dependencies; set `AXA_CHROME` to choose the binary).
+`--eval='js'` runs code in the page first, for example to open a dialog. Agents can read the PNGs
+and fix what they see.
 
 Env: `AXA_PORT` (default 4747), `AXA_HOME` (default `~/.axa`). The event log is capped at 50MB
 (the previous one is kept as `events.1.jsonl`).
@@ -131,7 +226,11 @@ Project sessions that AXA starts check every tool call against a policy before r
   (`npm test`, `npm run build`, `npx tsc`, `pytest`, `cargo test`…); everyday git (`status`, `diff`,
   `log`, `add`, `commit`, new branches, pushing a branch that isn't `main`/`master`).
 - **Refused, with a reason the agent can act on:** the dangerous-command list above, editing files
-  outside the project, `.git` internals, or secret files (`.env*`, keys, credentials), and reading secrets.
+  outside the project, `.git` internals, or secret files (`.env*`, keys, credentials), reading secrets,
+  and anything touching AXA's own files (`~/.axa`, the console token), the console's address or AXA's own tmux server (tmux on a private socket is fine).
+  Sessions also start without `$TMUX`, so they can't reach AXA's terminals and answer their own (or
+  another session's) prompts. These are pattern checks, a strong speed bump rather than a sandbox: a
+  session runs as you.
 - **Everything else goes to AXA's approver** (`hooks/approver.mjs`), so you aren't asked:
   - **One-way doors always come to you:** pushing to `main`/production, deploying, publishing
     packages, changing things on GitHub or in cloud/payment accounts, sending data to websites,

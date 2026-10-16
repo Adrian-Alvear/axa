@@ -53,7 +53,9 @@ function readSettings(cwd) {
   try {
     const file = JSON.parse(readFileSync(join(home, "policy.json"), "utf8"));
     const root = resolve(process.env.CLAUDE_PROJECT_DIR || cwd || ".");
-    const match = Object.entries(file.projects || {}).find(([k]) => (isAbsolute(k) || k.startsWith("~") ? resolve(k.replace(/^~(?=$|\/)/, homedir())) === root : k === basename(root)));
+    // a session in its own worktree (<repo>/.claude/worktrees/<name>) gets its repo's project settings
+    const proj = root.replace(/\/\.claude\/worktrees\/[^/]+$/, "");
+    const match = Object.entries(file.projects || {}).find(([k]) => (isAbsolute(k) || k.startsWith("~") ? resolve(k.replace(/^~(?=$|\/)/, homedir())) === proj : k === basename(proj)));
     const d = file.default || {}, p = match?.[1] || {};
     return { ...d, ...p, approver: { ...(d.approver || {}), ...(p.approver || {}) }, rules: [d.rules, p.rules].filter(Boolean).join("\n") };
   } catch { return { approver: {} }; }

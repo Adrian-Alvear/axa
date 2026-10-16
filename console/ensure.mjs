@@ -28,7 +28,10 @@ export async function consoleUp() {
 export async function ensureConsole() {
   if (await consoleUp()) return true;
   mkdirSync(home, { recursive: true });
-  if (!existsSync(join(consoleDir, "node_modules"))) {
+  // (re)install when any dependency is missing, e.g. one added by an update
+  let deps = [];
+  try { deps = Object.keys(JSON.parse(readFileSync(join(consoleDir, "package.json"), "utf8")).dependencies || {}); } catch {}
+  if (deps.some((d) => !existsSync(join(consoleDir, "node_modules", d, "package.json")))) {
     spawnSync("npm", ["install", "--no-fund", "--no-audit"], { cwd: consoleDir, stdio: "ignore" });
   }
   const log = openSync(join(home, "console.log"), "a");

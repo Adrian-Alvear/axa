@@ -17,6 +17,17 @@ import { dangerousShell, redact } from "../lib/safety.mjs";
 
 const MAX_INPUT = 1024 * 1024;
 const home = process.env.AXA_HOME || join(homedir(), ".axa");
+const CONSOLE_PORT = Number(process.env.AXA_PORT || 4747);
+// Bash that reaches for AXA's controls: the console token, the console's address, ~/.axa, AXA's tmux
+const AXA_CONTROLS = new RegExp(String.raw`console-token|(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]):${CONSOLE_PORT}\b|(?:~|\$HOME|\$\{HOME\}|/home/[^/\s]+|/Users/[^/\s]+)/\.a.a\b`);
+// tmux reaching AXA's live server: no -L/-S (inside an AXA session that's AXA's server), -L axa-<port>,
+// or -S pointing at that socket. Private sockets (tmux -L axa-clitest, a project's own) are fine.
+const reachesAxaTmux = (cmd) => [...cmd.matchAll(/\btmux\b([^\n;&|]*)/g)].some(([, args]) => {
+  const sock = /(?:^|\s)-([LS])\s*(\S+)/.exec(args);
+  if (!sock) return true;
+  const name = sock[2].replace(/^["']|["']$/g, "");
+  return sock[1] === "L" ? name === `axa-${CONSOLE_PORT}` : name.split("/").pop() === `axa-${CONSOLE_PORT}`;
+});
 
 let raw = "";
 process.stdin.on("data", (c) => { if (raw.length < MAX_INPUT) raw += c; });
@@ -38,11 +49,13 @@ process.stdin.on("end", () => {
 function context(e) {
   const cwd = e.cwd || process.cwd();
   const root = real(process.env.CLAUDE_PROJECT_DIR || cwd);
+  // a session in its own worktree (<repo>/.claude/worktrees/<name>) gets its repo's project settings
+  const proj = root.replace(/\/\.claude\/worktrees\/[^/]+$/, "");
   let settings = {};
   try {
     const file = JSON.parse(readFileSync(join(home, "policy.json"), "utf8"));
     const projects = file.projects || {};
-    const match = Object.entries(projects).find(([k]) => (isAbsolute(k) ? real(k.replace(/^~(?=$|\/)/, homedir())) === root : k === basename(root)));
+    const match = Object.entries(projects).find(([k]) => (isAbsolute(k) ? real(k.replace(/^~(?=$|\/)/, homedir())) === proj : k === basename(proj)));
     settings = { ...(file.default || {}), ...(match?.[1] || {}) };
   } catch {}
   return { cwd, root, scratch: e.scratchpad_dir ? real(e.scratchpad_dir) : null, settings };
@@ -68,9 +81,15 @@ const isSecret = (p) => SECRET.test(basename(p)) || /\/\.ssh\/|\/\.aws\/|\/\.gnu
 const allow = (reason) => ({ decision: "allow", reason });
 const deny = (reason) => ({ decision: "deny", reason });
 
+// AXA's own folder (console token, event log, policy) is off limits to project sessions: with the token
+// a session could drive the console, e.g. answer its own permission prompts
+const AXA_PRIVATE = "AXA's own files (~/.axa) and the console's controls belong to you and the commander; a project session can't use them";
+
 function decide(tool, input, ctx) {
   const strict = ctx.settings.mode === "strict"; // strict: only ever denies
   const ok = (reason) => (strict ? null : allow(reason));
+  const target = input.file_path || input.notebook_path || input.path;
+  if (target && ["Read", "Glob", "Grep", "LS", "Edit", "Write", "MultiEdit", "NotebookEdit"].includes(tool) && inside(pathOf(target, ctx), real(home))) return deny(AXA_PRIVATE);
   switch (tool) {
     case "Read": {
       const p = pathOf(input.file_path || "", ctx);
@@ -101,6 +120,9 @@ function decide(tool, input, ctx) {
 function bash(cmd, ctx, ok) {
   const danger = dangerousShell(cmd);
   if (danger) return deny(`blocked: ${danger}. Ask the user if this is really needed`);
+  // (a pattern check, so a speed bump against a determined session rather than a wall; together with
+  // sessions not inheriting $TMUX it keeps project sessions off AXA's controls)
+  if (AXA_CONTROLS.test(cmd) || reachesAxaTmux(cmd) || (home !== join(homedir(), ".axa") && cmd.includes(home))) return deny(AXA_PRIVATE);
   for (const re of ctx.settings.denyBash || []) if (safeRe(re)?.test(cmd)) return deny(`blocked by your policy (${re})`);
   if (ctx.settings.mode === "strict") return null;
   for (const re of ctx.settings.allowBash || []) if (safeRe(re, true)?.test(cmd)) return ok(`allowed by your policy (${re})`);
