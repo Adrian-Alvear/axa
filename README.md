@@ -17,8 +17,9 @@ live console shows you every agent, skill and tool call as it happens.
 |---|---|
 | `skills/axa` | The orchestrator playbook: decompose → assign from your roster → run in parallel → verify → short report. Triggers on `/axa`, "split this up", "use agents", etc. |
 | `agents/` | `axa:builder`, `axa:reviewer` (read-only), `axa:researcher` (web). |
-| `bin/axa` | The commander from any terminal: `axa` starts it, `axa console` opens the dashboard, `axa status` lists sessions, `axa stop` stops the console (sessions keep running), `axa stop --all` ends them too. |
-| `mcp/` | The commander's session tools: open a session per project, give it a goal, check its status and last report, read its screen, close it. |
+| `bin/axa` | The commander from any terminal: `axa` starts it, `axa console` opens the dashboard, `axa status` lists sessions (`--watch` for a live dashboard), `axa attach <name>` takes one over, `axa stop` stops the console (sessions keep running), `axa stop --all` ends them too. |
+| `mcp/` | The commander's session tools: open a session per project, give it a goal, check its status and last report, read its screen and its changes (git diff), close it. |
+| `scripts/shot.mjs` | Desktop and phone screenshots of the console (or any page) for a look-then-fix review loop. |
 | `hooks/` | Logs every prompt, tool, skill and subagent event to `~/.axa/events.jsonl`. Async — never slows Claude down. |
 | `console/` | Local web UI: AXA in the center, agents appearing as they're dispatched, a live progress dock, and embedded Claude Code terminals for any project. |
 | `roster.example.md` | The config you customize: roles, models, house rules, your projects. |
@@ -57,6 +58,20 @@ sends the commander session an automatic update: it checks the work, verifies th
 next step if it's within what you asked, and reports back, without you having to ask. It only types
 when the commander is idle and you haven't typed in its tab for 30 seconds, and at most
 `AXA_WAKES_PER_HOUR` (default 30) times an hour. `AXA_SUPERVISOR=0` turns it off.
+
+### From the terminal
+
+```
+axa status            # every session, what needs you first: ⚠ needs you, ◷ stuck, ● working, ✓ done
+axa status --watch    # live: rings the bell when a session starts needing you; 1-9 attach, c console, q quit
+axa status --json     # the same list for scripts
+axa attach launches   # take over a session in this terminal (name, id or a unique prefix); Ctrl-] detaches
+```
+
+Each row shows the session's status (glyph, word and color), project, branch and uncommitted changes
+(`⎇ v7-polish 3f +40 -2`), and what it's doing or last reported. Colors follow your terminal theme
+and turn off when the output isn't a terminal, with `NO_COLOR`, `TERM=dumb` or `--no-color`.
+Detaching leaves the session running, and the console keeps its own view of it.
 
 ## Make it yours
 
@@ -98,8 +113,23 @@ or run it yourself: `node console/server.mjs --open` → http://localhost:4747
 - **Click a node** to see the prompt it was given and what it reported back.
 - **Session picker** follows your most recent session automatically.
 
+- **Sessions list:** every project session, sorted by what needs you: needs you, stuck, working, done,
+  idle, ended. Each shows its status as a glyph and a word (never color alone), what it's doing or its
+  last report, and its branch and uncommitted changes (`⎇ v7-polish · 3 files +40 −2`). **Answer it /
+  Open** jumps to its terminal; **Changes** shows its diff against the last commit, plus new files
+  (secret files like `.env` and keys are left out, and secrets in the diff are redacted). The
+  commander gets the same diff with its `read_changes` tool, so it checks the work before calling it done.
+- **On your phone:** the sessions list comes first, with big buttons, and a bottom bar jumps to
+  Sessions (with a needs-you badge), Terminal, Map and Activity. Animations stop if your system asks
+  for reduced motion.
 - **Terminals:** press **Terminals → +** to launch Claude Code (or a plain shell) in any project, right inside the dashboard. Sessions started here are traced and run in auto mode. Run several projects side by side; the map follows whichever tab you're in. Terminals keep running if you reload the page.
 - **Sessions survive restarts:** each session runs in tmux (on AXA's own socket, `tmux -L axa-<port>`, so your tmux setup is untouched). Stopping or restarting the console (`axa stop`) leaves them running, and the next start shows them again with the same ids. After a machine restart, Claude sessions are relaunched resuming their chat (marked `recovered`); plain shells are dropped. `axa stop --all` ends every session. Without tmux (e.g. a Mac without it installed), sessions end with the console as before; `AXA_NO_TMUX=1` forces that.
+
+**Checking how it looks:** `node scripts/shot.mjs [url] [outdir]` saves `desktop.png` (1440×900)
+and `phone.png` (390×844) of the console, already unlocked. It drives any installed Chrome or
+Chromium headless (Node 22+, no dependencies; set `AXA_CHROME` to choose the binary).
+`--eval='js'` runs code in the page first, for example to open a dialog. Agents can read the PNGs
+and fix what they see.
 
 Env: `AXA_PORT` (default 4747), `AXA_HOME` (default `~/.axa`). The event log is capped at 50MB
 (the previous one is kept as `events.1.jsonl`).

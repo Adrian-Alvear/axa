@@ -14,3 +14,8 @@ AXA adapts a few ideas and patterns from **ECC / everything-claude-code**
   rules and "search first", paraphrased from `agents/code-reviewer.md`,
   `skills/verification-loop`, `skills/santa-method`, `agents/loop-operator.md` and
   `skills/search-first`.
+
+The October 2026 improvements (sessions list, changes viewer, `axa status --watch` / `attach`,
+`scripts/shot.mjs`) copy no outside code. The ideas behind them, from Claude Code Agent View, Conductor,
+Claude Squad, herdr, clig.dev, NO_COLOR, the gh CLI accessibility work, WCAG and others, are listed
+with links in `docs/research/2026-10-self-improve.md`.

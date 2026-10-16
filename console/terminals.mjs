@@ -5,7 +5,7 @@ import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { createRequire } from "node:module";
 import { randomUUID } from "node:crypto";
-import { spawnSync } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 import { consoleDir, home, pluginRoot, port } from "./ensure.mjs";
 import { cleanText, dangerousShell, redact } from "../lib/safety.mjs";
 
@@ -171,6 +171,55 @@ export function noteSession(terminalId, sessionId) {
   saveMeta();
 }
 
+// ---------- what each session changed (git): branch, files, lines, for review at a glance ----------
+// Read-only and throttled (one refresh per folder every GIT_MS, in the background). GIT_OPTIONAL_LOCKS=0
+// keeps `git status` from taking the index lock while the session itself runs git.
+const GIT_MS = 10_000;
+const gitCache = new Map(); // cwd -> { at, busy, info }
+const gitEnv = () => ({ ...cleanEnv(), GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0" });
+const git = (cwd, args, max = 1 << 20) => new Promise((ok) =>
+  execFile("git", args, { cwd, env: gitEnv(), timeout: 5000, maxBuffer: max }, (err, out) => ok(err ? null : out)));
+// Secret files never show in a diff (their contents would also be redacted, but leave them out entirely)
+const NO_SECRETS = ["--", ".", ":(exclude,glob)**/.env*", ":(glob,exclude)**/*.pem", ":(glob,exclude)**/*.key", ":(glob,exclude)**/id_rsa*", ":(glob,exclude)**/credentials*"];
+
+function refreshGit(cwd) {
+  const c = gitCache.get(cwd) || {};
+  if (c.busy || (c.at && Date.now() - c.at < GIT_MS)) return;
+  c.busy = true; gitCache.set(cwd, c);
+  (async () => {
+    const st = await git(cwd, ["status", "--porcelain=v1", "-b"]);
+    if (st == null) return null;
+    const [head, ...files] = st.split("\n").filter(Boolean);
+    const m = /^## (?:No commits yet on |Initial commit on )?(.+?)(?:\.\.\.\S+)?(?: \[(.+)\])?$/.exec(head || "") || [];
+    const info = { branch: m[1] === "HEAD (no branch)" ? "detached" : m[1] || "?", files: files.length, untracked: files.filter((f) => f.startsWith("??")).length, added: 0, removed: 0 };
+    info.ahead = Number(/ahead (\d+)/.exec(m[2] || "")?.[1]) || 0;
+    info.behind = Number(/behind (\d+)/.exec(m[2] || "")?.[1]) || 0;
+    const stat = info.files ? await git(cwd, ["diff", "HEAD", "--shortstat"]) : "";
+    info.added = Number(/(\d+) insertion/.exec(stat || "")?.[1]) || 0;
+    info.removed = Number(/(\d+) deletion/.exec(stat || "")?.[1]) || 0;
+    return info;
+  })().then((info) => { c.info = info; }, () => { c.info = null; }).finally(() => { c.busy = false; c.at = Date.now(); });
+}
+const gitOf = (t) => { if (t.alive && t.mode !== "axa") refreshGit(t.cwd); return gitCache.get(t.cwd)?.info || null; };
+
+// The session's uncommitted changes against its last commit, cleaned like any other session output.
+// Each file's diff is redacted on its own (and very large ones are left out) so nothing is cut blind.
+const DIFF_FILE_MAX = 60 * 1024, DIFF_MAX = 400 * 1024;
+export async function diffTerm(id) {
+  const t = terms.get(id);
+  if (!t) return null;
+  const base = (await git(t.cwd, ["rev-parse", "--verify", "-q", "HEAD"])) ? ["diff", "HEAD"] : ["diff", "--cached"];
+  const raw = await git(t.cwd, [...base, "--no-color", "--no-ext-diff", ...NO_SECRETS], 8 << 20);
+  if (raw == null) return { ...summary(t), diff: "", untracked: [], error: "Couldn't read the changes: not a git repository, or the diff is too large to show here." };
+  let diff = "", truncated = false;
+  for (const file of raw.split(/(?=^diff --git )/m)) {
+    if (diff.length > DIFF_MAX) { truncated = true; break; }
+    diff += file.length > DIFF_FILE_MAX ? `${file.split("\n")[0]}\n(large change left out: ${Math.round(file.length / 1024)} KB, open the terminal to see it)\n` : safe(file);
+  }
+  const untracked = ((await git(t.cwd, ["ls-files", "--others", "--exclude-standard", ...NO_SECRETS])) || "").split("\n").filter(Boolean);
+  return { ...summary(t), diff, truncated, untracked: untracked.slice(0, 200).map(safe), untracked_total: untracked.length };
+}
+
 const summary = (t) => {
   const traced = statusOf(t.id);
   // While AXA's approver is deciding, the prompt is already drawn on screen: not the user's turn yet
@@ -184,6 +233,8 @@ const summary = (t) => {
     last_report: safe(traced?.report), error: safe(traced?.error), last_event_at: traced?.at,
     idle_seconds: Math.round((Date.now() - t.lastOutput) / 1000),
     awaiting_permission: waiting,
+    // uncommitted work in its folder: { branch, files, untracked, added, removed, ahead, behind }
+    git: gitOf(t),
     // relaunched (resuming its chat) after the machine restarted
     recovered: !!t.recovered,
   };
