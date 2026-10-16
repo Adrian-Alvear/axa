@@ -7,7 +7,7 @@
 import { createServer } from "node:http";
 import { readFileSync, statSync, openSync, readSync, closeSync, existsSync, mkdirSync, writeFileSync, renameSync, unlinkSync, chmodSync, appendFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, dirname } from "node:path";
+import { join, dirname, basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import { openUrl } from "./ensure.mjs";
 import { randomBytes, timingSafeEqual } from "node:crypto";
@@ -144,7 +144,74 @@ function track(e) {
       break;
   }
   sessions.set(e.terminal, s);
+  trackRun(e, s);
 }
+
+// ---------- runs: each instruction a session got, from the prompt to its result ----------
+// For the run history and the "since you left" briefing. Rebuilt from the event log on start.
+const runs = [], openRuns = new Map(); // terminal -> its current run
+const RUNS_MAX = 1000;
+const clipText = (v, n) => (v == null ? undefined : String(v).slice(0, n));
+function trackRun(e, s) {
+  const r = openRuns.get(e.terminal);
+  if (e.event === "UserPromptSubmit") {
+    if (/^\s*<task-notification>/.test(e.prompt || "")) return;
+    if (r) { r.status = "replaced"; r.end = e.ts; }
+    const run = { id: `${e.terminal}-${e.ts}`, terminal: e.terminal, cwd: e.cwd, role: e.role, prompt: clipText(e.prompt, 400), start: e.ts, steps: 0, helpers: 0, approvals: 0, declined: 0, escalated: 0, refused: 0, gate: 0, failures: 0, answers: [], status: "running" };
+    runs.push(run); openRuns.set(e.terminal, run);
+    if (runs.length > RUNS_MAX) runs.splice(0, runs.length - RUNS_MAX);
+    return;
+  }
+  if (!r) return;
+  switch (e.event) {
+    case "PreToolUse": if (!e.agent_id) { r.steps++; if (e.tool === "Agent" || e.tool === "Task") r.helpers++; } break;
+    case "PostToolUseFailure": r.failures++; break;
+    case "AxaDecision": if (e.decision === "allow") r.approvals++; else if (e.decision === "deny") r.declined++; else r.escalated++; break;
+    case "PolicyDecision": if (e.decision === "deny") r.refused++; break;
+    case "VerifyGate": r.gate++; break;
+    case "UserAnswer": r.answers.push(clipText(e.answer, 80)); break;
+    // a verify-gate bounce isn't the end of the run (track() keeps it "working")
+    case "Stop": if (s.status === "done") { r.status = "done"; r.end = e.ts; r.report = clipText(e.message, 600); openRuns.delete(e.terminal); } break;
+  }
+}
+function runsSince(since, limit) {
+  const terms = new Map((T?.listTerms() || []).map((t) => [t.id, t]));
+  return runs.filter((r) => (r.end || r.start) >= since).slice(-limit).reverse().map((r) => {
+    const t = terms.get(r.terminal);
+    const name = t ? (t.mode === "axa" ? "AXA" : t.name) : r.role === "commander" ? "AXA" : basename(r.cwd || "") || r.terminal;
+    return { ...r, name, status: r.status === "running" && (!t || !t.alive) ? "unfinished" : r.status };
+  });
+}
+
+// ---------- links: when one session finishes, AXA sends the next instruction to another ----------
+// Saved in $AXA_HOME/chains.json. A link fires once, on a "done" that comes after it was made and has
+// held DONE_MS (so a verify-gate bounce settles first), and only when the next session is idle.
+const chainsPath = join(home, "chains.json");
+let chains = [];
+try { chains = JSON.parse(readFileSync(chainsPath, "utf8")).filter((c) => c?.id); } catch {}
+const saveChains = () => { try { writeFileSync(chainsPath, JSON.stringify(chains.map(({ sending, ...c }) => c), null, 2), { mode: 0o600 }); chmodSync(chainsPath, 0o600); } catch {} };
+const chainSeen = new Map(); // session -> { status, since }
+function runChains(list) {
+  const now = Date.now();
+  for (const s of list) { const c = chainSeen.get(s.id); if (!c || c.status !== s.status) chainSeen.set(s.id, { status: s.status, since: now }); }
+  for (const ch of chains) {
+    if (ch.fired || ch.failed || ch.sending) continue;
+    const from = list.find((s) => s.id === ch.from), to = list.find((s) => s.id === ch.to);
+    if (!from || !to || !to.alive) { ch.failed = !from ? "the first session was closed" : "the next session was closed"; saveChains(); continue; }
+    if (from.status !== "done" || (from.last_event_at || 0) <= ch.created || now - chainSeen.get(from.id).since < DONE_MS) continue;
+    if (!["ready", "done"].includes(to.status) || to.awaiting_permission) continue; // the next one is busy: wait for it
+    ch.sending = true;
+    // Claude sessions get a note saying where the instruction comes from; shells get just the command
+    T.sendToTerm(to.id, to.mode === "shell" ? ch.text : `[AXA link: ${from.name} just finished] ${ch.text}`).then((r) => {
+      ch.sending = false;
+      if (!r.ok) { if (/dangerous/i.test(r.error || "")) { ch.failed = r.error; saveChains(); } return; }
+      ch.fired = Date.now(); saveChains();
+      const ev = { ts: Date.now(), event: "ChainFired", terminal: to.id, role: "console", from: from.name, to: to.name, text: clipText(ch.text, 200) };
+      try { appendFileSync(logPath, JSON.stringify(ev) + "\n"); } catch {}
+    });
+  }
+}
+const chainsView = () => { const terms = new Map((T?.listTerms() || []).map((t) => [t.id, t])); return chains.map(({ sending, ...c }) => ({ ...c, from_name: terms.get(c.from)?.name, to_name: terms.get(c.to)?.name })); };
 
 const clients = new Set();
 let offset = statSync(logPath).size;
@@ -187,8 +254,10 @@ const lastSeen = new Map(), pending = new Map(), wakes = [], budgetTold = new Se
 let primed = false;
 
 function supervise() {
-  if (!T || !SUPERVISE) return;
+  if (!T) return;
   const list = T.listTerms();
+  runChains(list);
+  if (!SUPERVISE) return;
   for (const s of list) {
     if (s.mode !== "claude") continue;
     const prev = lastSeen.get(s.id);
@@ -267,6 +336,7 @@ const server = createServer(async (req, res) => {
   if (!authed(req)) return json(res, 401, { error: "locked", hint: "Open the console with /axa:console or the unlock link it prints." });
 
   if (path === "/roster") return json(res, 200, readRoster());
+  if (path === "/api/runs") return json(res, 200, runsSince(Number(u.searchParams.get("since")) || 0, Math.min(500, Number(u.searchParams.get("limit")) || 200)));
   if (path === "/events") {
     res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
     const start = Math.max(0, offset - HISTORY_BYTES);
@@ -303,6 +373,19 @@ const server = createServer(async (req, res) => {
         return json(res, 200, T.createTerm(body));
       } catch (e) { return json(res, 400, { error: e.message }); }
     }
+    if (path === "/api/chains" && req.method === "GET") return json(res, 200, chainsView());
+    if (path === "/api/chains" && req.method === "POST") {
+      const b = await readBody(req), terms = T.listTerms();
+      const from = terms.find((t) => t.id === b.from), to = terms.find((t) => t.id === b.to), text = typeof b.text === "string" ? b.text.trim() : "";
+      if (!from || !to) return json(res, 404, { error: "Both sessions must be open (ids from list_sessions)." });
+      if (from.id === to.id) return json(res, 400, { error: "A session can't be linked to itself." });
+      if (!text || text.length > 4000) return json(res, 400, { error: "Give the next session an instruction (up to 4000 characters)." });
+      const ch = { id: randomBytes(4).toString("hex"), from: from.id, to: to.id, text, created: Date.now() };
+      chains.push(ch); saveChains();
+      return json(res, 200, { ...ch, from_name: from.name, to_name: to.name });
+    }
+    const cm = path.match(/^\/api\/chains\/([\w-]+)$/);
+    if (cm && req.method === "DELETE") { const n = chains.length; chains = chains.filter((c) => c.id !== cm[1]); saveChains(); return json(res, chains.length < n ? 200 : 404, {}); }
     const m = path.match(/^\/api\/terms\/([\w-]+)$/);
     if (m && req.method === "DELETE") { const r = T.killTerm(m[1], { removeWorktree: u.searchParams.get("remove_worktree") === "1" }); return json(res, r ? 200 : 404, r || {}); }
     // The user answering a prompt: from the console page (browsers stamp Sec-Fetch-Site, which page

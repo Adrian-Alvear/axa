@@ -81,6 +81,8 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
 
   // ---------- state ----------
   let list = [], err = "", prev = null, overlay = null, prefix = false, quitting = false, zoom = false;
+  let mapMode = false, mapSel = 0, chainsList = []; // the map view, its selected session, the links between sessions
+  const briefSince = cfg.lastSeenAt || 0; // when you last had mission control open (for "since you left")
   let W = out.columns || 120, H = out.rows || 36;
   const views = []; // live panes: { id, proc, term, cursorOn, cols, rows, dead, lastRows }
   let focus = 0; // which pane gets your typing
@@ -249,7 +251,7 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
     const k = cfg.prefix.replace("C-", "Ctrl-");
     const tag = prefix ? " PREFIX " : "";
     const keys = prefix
-      ? " : palette · s browse · / search · j/k move · 0-9 pick · % split · Tab pane · z zoom · f feed · y/x answer · ! go · c new · w worktree · g goal · d diff · v verify · , settings · q quit · ? help"
+      ? " : palette · m map · b brief · h history · l link · s browse · / search · j/k move · 0-9 pick · % split · Tab pane · z zoom · f feed · y/x answer · ! go · c new · w worktree · g goal · d diff · v verify · , settings · q quit · ? help"
       : ` ${k} : palette · ${k} s browse · ${k} ? help · ${k} q leave (sessions keep running)`;
     const clock = new Date().toLocaleTimeString([], { hour12: false });
     const room = Math.max(0, W - 10 - tag.length);
@@ -267,7 +269,11 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
       for (let y = 0; y < H - 1; y++) o += `${ESC}[${y + 1};${L.sideX + 1}H${side[y] || " ".repeat(L.side)}${ESC}[${y + 1};${cfg.sidebar === "right" ? L.sideX : L.side + 1}H${sgr("rule", "│")}`;
       void bx;
     }
-    {
+    if (mapMode) {
+      // the map replaces the panes (sessions keep running and are still live underneath)
+      const rows = mapRows(L);
+      for (let y = 0; y < L.mainH; y++) o += `${ESC}[${y + 1};${L.mainX + 1}H${rows[y]}`;
+    } else {
       L.panes.forEach((p, i) => {
         const v = views[i];
         o += `${ESC}[${p.y + 1};${p.x + 1}H${paneHeader(v, p, i === focus)}`;
@@ -291,7 +297,7 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
     o += `${ESC}[${H};1H${statusRow()}`;
     // the focused session's own cursor, when it shows one
     const v = views[focus], p = L.panes[focus];
-    if (!overlay && v?.term && !v.dead && v.cursorOn && p) {
+    if (!overlay && !mapMode && v?.term && !v.dead && v.cursorOn && p) {
       const b = v.term.buffer.active;
       o += `${ESC}[${p.y + b.cursorY + 2};${p.x + b.cursorX + 1}H${ESC}[?25h`;
     } else if (overlay?.cursor) o += `${ESC}[${overlay.cursor[0]};${overlay.cursor[1]}H${ESC}[?25h`;
@@ -304,7 +310,9 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
   // A bordered panel centered over the main area ("large" panels, like browse, take nearly all of it)
   function floatingPanel(L) {
     const big = overlay.size === "large";
-    const w = Math.max(30, Math.min(L.mainW - (big ? 2 : 4), big ? 400 : 108)), h = Math.max(8, Math.min(L.mainH - (big ? 1 : 2), big ? 400 : 32));
+    // small panels fit their content (title, lines, input, hint, borders)
+    const fit = (overlay.lines?.length || 0) + (overlay.input !== undefined ? 1 : 0) + 4;
+    const w = Math.max(30, Math.min(L.mainW - (big ? 2 : 4), big ? 400 : 108)), h = Math.max(8, Math.min(L.mainH - (big ? 1 : 2), big ? 400 : Math.min(32, fit + 1)));
     const x = L.mainX + Math.floor((L.mainW - w) / 2), y = Math.floor((L.mainH - h) / 2);
     const rows = overlayRows({ x: x + 1, y: y + 1, cols: w - 2, rows: h - 3 });
     let o = `${ESC}[${y + 1};${x + 1}H${sgr("accent", "╭" + "─".repeat(w - 2) + "╮")}`;
@@ -372,6 +380,10 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
     "  %          split: a second session side by side (again to close it)    Tab  switch pane",
     "  z          zoom: hide the sidebar       f  show / hide the activity strip",
     "  /          search every session's screen and recent history",
+    "  m          map: AXA at the center, sessions, their helper agents and links (keys move around it)",
+    "  b          since you left: what happened while mission control was closed",
+    "  h          run history: every instruction, its steps, approvals, checks and result",
+    "  l          link: when this session finishes, send an instruction to another",
     "  y / x      answer the prompt in the yellow bar: its Yes… / No… option (the bar names them)",
     "  !          jump to whatever needs you",
     "  c          new session in a project     w  new session in its own git worktree",
@@ -388,6 +400,7 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
   function move(d) { const o = ordered(); if (!o.length) return; const i = Math.max(0, o.findIndex((s) => s.id === selId())); show(o[(i + d + o.length) % o.length]); }
   async function poll() {
     try { list = await api("/api/terms"); err = ""; } catch (e) { err = e.message; }
+    try { chainsList = await api("/api/chains"); } catch {}
     const now = new Map(list.map((s) => [s.id, s.status]));
     if (cfg.bell && prev && list.some((s) => ["waiting", "stuck"].includes(s.status) && prev.get(s.id) !== s.status)) out.write("\x07");
     prev = now;
@@ -419,11 +432,25 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
       case "VerifyGate": return { text: "verify gate: sent back to check its work", role: "waitSoft" };
       case "UserAnswer": return { text: `you answered: ${clip(e.answer, 60)}`, role: "accent" };
       case "SupervisorWake": return { text: `AXA woke up: ${clip((e.items || []).join("; "), 90)}`, role: "accent" };
+      case "ChainFired": return { text: `link: ${clip(e.from, 20)} finished → sent: ${clip(e.text, 70)}`, role: "accent" };
     }
     return null;
   }
+  // helper agents per session (for the map): spawned → running → done
+  const helpers = new Map(), spawnQueue = new Map();
+  function trackHelpers(e) {
+    const t = e.terminal;
+    if (e.event === "PreToolUse" && !e.agent_id && (e.tool === "Agent" || e.tool === "Task")) { const q = spawnQueue.get(t) || []; q.push({ desc: e.summary, type: e.subagent_type }); spawnQueue.set(t, q.slice(-10)); }
+    else if (e.event === "SubagentStart") {
+      const sp = (spawnQueue.get(t) || []).shift(), arr = helpers.get(t) || [];
+      arr.push({ id: e.agent_id, type: String(e.agent_type || sp?.type || "helper").split(":").pop(), desc: clean(sp?.desc || ""), status: "running", ts: e.ts || Date.now() });
+      helpers.set(t, arr.slice(-6));
+    } else if (e.event === "SubagentStop") { const h = (helpers.get(t) || []).find((x) => x.id === e.agent_id); if (h) { h.status = "done"; h.ts = e.ts || Date.now(); } }
+    else if (e.event === "UserPromptSubmit" && !/^\s*<task-notification>/.test(e.prompt || "")) helpers.set(t, (helpers.get(t) || []).filter((h) => h.status === "running"));
+  }
   function ingest(e) {
     if (!e?.terminal) return;
+    trackHelpers(e);
     const t = activity.get(e.terminal) || [];
     t.push(e.ts || Date.now()); activity.set(e.terminal, t);
     const d = describe(e);
@@ -509,6 +536,176 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
       try { const r = await api(`/api/terms/${s.id}/screen?lines=400`); for (const l of String(r.screen || "").split("\n")) { const t = clean(l); if (t) texts.push({ s, t }); } } catch {}
     }));
     loading = false; schedule();
+  }
+
+  // ---------- map: AXA at the center, sessions, their helpers and the links between them ----------
+  const fmtDur = (ms) => { const s = Math.max(0, Math.round(ms / 1000)); return s < 60 ? `${s}s` : s < 3600 ? `${Math.round(s / 60)}m` : `${Math.floor(s / 3600)}h${String(Math.round((s % 3600) / 60)).padStart(2, "0")}`; };
+  const renderSegs = (segs, w) => { let o = "", n = 0; for (const [t, r] of segs) { if (!t) continue; if (n >= w) break; const c = cut(t, w - n); o += r ? sgr(r, c) : c; n += width(c); } return o + " ".repeat(Math.max(0, w - n)); };
+  function mapRows(L) {
+    const W2 = L.mainW, H2 = L.mainH, frame = Math.floor(Date.now() / 250);
+    const ss = sessions(), axa = list.find((s) => s.mode === "axa");
+    mapSel = Math.max(0, Math.min(mapSel, ss.length - 1));
+    const TX = 24; // the trunk's column
+    const entries = []; // { kind, s, i, h, c }
+    ss.forEach((s, i) => {
+      entries.push({ kind: "session", s, i });
+      const hs = (helpers.get(s.id) || []).filter((h) => h.status === "running" || Date.now() - h.ts < 30 * 60_000).slice(-3);
+      for (const h of hs) entries.push({ kind: "helper", s, h });
+      for (const c of chainsList.filter((c) => c.from === s.id && (!c.fired || Date.now() - c.fired < 30 * 60_000))) entries.push({ kind: "link", s, c });
+      if (i < ss.length - 1) entries.push({ kind: "gap" });
+    });
+    const rows = Array.from({ length: H2 }, () => [["", ""]]);
+    if (!ss.length) {
+      rows[Math.floor(H2 / 2)] = [["   ◆ AXA", "title"], ["   no sessions yet: Ctrl-b c starts one, or ask the commander", "dim"]];
+      return rows.map((r) => renderSegs(r, W2));
+    }
+    // keep the selected session in view when the map is taller than the window
+    const selAt = entries.findIndex((e) => e.kind === "session" && e.i === mapSel);
+    const off = entries.length <= H2 ? -Math.floor((H2 - entries.length) / 2) : Math.max(0, Math.min(selAt - Math.floor(H2 / 2), entries.length - H2));
+    const sessRows = entries.map((e, k) => (e.kind === "session" ? k : -1)).filter((k) => k >= 0);
+    const first = sessRows[0], last = sessRows.at(-1), mid = Math.round((first + last) / 2);
+    for (let y = 0; y < H2; y++) {
+      const k = y + off, e = entries[k];
+      // AXA's node, left of the trunk, level with the middle of the sessions
+      let left = " ".repeat(TX - 1);
+      const [ag, aword, arole] = axa ? look(axa) : ["◆", "not running", "off"];
+      const node = k === mid - 1 ? [[" ◆ AXA", "title"]] : k === mid ? [[` ${ag} ${aword}`, arole]] : k === mid + 1 ? [[` ${cut(axa ? what(axa) : "Ctrl-b 0", TX - 3)}`, "dim"]] : null;
+      const segs = node ? [...node] : [[left, ""]];
+      const used = node ? width(node.map(([t]) => t).join("")) : TX - 1;
+      if (k === mid) segs.push(["─".repeat(Math.max(0, TX - 1 - used)), "rule"]); else segs.push([" ".repeat(Math.max(0, TX - 1 - used)), ""]);
+      // the trunk
+      const inSpan = k >= first && k <= last, isSess = e?.kind === "session";
+      let tc = " ";
+      if (inSpan) {
+        if (first === last) tc = k === mid ? "─" : " ";
+        else if (isSess) tc = k === first ? (k === mid ? "┬" : "┌") : k === last ? (k === mid ? "┴" : "└") : k === mid ? "┼" : "├";
+        else tc = k === mid ? "┤" : "│";
+      }
+      segs.push([tc, "rule"]);
+      if (!e || e.kind === "gap") { rows[y] = segs; continue; }
+      const s = e.s, [g, word, role] = look(s);
+      if (e.kind === "session") {
+        // the branch: data flowing out to a working session
+        let branch = "──────";
+        if (s.status === "working") { const p = frame % 6; branch = "─".repeat(p) + "●" + "─".repeat(5 - p); }
+        segs.push([branch, s.status === "working" ? "work" : s.status === "waiting" ? "wait" : "rule"]);
+        const isSel = e.i === mapSel;
+        segs.push([` ${g} `, role], [nameOf(s), isSel ? "sel" : role], ["  ", ""]);
+        if (s.status === "waiting" && s.choices) segs.push([`${question(s.choices)}  `, "wait"], [`[y] ${yesOpt(s.choices).label}  [x] ${noOpt(s.choices).label}`, "waitSoft"]);
+        else segs.push([`${word} · ${what(s)}`, "dim"]);
+      } else if (e.kind === "helper") {
+        const h = e.h;
+        segs.push(["         └─ ", "rule"], [h.status === "running" ? "● " : "✓ ", h.status === "running" ? "work" : "done"], [h.type, h.status === "running" ? "work" : "dim"], [h.desc ? `: ${h.desc}` : "", "dim"]);
+      } else if (e.kind === "link") {
+        const c = e.c, to = list.find((x) => x.id === c.to);
+        segs.push(["         ──▶ ", c.fired ? "dim" : "accent"], [to ? nameOf(to) : c.to_name || "?", c.fired ? "dim" : "accent"], [c.fired ? `  ✓ sent ${fmtDur(Date.now() - c.fired)} ago` : c.failed ? `  ✗ ${c.failed}` : "  when this finishes: ", c.failed ? "stuck" : "dim"], [c.fired || c.failed ? "" : c.text, "idle"]);
+      }
+      rows[y] = segs;
+    }
+    return rows.map((r) => renderSegs(r, W2));
+  }
+  function mapKey(k) {
+    const ss = sessions(), s = ss[mapSel];
+    if (k === "j" || k === "\x1b[B") mapSel = Math.min(ss.length - 1, mapSel + 1);
+    else if (k === "k" || k === "\x1b[A") mapSel = Math.max(0, mapSel - 1);
+    else if (/^[1-9]$/.test(k)) mapSel = Math.min(ss.length - 1, Number(k) - 1);
+    else if (k === "\r" && s) { mapMode = false; fullRedraw = true; show(s); }
+    else if ((k === "y" || k === "x") && s?.status === "waiting" && s.choices) answerSession(s, k === "y" ? yesOpt(s.choices) : noOpt(s.choices));
+    else if (k === "d" && s) showDiff(s);
+    else if (k === "g" && s) giveGoal(s);
+    else if (k === "l" && s) linkFrom(s);
+    else if (k === "v" && s) runVerify(s);
+    else if (k === ESC || k === "m" || k === "q") { mapMode = false; fullRedraw = true; }
+    schedule();
+  }
+  async function answerSession(s, o) {
+    try { await api(`/api/terms/${s.id}/answer`, { method: "POST", body: { n: o.n, label: o.label }, headers: { "x-axa-client": "tui" } }); await poll(); }
+    catch (e) { flash("Couldn't answer", [e.message]); }
+  }
+
+  // ---------- links: when one session finishes, the next one gets an instruction ----------
+  function linkFrom(s = sel()) {
+    if (!s) return;
+    const others = ordered().filter((x) => x.id !== s.id && x.alive);
+    if (!others.length) return flash("Nothing to link to", ["Open another session first (Ctrl-b c)."]);
+    const ov = { title: `Link: when ${nameOf(s)} finishes, send the next instruction to…`, sel: 0, lines: [], hint: "j/k choose · Enter next · Esc cancel" };
+    const render = () => { ov.lines = others.map((o, i) => { const [g] = look(o); return { text: `${i === ov.sel ? "›" : " "} ${g} ${nameOf(o)}`, role: i === ov.sel ? "sel" : "" }; }); ov.follow = ov.sel; };
+    ov.onKey = (k) => {
+      if (k === "j" || k === "\x1b[B") ov.sel = Math.min(others.length - 1, ov.sel + 1);
+      else if (k === "k" || k === "\x1b[A") ov.sel = Math.max(0, ov.sel - 1);
+      else if (k === "\r") {
+        const to = others[ov.sel];
+        closeOverlay();
+        ask(`When ${nameOf(s)} finishes, tell ${nameOf(to)}:`, async (text) => {
+          try { await api("/api/chains", { method: "POST", body: { from: s.id, to: to.id, text } }); chainsList = await api("/api/chains"); flash("Linked", [`When ${nameOf(s)} finishes (and its checks settle), AXA sends ${nameOf(to)}:`, "", `  ${text}`, "", "It shows on the map (Ctrl-b m). Remove it from the palette (Ctrl-b :, \"remove link\")."]); }
+          catch (e) { flash("Couldn't link them", [e.message]); }
+        });
+        return true;
+      } else if (k === "q" || k === ESC) { closeOverlay(); return true; }
+      render(); return true;
+    };
+    render(); overlay = ov; schedule();
+  }
+
+  // ---------- since you left: what happened between runs ----------
+  const runGlyph = (r) => (r.status === "done" ? ["✓", "done"] : r.status === "running" ? ["●", "work"] : r.status === "replaced" ? ["↺", "dim"] : ["–", "off"]);
+  const runPrompt = (r) => (/^\s*\[AXA supervisor/.test(r.prompt || "") ? "(supervisor update)" : /^\s*\[AXA link/.test(r.prompt || "") ? `(link) ${clean(r.prompt).replace(/^\[AXA link: [^\]]*\]\s*/, "")}` : clean(r.prompt));
+  async function briefing(auto = false) {
+    const since = briefSince;
+    let runs = [];
+    try { runs = await api(`/api/runs?since=${since}&limit=300`); } catch {}
+    const waiting = list.filter((s) => s.mode !== "axa" && (s.status === "waiting" || s.status === "stuck"));
+    if (auto && (!since || (!runs.length && !waiting.length))) return;
+    const lines = [];
+    for (const s of waiting) lines.push({ text: `⚠ ${nameOf(s)}  ${s.status === "stuck" ? "looks stuck" : `waiting: ${s.choices ? question(s.choices) : clean(s.doing)}`}`, role: "wait" });
+    const groups = new Map();
+    for (const r of runs.slice().reverse()) { const g = groups.get(r.terminal) || []; g.push(r); groups.set(r.terminal, g); }
+    for (const rs of groups.values()) {
+      const lastRun = rs.at(-1), [g, role] = runGlyph(lastRun), done = rs.filter((r) => r.status === "done").length;
+      const sum = (k) => rs.reduce((n, r) => n + (r[k] || 0), 0);
+      const bits = [done ? `${done} run${done > 1 ? "s" : ""} finished` : "", lastRun.status === "running" ? "working now" : "", sum("gate") ? `verify gate ${sum("gate")}×` : "", sum("approvals") ? `${sum("approvals")} approved by AXA` : "", sum("escalated") ? `${sum("escalated")} asked you` : "", sum("failures") ? `${sum("failures")} failed steps` : ""].filter(Boolean).join(" · ");
+      lines.push({ text: `${g} ${lastRun.name.padEnd(16)} ${bits}`, role });
+      const rep = [...rs].reverse().find((r) => r.report);
+      if (rep) lines.push({ text: `    └ ${clean(rep.report)}`, role: "dim" });
+    }
+    if (!lines.length) lines.push({ text: "Nothing happened since then.", role: "dim" });
+    const at = since ? new Date(since).toLocaleTimeString([], { hour12: false, hour: "2-digit", minute: "2-digit" }) : "";
+    overlay = { title: since ? `Since you left · ${at} (${fmtDur(Date.now() - since)} ago)` : "Briefing", lines, hint: `Esc close · ${keyName()} h full history · ${keyName()} ! what needs you · ${keyName()} m map` };
+    schedule();
+  }
+
+  // ---------- run history: every instruction, its steps and result ----------
+  async function history() {
+    let runs = [];
+    try { runs = await api("/api/runs?limit=300"); } catch (e) { return flash("Couldn't read the history", [e.message]); }
+    if (!runs.length) return flash("No runs yet", ["Runs appear here once sessions get instructions."]);
+    const ov = { title: "Run history · newest first · Enter details · Esc close", sel: 0, lines: [], size: "large", hint: "j/k choose · Enter details · Esc close" };
+    const render = () => {
+      ov.lines = runs.map((r, i) => {
+        const [g, role] = runGlyph(r), when = new Date(r.start).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false });
+        const text = `${i === ov.sel ? "›" : " "} ${when.padEnd(14)} ${cut(r.name, 14).padEnd(14)} ${g} ${fmtDur((r.end || Date.now()) - r.start).padStart(5)}  ${runPrompt(r)}`;
+        return { text, role: i === ov.sel ? "sel" : r.status === "running" ? "work" : "" };
+      });
+      ov.follow = ov.sel;
+    };
+    ov.onKey = (k) => {
+      if (k === "j" || k === "\x1b[B") ov.sel = Math.min(runs.length - 1, ov.sel + 1);
+      else if (k === "k" || k === "\x1b[A") ov.sel = Math.max(0, ov.sel - 1);
+      else if (k === "\r") {
+        const r = runs[ov.sel], back = ov;
+        overlay = { title: `${r.name} · ${new Date(r.start).toLocaleString([], { hour12: false })} · ${r.status}`, hint: "Esc back to the list", size: "large", lines: [
+          { text: "Instruction", role: "title" }, ...String(r.prompt || "").split("\n").map((l) => ({ text: `  ${l}` })), { text: "" },
+          { text: `Took ${fmtDur((r.end || Date.now()) - r.start)} · ${r.steps} steps${r.helpers ? ` · ${r.helpers} helper agents` : ""}`, role: "dim" },
+          { text: `AXA approved ${r.approvals} · declined ${r.declined} · asked you ${r.escalated} · policy refused ${r.refused} · verify gate ${r.gate}× · failed steps ${r.failures}`, role: "dim" },
+          ...(r.answers?.length ? [{ text: `You answered: ${r.answers.join(" · ")}`, role: "accent" }] : []),
+          { text: "" }, { text: "Result", role: "title" }, ...String(r.report || (r.status === "running" ? "(still working)" : "(no report)")).split("\n").map((l) => ({ text: `  ${l}` })),
+        ] };
+        overlay.onKey = (k2) => { if (k2 === ESC || k2 === "q") { overlay = back; fullRedraw = true; return true; } return false; };
+        return true;
+      } else if (k === "q" || k === ESC) { closeOverlay(); return true; }
+      render(); return true;
+    };
+    render(); overlay = ov; schedule();
   }
 
   async function answerAlert(which) {
@@ -634,6 +831,11 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
     add(zoom ? "Show the sidebar" : "Zoom: hide the sidebar", () => { zoom = !zoom; fullRedraw = true; schedule(); }, "z");
     add("Jump to whatever needs you", () => action("!"), "!");
     add("Search every session", searchAll, "/");
+    add(mapMode ? "Back to the sessions" : "Map: AXA, sessions, helpers and links", () => action("m"), "m");
+    add("Since you left: briefing", () => briefing(false), "b");
+    add("Run history", history, "h");
+    add("Link: when this session finishes, instruct another", () => linkFrom(), "l");
+    for (const c of chainsList.filter((c) => !c.fired && !c.failed)) add(`Remove link: ${c.from_name} → ${c.to_name}`, async () => { try { await api(`/api/chains/${c.id}`, { method: "DELETE" }); chainsList = await api("/api/chains"); } catch (e) { flash("Couldn't remove it", [e.message]); } });
     add(cfg.feed ? "Hide the activity strip" : "Show the activity strip", () => action("f"), "f");
     add("Settings: theme, prefix key, sidebar, bell", settings, ",");
     add("Open the web console", () => action("o"), "o");
@@ -715,6 +917,10 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
     if (k === "\t" || k === "\x1b[Z") { if (views.length > 1) { focus = (focus + 1) % views.length; schedule(); } return; }
     if (k === "z") { zoom = !zoom; fullRedraw = true; return schedule(); }
     if (k === "/") return searchAll();
+    if (k === "m") { mapMode = !mapMode; if (mapMode) { const i = sessions().findIndex((s) => s.id === selId()); mapSel = Math.max(0, i); } fullRedraw = true; return schedule(); }
+    if (k === "b") return briefing(false);
+    if (k === "h") return history();
+    if (k === "l") return linkFrom();
     if (k === "f") { cfg.feed = !cfg.feed; saveCfg(); fullRedraw = true; return schedule(); }
     if (k === "y") return answerAlert("yes");
     if (k === "x") return answerAlert("no");
@@ -768,7 +974,8 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
       const i = d.indexOf(P);
       const chunk = i < 0 ? d : d.slice(0, i);
       const v = views[focus];
-      if (chunk && v?.proc && !v.dead) v.proc.write(chunk);
+      if (chunk && mapMode) keysOf(chunk).forEach(mapKey); // on the map, keys move around it
+      else if (chunk && v?.proc && !v.dead) v.proc.write(chunk);
       if (i < 0) break;
       prefix = true; d = d.slice(i + 1); schedule();
     }
@@ -777,7 +984,7 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
   // ---------- start: AXA is always there ----------
   const enter = () => { out.write(`${ESC}[?1049h${ESC}[?1000h${ESC}[?1006h${ESC}[2J`); process.stdin.setRawMode(true); process.stdin.resume(); };
   const leave = () => { out.write(`${ESC}[?1000l${ESC}[?1006l${ESC}[0m${ESC}[?25h${ESC}[?1049l`); try { process.stdin.setRawMode(false); } catch {} };
-  function quit() { quitting = true; views.forEach(closeView); leave(); console.log("AXA keeps running: `axa` reopens this, `axa console` opens the web console."); process.exit(0); }
+  function quit() { quitting = true; cfg.lastSeenAt = Date.now(); saveCfg(); views.forEach(closeView); leave(); console.log("AXA keeps running: `axa` reopens this, `axa console` opens the web console."); process.exit(0); }
   process.on("SIGTERM", quit); process.on("SIGHUP", quit);
   process.on("uncaughtException", (e) => { quitting = true; try { views.forEach(closeView); } catch {} leave(); console.error(e); process.exit(1); });
   out.on("resize", () => { fullRedraw = true; resizeViews(); schedule(); });
@@ -798,5 +1005,9 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
   if (cmdError) flash("Couldn't start the AXA commander", [cmdError, "", "Sessions still work; start it later from the web console (Ctrl-b o)."]);
   setInterval(poll, 1000);
   streamEvents();
+  setInterval(() => { if (mapMode && !overlay) schedule(); }, 250); // the map's flowing links
+  // "since you left" counts from when mission control was last open
+  setInterval(() => { cfg.lastSeenAt = Date.now(); saveCfg(); }, 60_000);
+  if (!cmdError) setTimeout(() => { if (!overlay) briefing(true); }, 1500);
   setInterval(schedule, 1000); // the clock
 }

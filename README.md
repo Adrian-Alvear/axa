@@ -116,6 +116,20 @@ built in:
   "you answered: …". `Ctrl-b f` shows or hides the strip.
 - **Floating panels:** help, the palette, diffs, checks, settings, search and browse open as panels
   over the live sessions, which keep running underneath.
+- **Map (`Ctrl-b m`):** AXA at the center, every session branching off it, each session's helper
+  agents hanging below it, and the links between sessions. A dot runs along the branch of each session
+  that's working. Arrow keys pick a session: Enter opens it, `y`/`x` answer its prompt, `d` diff,
+  `g` goal, `l` link, Esc back.
+- **Since you left (`Ctrl-b b`):** when you open `axa`, a briefing shows what happened while mission
+  control was closed. It lists what's waiting on you, and for each session the runs that finished,
+  verify-gate bounces, approvals, things that asked you, and its latest report.
+- **Run history (`Ctrl-b h`):** every instruction a session got, newest first, with how long it took.
+  Enter shows the details: steps, helper agents, what AXA approved or declined, policy refusals,
+  verify-gate bounces, your answers, and the result.
+- **Links (`Ctrl-b l`):** "when launches finishes, tell feed: rebase on it and re-run the tests". AXA
+  sends the instruction once, after the first session finishes (and its checks settle) and when the
+  second is idle. The commander can make links too (`link_sessions`), so you can just ask it for a
+  handoff. Links show on the map, and you can remove them from the palette.
 - **Actions:** press **Ctrl-b**, then `j`/`k` (or `0`–`9`) to switch sessions, `c` new session,
   `w` new session in its own worktree, `g` give a goal, `d` its diff, `v` run the project's
   checks, `o` the web console, `X` close it, `q` leave (sessions keep running), `?` for all keys.
