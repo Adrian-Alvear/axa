@@ -94,11 +94,19 @@ axa chat     # the commander as a plain Claude Code session (what `axa` used to 
 `axa` opens a full-screen mission control, like a terminal multiplexer for agents, with AXA's brain
 built in:
 
-- **Sidebar, a live diagram:** AXA (the commander) is the root at the top, and every session branches
-  off it, sorted by what needs you. A dot runs along the branch of each session that's working. Each
-  shows a status symbol and word, what it's doing or asking, its branch and changes, and tokens used,
-  with its helper agents and its links underneath. Click any row to open that session. Prefer a
-  compact list? Settings (`Ctrl-b ,`) → Sidebar style → list.
+- **Sidebar, a live diagram organized like herdr:** AXA (the commander) is the root at the top, with
+  its own helper agents. Below it come **workspaces**, one per project (a worktree session belongs to
+  its repo).
+  - **Workspace state** rolls up from its sessions: needs you > working > done > idle, so you see which
+    project needs attention.
+  - **Each session** branches off its workspace, with a dot running along the branch while it works.
+    It shows its status, what it's doing or asking, its branch and changes, tokens used, and its links.
+  - **Helper agents** are grouped by the work they do (`● builder ×2 · ✓ reviewer`).
+  - **Done stays marked (•)** until you've looked at it; then it shows as idle.
+  - Click any row to open it. Prefer a compact list? Settings (`Ctrl-b ,`) → Sidebar style → list.
+- **Tabs:** the row above the session shows its workspace and the workspace's sessions as tabs. Click
+  one, or press `Ctrl-b n` / `Ctrl-b p`. `Ctrl-b r` gives a session your own name (like
+  "reviewer").
 - **Live session:** the selected session runs right there, fully interactive. Type into it as usual,
   and flip between sessions instantly. If no commander is running, one starts, so you land in AXA.
 - **Answer from anywhere:** when another session needs you, a yellow bar shows its question.

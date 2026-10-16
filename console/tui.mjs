@@ -9,7 +9,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
-import { join, relative, isAbsolute } from "node:path";
+import { basename, join, relative, isAbsolute } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { fileURLToPath } from "node:url";
 
@@ -78,7 +78,19 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
   const fmtTok = (n) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${Math.round(n / 1e3)}k` : String(n));
   const gitText = (g) => (!g ? "" : `${g.branch}${g.files ? ` ${g.files}f +${g.added} -${g.removed}` : " clean"}${g.ahead ? ` ↑${g.ahead}` : ""}`);
   const what = (s) => clean(s.status === "done" ? s.last_report || "finished" : s.doing || s.last_report || (s.mode === "shell" ? "shell" : s.mode === "axa" ? "select it and type to talk" : ""));
-  const nameOf = (s) => (s.mode === "axa" ? "AXA commander" : clean(s.name));
+  // your own display names for sessions (Ctrl-b r), like herdr's agent labels
+  const nameOf = (s) => clean(cfg.labels?.[s.id]) || (s.mode === "axa" ? "AXA commander" : clean(s.name));
+  // inside its workspace, a worktree session goes by its own name ("fix-login", not "launches:fix-login")
+  const shortName = (s) => clean(cfg.labels?.[s.id]) || (s.worktree ? clean(s.name).split(":").pop() : nameOf(s));
+  // "done" stays bright until you've looked at it, then it's just idle (herdr's done vs idle)
+  const seen = new Map();
+  const unseenDone = (s) => s.status === "done" && (seen.get(s.id) || 0) < (s.last_event_at || 0);
+  // helper agents grouped by the work they do: "● builder ×2 · ✓ reviewer"
+  function helperGroups(arr) {
+    const by = new Map();
+    for (const h of arr) { const g = by.get(h.type) || { run: 0, done: 0, desc: "" }; if (h.status === "running") { g.run++; g.desc ||= h.desc; } else g.done++; by.set(h.type, g); }
+    return [...by.entries()].map(([type, g]) => (g.run ? [`● ${type}${g.run > 1 ? ` ×${g.run}` : ""}`, "work", g.desc] : [`✓ ${type}${g.done > 1 ? ` ×${g.done}` : ""}`, "done", ""]));
+  }
 
   // ---------- state ----------
   let list = [], err = "", prev = null, overlay = null, prefix = false, quitting = false, zoom = false;
@@ -89,7 +101,18 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
   let focus = 0; // which pane gets your typing
   const byUrgency = (a, b) => URGENCY.indexOf(a.status) - URGENCY.indexOf(b.status) || (b.last_event_at || b.created) - (a.last_event_at || a.created);
   // AXA first, then sessions by urgency; sessions are numbered 1-9 in this order (AXA is 0)
-  const sessions = () => list.filter((x) => x.mode !== "axa").sort(byUrgency);
+  // Workspaces, like herdr's: one per project (a worktree session belongs to its repo). A workspace's
+  // state rolls up from its sessions: needs you > working > done (not yet seen) > idle.
+  const wsKey = (s) => s.worktree?.repo || s.cwd;
+  const rollup = (arr) => (arr.some((s) => s.status === "waiting" || s.status === "stuck") ? ["⚠", "needs you", "wait", 0] : arr.some((s) => s.status === "working") ? ["●", "working", "work", 1] : arr.some(unseenDone) ? ["✓", "done", "done", 2] : ["○", "idle", "off", 3]);
+  function workspaces() {
+    const by = new Map();
+    for (const s of list) if (s.mode !== "axa") { const k = wsKey(s); by.set(k, [...(by.get(k) || []), s]); }
+    return [...by.entries()].map(([key, ss]) => ({ key, name: basename(key), sessions: ss.sort(byUrgency), state: rollup(ss) }))
+      .sort((a, b) => a.state[3] - b.state[3] || Math.max(...b.sessions.map((s) => s.last_event_at || s.created)) - Math.max(...a.sessions.map((s) => s.last_event_at || s.created)));
+  }
+  // sessions in display order (by workspace, then urgency): their numbers 1-9 follow it
+  const sessions = () => workspaces().flatMap((w) => w.sessions);
   const ordered = () => [...list.filter((x) => x.mode === "axa"), ...sessions()];
   const selId = () => views[focus]?.id || null;
   const sel = () => list.find((s) => s.id === selId());
@@ -106,10 +129,12 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
     const alert = alertFor(), alertRows = alert ? 2 : 0;
     const feedRows = cfg.feed && H >= 24 ? FEED_ROWS : 0;
     const mainH = H - 1 - alertRows - feedRows; // rows above the alert bar, the activity strip and the status line
+    // the tab row (sessions of the focused workspace) sits above the panes
+    const tabRow = mapMode ? 0 : 1, ph = mainH - tabRow;
     const panes = [];
-    if (views.length < 2) panes.push({ x: mainX, y: 0, w: mainW, h: mainH });
-    else if (mainW >= 100) { const a = Math.floor((mainW - 1) / 2); panes.push({ x: mainX, y: 0, w: a, h: mainH }, { x: mainX + a + 1, y: 0, w: mainW - a - 1, h: mainH }); }
-    else { const a = Math.floor(mainH / 2); panes.push({ x: mainX, y: 0, w: mainW, h: a }, { x: mainX, y: a, w: mainW, h: mainH - a }); }
+    if (views.length < 2) panes.push({ x: mainX, y: tabRow, w: mainW, h: ph });
+    else if (mainW >= 100) { const a = Math.floor((mainW - 1) / 2); panes.push({ x: mainX, y: tabRow, w: a, h: ph }, { x: mainX + a + 1, y: tabRow, w: mainW - a - 1, h: ph }); }
+    else { const a = Math.floor(ph / 2); panes.push({ x: mainX, y: tabRow, w: mainW, h: a }, { x: mainX, y: tabRow + a, w: mainW, h: ph - a }); }
     // each pane: a header row, then the session's rows
     for (const p of panes) { p.cols = Math.max(10, p.w); p.rows = Math.max(3, p.h - 1); }
     return { side, sideX, mainX, mainW, mainH, panes, alert, alertRows, feedRows };
@@ -205,6 +230,24 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
     }
     return rows;
   }
+  // The tab row: the focused session's workspace and its sessions as tabs (click one, or Ctrl-b n/p)
+  let tabHits = []; // [{ x0, x1, id }] in screen columns (1-based)
+  function workspaceOf(id) { return workspaces().find((w) => w.sessions.some((s) => s.id === id)); }
+  function tabStrip(L) {
+    const cur = sel(), ws = cur && cur.mode !== "axa" ? workspaceOf(cur.id) : null, tabs = ws ? ws.sessions : cur ? [cur] : [];
+    const label = ws ? ` ▣ ${ws.name} ` : " ◆ AXA ";
+    let o = sgr("title", label), n = width(label);
+    tabHits = [];
+    for (const s of tabs) {
+      const [g, , role] = look(s), t = ` ${g} ${shortName(s)}${unseenDone(s) ? " •" : ""} `;
+      if (n + width(t) + 1 > L.mainW) break;
+      const x0 = L.mainX + n + 2;
+      o += sgr("rule", "│") + (s.id === selId() ? sgr("sel", t) : sgr(role, t));
+      n += width(t) + 1;
+      tabHits.push({ x0, x1: x0 + width(t) - 1, id: s.id });
+    }
+    return o + sgr("rule", "│") + " ".repeat(Math.max(0, L.mainW - n - 1));
+  }
   function paneHeader(v, p, isFocus) {
     const s = list.find((x) => x.id === v?.id);
     if (!s) return sgr("dim", pad(" (empty pane)", p.cols));
@@ -226,30 +269,39 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
       rows.push((isSel ? sgr("sel", body + (sp ? " " + sp : "")) : body + (sp ? " " + sgr("work", sp) : "")));
       hits[rows.length - 1] = id;
     };
+    const recent = (id) => (helpers.get(id) || []).filter((h) => h.status === "running" || Date.now() - h.ts < 15 * 60_000);
+    const wss = workspaces(), nums = new Map(ss.map((s, i) => [s.id, i < 9 ? String(i + 1) : " "]));
     if (axa) {
-      const [g, word, role] = look(axa), isSel = axa.id === selId();
+      const [g, word, role] = look(axa), isSel = axa.id === selId(), down = wss.length ? "│" : " ";
       line([[" ◆ ", "title"], ["AXA", "title"], [`  0 ${g} ${word}`, role]], axa.id, isSel, spark(axa.id));
-      line([[` ${ss.length ? "│" : " "}  `, "rule"], [what(axa), "dim"]], axa.id, isSel);
-      // AXA's own helper agents (researchers, builders, reviewers it dispatched), like the web map's orbit
-      for (const h of (helpers.get(axa.id) || []).filter((h) => h.status === "running" || Date.now() - h.ts < 15 * 60_000).slice(-4))
-        line([[` ${ss.length ? "│" : " "}  ├ `, "rule"], [h.status === "running" ? "● " : "✓ ", h.status === "running" ? "work" : "done"], [`${h.type}${h.desc ? `: ${h.desc}` : ""}`, h.status === "running" ? "idle" : "dim"]], axa.id, false);
+      line([[` ${down}  `, "rule"], [what(axa), "dim"]], axa.id, isSel);
+      // AXA's own helper agents, grouped by the work they do (like the web map's orbit)
+      const hg = helperGroups(recent(axa.id));
+      if (hg.length) line([[` ${down}  └ `, "rule"], ...hg.flatMap(([t, r], k) => [[k ? " · " : "", "dim"], [t, r]]), [hg.length === 1 && hg[0][2] ? `: ${hg[0][2]}` : "", "dim"]], axa.id, false);
     } else line([[" ◆ AXA", "title"], ["  not running · Ctrl-b o", "dim"]], null, false);
-    ss.forEach((s, i) => {
-      const last = i === ss.length - 1, stem = last ? " " : "│", [g, word, role] = look(s), isSel = s.id === selId();
-      // a working session's branch carries a moving dot
-      const p = frame % 3, branch = s.status === "working" ? [0, 1, 2].map((k) => (k === p ? "●" : "─")).join("") : "───";
+    wss.forEach((ws, wi) => {
+      const lastWs = wi === wss.length - 1, wstem = lastWs ? " " : "│", [wg, wword, wrole] = ws.state;
       line([[" │", "rule"]], null, false);
-      line([[` ${last ? "└" : "├"}`, "rule"], [branch, s.status === "working" ? "work" : s.status === "waiting" ? "wait" : "rule"], [` ${i < 9 ? i + 1 : " "} ${g} `, role], [nameOf(s), role]], s.id, isSel, spark(s.id));
-      const sub = s.status === "waiting" && s.choices ? question(s.choices) : s.mode === "shell" && word === "shell" ? what(s) : `${word} · ${what(s)}`;
-      line([[` ${stem}     `, "rule"], [sub, s.status === "waiting" ? "waitSoft" : "dim"]], s.id, isSel);
-      const meta = [gitText(s.git), s.usage?.tokens ? `${fmtTok(s.usage.tokens)} tok${s.usage.over_budget ? "!" : ""}` : ""].filter(Boolean).join(" · ");
-      if (meta) line([[` ${stem}     `, "rule"], [meta, "dim"]], s.id, isSel);
-      for (const h of (helpers.get(s.id) || []).filter((h) => h.status === "running" || Date.now() - h.ts < 15 * 60_000).slice(-2))
-        line([[` ${stem}     └ `, "rule"], [h.status === "running" ? "● " : "✓ ", h.status === "running" ? "work" : "done"], [`${h.type}${h.desc ? `: ${h.desc}` : ""}`, "dim"]], s.id, false);
-      for (const c of chainsList.filter((c) => c.from === s.id && !c.failed && (!c.fired || Date.now() - c.fired < 15 * 60_000))) {
-        const to = list.find((x) => x.id === c.to);
-        line([[` ${stem}     ──▶ `, c.fired ? "dim" : "accent"], [to ? nameOf(to) : c.to_name || "?", c.fired ? "dim" : "accent"], [c.fired ? " ✓ sent" : " when done", "dim"]], s.id, false);
-      }
+      // the workspace (project): its state rolls up from its sessions
+      line([[` ${lastWs ? "└" : "├"}─ `, "rule"], ["▣ ", "accent"], [ws.name, "title"], [`  ${wg} ${wword}`, wrole], [ws.sessions.length > 1 ? ` · ${ws.sessions.length} sessions` : "", "dim"]], ws.sessions[0].id, false);
+      ws.sessions.forEach((s, i) => {
+        const last = i === ws.sessions.length - 1, stem = last ? " " : "│", [g0, word, role0] = look(s), isSel = s.id === selId();
+        // done but already seen: shown as idle (dim); not yet seen: bright, with a dot
+        const fresh = unseenDone(s), role = s.status === "done" && !fresh ? "off" : role0, g = g0;
+        const p = frame % 3, branch = s.status === "working" ? [0, 1, 2].map((k) => (k === p ? "●" : "─")).join("") : "───";
+        line([[` ${wstem}  ${last ? "└" : "├"}`, "rule"], [branch, s.status === "working" ? "work" : s.status === "waiting" ? "wait" : "rule"], [` ${nums.get(s.id)} ${g} `, role], [shortName(s), role], [fresh ? " •" : "", "done"]], s.id, isSel, spark(s.id));
+        const pre = ` ${wstem}  ${stem}    `;
+        const sub = s.status === "waiting" && s.choices ? question(s.choices) : s.mode === "shell" && word === "shell" ? what(s) : `${word} · ${what(s)}`;
+        line([[pre, "rule"], [sub, s.status === "waiting" ? "waitSoft" : "dim"]], s.id, isSel);
+        const meta = [gitText(s.git), s.usage?.tokens ? `${fmtTok(s.usage.tokens)} tok${s.usage.over_budget ? "!" : ""}` : "", s.worktree ? "worktree" : ""].filter(Boolean).join(" · ");
+        if (meta) line([[pre, "rule"], [meta, "dim"]], s.id, isSel);
+        const hg = helperGroups(recent(s.id));
+        if (hg.length) line([[` ${wstem}  ${stem}    └ `, "rule"], ...hg.flatMap(([t, r], k) => [[k ? " · " : "", "dim"], [t, r]]), [hg.length === 1 && hg[0][2] ? `: ${hg[0][2]}` : "", "dim"]], s.id, false);
+        for (const c of chainsList.filter((c) => c.from === s.id && !c.failed && (!c.fired || Date.now() - c.fired < 15 * 60_000))) {
+          const to = list.find((x) => x.id === c.to);
+          line([[` ${wstem}  ${stem}    ──▶ `, c.fired ? "dim" : "accent"], [to ? nameOf(to) : c.to_name || "?", c.fired ? "dim" : "accent"], [c.fired ? " ✓ sent" : " when done", "dim"]], s.id, false);
+        }
+      });
     });
   }
   function sideRows(L) {
@@ -320,6 +372,9 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
       const rows = mapRows(L);
       for (let y = 0; y < L.mainH; y++) o += `${ESC}[${y + 1};${L.mainX + 1}H${rows[y]}`;
     } else {
+      // what's on screen counts as seen (a "done" you've looked at turns idle)
+      for (const v of views) if (v?.id) seen.set(v.id, Date.now());
+      o += `${ESC}[1;${L.mainX + 1}H${tabStrip(L)}`;
       L.panes.forEach((p, i) => {
         const v = views[i];
         o += `${ESC}[${p.y + 1};${p.x + 1}H${paneHeader(v, p, i === focus)}`;
@@ -333,7 +388,7 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
       // the line between two panes
       if (L.panes.length === 2) {
         const [a, b] = L.panes;
-        if (b.x > a.x) for (let y = 0; y < L.mainH; y++) o += `${ESC}[${y + 1};${b.x}H${sgr("rule", "│")}`;
+        if (b.x > a.x) for (let y = a.y; y < L.mainH; y++) o += `${ESC}[${y + 1};${b.x}H${sgr("rule", "│")}`;
       }
     }
     // panels float over the live sessions (which keep running and drawing underneath)
@@ -428,6 +483,7 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
     "  :          palette: search every action and session        ?   this help",
     "  s          browse sessions with a live preview (peek)      ,   settings: theme, prefix key, sidebar, bell",
     "  j / k      next / previous session      0  AXA commander   1 … 9  a session by number",
+    "  n / p      next / previous tab (session) in this workspace      r  rename the session (your label)",
     "  %          split: a second session side by side (again to close it)    Tab  switch pane",
     "  z          zoom: hide the sidebar       f  show / hide the activity strip",
     "  /          search every session's screen and recent history",
@@ -888,6 +944,7 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
     add("Run history", history, "h");
     add("Link: when this session finishes, instruct another", () => linkFrom(), "l");
     add("Paste an image from the clipboard into this session", pasteImage, "i");
+    add("Rename this session (your own label)", () => action("r"), "r");
     for (const c of chainsList.filter((c) => !c.fired && !c.failed)) add(`Remove link: ${c.from_name} → ${c.to_name}`, async () => { try { await api(`/api/chains/${c.id}`, { method: "DELETE" }); chainsList = await api("/api/chains"); } catch (e) { flash("Couldn't remove it", [e.message]); } });
     add(cfg.feed ? "Hide the activity strip" : "Show the activity strip", () => action("f"), "f");
     add("Settings: theme, prefix key, sidebar, bell", settings, ",");
@@ -964,8 +1021,11 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
     if (k === "s") return browse();
     if (k === ",") return settings();
     if (k === "q") return quit();
-    if (k === "j" || k === "\x1b[B" || k === "n") return move(1);
-    if (k === "k" || k === "\x1b[A" || k === "p") return move(-1);
+    if (k === "j" || k === "\x1b[B") return move(1);
+    if (k === "k" || k === "\x1b[A") return move(-1);
+    // n / p: the next / previous tab (session) in this workspace
+    if (k === "n" || k === "p") { const ws = sel() && workspaceOf(selId()); if (!ws) return move(k === "n" ? 1 : -1); const i = ws.sessions.findIndex((s) => s.id === selId()); return show(ws.sessions[(i + (k === "n" ? 1 : -1) + ws.sessions.length) % ws.sessions.length]); }
+    if (k === "r") { const s = sel(); if (!s) return; return ask(`Name for ${nameOf(s)} (empty: back to its own name)`, (v) => { cfg.labels = { ...(cfg.labels || {}) }; if (v) cfg.labels[s.id] = v.slice(0, 40); else delete cfg.labels[s.id]; saveCfg(); schedule(); }, { allowEmpty: true }); }
     if (/^[0-9]$/.test(k)) return show(k === "0" ? o.find((s) => s.mode === "axa") : sessions()[Number(k) - 1]);
     if (k === "!") { const t = o.find((s) => s.status === "waiting") || o.find((s) => s.status === "stuck"); return t ? show(t) : flash("All clear", ["Nothing needs you right now."]); }
     if (k === "%") return toggleSplit();
@@ -1093,6 +1153,8 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
       if (s) show(s);
       return;
     }
+    // a tab in the tab row
+    if (y === 1 && !mapMode) { if (!up && b === 0) { const t = tabHits.find((h) => x >= h.x0 && x <= h.x1); if (t) show(list.find((s) => s.id === t.id)); } return; }
     if (L.alert && y > L.mainH && y <= L.mainH + 2) { if (!up && b === 0 && x > L.mainX + Math.floor(L.mainW * 0.6)) show(L.alert); return; }
     // a drag that started in a pane keeps selecting even if the pointer strays outside it
     const i = selection?.active ? selection.pane : L.panes.findIndex((p) => x > p.x && x <= p.x + p.cols && y > p.y && y <= p.y + p.h);
