@@ -129,8 +129,16 @@ built in:
   over the live sessions, which keep running underneath.
 - **Map (`Ctrl-b m`):** AXA at the center, every session branching off it, each session's helper
   agents hanging below it, and the links between sessions. A dot runs along the branch of each session
-  that's working. Arrow keys pick a session: Enter opens it, `y`/`x` answer its prompt, `d` diff,
-  `g` goal, `l` link, Esc back.
+  that's working, and each helper shows its tool calls as leaves (`⟶ Read ×3 · Edit ×2`), with the
+  one it just used lighting up.
+  - **Moving around:** ↑/↓ moves through sessions *and* helpers. Enter opens a session, or a helper's
+    details; Space or → shows details.
+  - **On a session:** `y`/`x` answer its prompt, `d` diff, `g` goal, `l` link. Esc goes back.
+- **Agents and work (`Ctrl-b a`, or click a helper row in the sidebar):** a live panel for the
+  session. It shows what it's doing now, its git changes and tokens, its helper agents (each with call
+  count, time and tools), its own tool calls with recent files and commands, its links, and its last
+  report. Pick a helper (↑/↓, Enter) to see the instruction it was given, every tool it has called,
+  updating as it works, failures, and its report, as in the web console.
 - **Since you left (`Ctrl-b b`):** when you open `axa`, a briefing shows what happened while mission
   control was closed. It lists what's waiting on you, and for each session the runs that finished,
   verify-gate bounces, approvals, things that asked you, and its latest report.

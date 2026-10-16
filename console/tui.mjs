@@ -94,7 +94,7 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
 
   // ---------- state ----------
   let list = [], err = "", prev = null, overlay = null, prefix = false, quitting = false, zoom = false;
-  let mapMode = false, mapSel = 0, chainsList = []; // the map view, its selected session, the links between sessions
+  let mapMode = false, mapSel = 0, mapNodes = [], mapWant = null, chainsList = []; // the map view, its selected node (session or helper), the links between sessions
   const briefSince = cfg.lastSeenAt || 0; // when you last had mission control open (for "since you left")
   let W = out.columns || 120, H = out.rows || 36;
   const views = []; // live panes: { id, proc, term, cursorOn, cols, rows, dead, lastRows }
@@ -277,7 +277,7 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
       line([[` ${down}  `, "rule"], [what(axa), "dim"]], axa.id, isSel);
       // AXA's own helper agents, grouped by the work they do (like the web map's orbit)
       const hg = helperGroups(recent(axa.id));
-      if (hg.length) line([[` ${down}  └ `, "rule"], ...hg.flatMap(([t, r], k) => [[k ? " · " : "", "dim"], [t, r]]), [hg.length === 1 && hg[0][2] ? `: ${hg[0][2]}` : "", "dim"]], axa.id, false);
+      if (hg.length) line([[` ${down}  └ `, "rule"], ...hg.flatMap(([t, r], k) => [[k ? " · " : "", "dim"], [t, r]]), [hg.length === 1 && hg[0][2] ? `: ${hg[0][2]}` : "", "dim"]], `agents:${axa.id}`, false);
     } else line([[" ◆ AXA", "title"], ["  not running · Ctrl-b o", "dim"]], null, false);
     wss.forEach((ws, wi) => {
       const lastWs = wi === wss.length - 1, wstem = lastWs ? " " : "│", [wg, wword, wrole] = ws.state;
@@ -296,7 +296,7 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
         const meta = [gitText(s.git), s.usage?.tokens ? `${fmtTok(s.usage.tokens)} tok${s.usage.over_budget ? "!" : ""}` : "", s.worktree ? "worktree" : ""].filter(Boolean).join(" · ");
         if (meta) line([[pre, "rule"], [meta, "dim"]], s.id, isSel);
         const hg = helperGroups(recent(s.id));
-        if (hg.length) line([[` ${wstem}  ${stem}    └ `, "rule"], ...hg.flatMap(([t, r], k) => [[k ? " · " : "", "dim"], [t, r]]), [hg.length === 1 && hg[0][2] ? `: ${hg[0][2]}` : "", "dim"]], s.id, false);
+        if (hg.length) line([[` ${wstem}  ${stem}    └ `, "rule"], ...hg.flatMap(([t, r], k) => [[k ? " · " : "", "dim"], [t, r]]), [hg.length === 1 && hg[0][2] ? `: ${hg[0][2]}` : "", "dim"]], `agents:${s.id}`, false);
         for (const c of chainsList.filter((c) => c.from === s.id && !c.failed && (!c.fired || Date.now() - c.fired < 15 * 60_000))) {
           const to = list.find((x) => x.id === c.to);
           line([[` ${wstem}  ${stem}    ──▶ `, c.fired ? "dim" : "accent"], [to ? nameOf(to) : c.to_name || "?", c.fired ? "dim" : "accent"], [c.fired ? " ✓ sent" : " when done", "dim"]], s.id, false);
@@ -418,7 +418,7 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
     const big = overlay.size === "large";
     // small panels fit their content (title, lines, input, hint, borders)
     const fit = (overlay.lines?.length || 0) + (overlay.input !== undefined ? 1 : 0) + 4;
-    const w = Math.max(30, Math.min(L.mainW - (big ? 2 : 4), big ? 400 : 108)), h = Math.max(8, Math.min(L.mainH - (big ? 1 : 2), big ? 400 : Math.min(32, fit + 1)));
+    const w = Math.max(30, Math.min(L.mainW - (big ? 0 : 4), big ? 400 : 108)), h = Math.max(8, Math.min(L.mainH - (big ? 1 : 2), big ? 400 : Math.min(32, fit + 1)));
     const x = L.mainX + Math.floor((L.mainW - w) / 2), y = Math.floor((L.mainH - h) / 2);
     const rows = overlayRows({ x: x + 1, y: y + 1, cols: w - 2, rows: h - 3 });
     let o = `${ESC}[${y + 1};${x + 1}H${sgr("accent", "╭" + "─".repeat(w - 2) + "╮")}`;
@@ -487,7 +487,9 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
     "  %          split: a second session side by side (again to close it)    Tab  switch pane",
     "  z          zoom: hide the sidebar       f  show / hide the activity strip",
     "  /          search every session's screen and recent history",
-    "  m          map: AXA at the center, sessions, their helper agents and links (keys move around it)",
+    "  m          map: AXA at the center, sessions, their helper agents and links: ↑/↓ moves through sessions",
+    "             and helpers, Enter opens a session or a helper's details, Space/→ shows details",
+    "  a          agents and work of this session: its helpers (live tool calls, instruction, report), its calls",
     "  b          since you left: what happened while mission control was closed",
     "  h          run history: every instruction, its steps, approvals, checks and result",
     "  l          link: when this session finishes, send an instruction to another",
@@ -545,16 +547,28 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
     return null;
   }
   // helper agents per session (for the map): spawned → running → done
-  const helpers = new Map(), spawnQueue = new Map();
+  // Each helper: its instruction, its tool calls as they happen (count, recent targets, last time), failures
+  // and its report, like the web console's agent panel. Sessions' own tool calls are tallied too.
+  const helpers = new Map(), spawnQueue = new Map(), sessCalls = new Map(); // terminal -> helpers / Map(tool -> tally)
+  const toolLabel = (e) => (e.skill ? `skill ${e.skill}` : /^mcp__/.test(e.tool || "") ? String(e.tool).split("__").pop().replace(/_/g, " ") : e.tool);
+  function tally(m, tool, summary, at) {
+    const c = m.get(tool) || { count: 0, recent: [], at: 0 };
+    c.count++; c.at = at;
+    if (summary) { c.recent.unshift(clip(summary, 60)); c.recent.length = Math.min(c.recent.length, 5); }
+    m.set(tool, c);
+  }
   function trackHelpers(e) {
-    const t = e.terminal;
-    if (e.event === "PreToolUse" && !e.agent_id && (e.tool === "Agent" || e.tool === "Task")) { const q = spawnQueue.get(t) || []; q.push({ desc: e.summary, type: e.subagent_type }); spawnQueue.set(t, q.slice(-10)); }
+    const t = e.terminal, at = e.ts || Date.now();
+    const spawn = e.tool === "Agent" || e.tool === "Task";
+    if (e.event === "PreToolUse" && !e.agent_id && spawn) { const q = spawnQueue.get(t) || []; q.push({ desc: e.summary, type: e.subagent_type, prompt: e.prompt }); spawnQueue.set(t, q.slice(-10)); }
+    else if (e.event === "PreToolUse" && !e.agent_id && e.tool && !PLUMBING.test(e.tool)) { const m = sessCalls.get(t) || new Map(); tally(m, toolLabel(e), e.summary, at); sessCalls.set(t, m); }
+    else if (e.event === "PreToolUse" && e.agent_id && e.tool && !PLUMBING.test(e.tool)) { const h = (helpers.get(t) || []).find((x) => x.id === e.agent_id); if (h) tally(h.calls, toolLabel(e), e.summary, at); }
+    else if (e.event === "PostToolUseFailure" && e.agent_id) { const h = (helpers.get(t) || []).find((x) => x.id === e.agent_id); if (h) h.failures++; }
     else if (e.event === "SubagentStart") {
       const sp = (spawnQueue.get(t) || []).shift(), arr = helpers.get(t) || [];
-      arr.push({ id: e.agent_id, type: String(e.agent_type || sp?.type || "helper").split(":").pop(), desc: clean(sp?.desc || ""), status: "running", ts: e.ts || Date.now() });
-      helpers.set(t, arr.slice(-6));
-    } else if (e.event === "SubagentStop") { const h = (helpers.get(t) || []).find((x) => x.id === e.agent_id); if (h) { h.status = "done"; h.ts = e.ts || Date.now(); } }
-    else if (e.event === "UserPromptSubmit" && !/^\s*<task-notification>/.test(e.prompt || "")) helpers.set(t, (helpers.get(t) || []).filter((h) => h.status === "running"));
+      arr.push({ id: e.agent_id, type: String(e.agent_type || sp?.type || "helper").split(":").pop(), desc: clean(sp?.desc || ""), prompt: sp?.prompt || "", status: "running", start: at, ts: at, calls: new Map(), failures: 0 });
+      helpers.set(t, arr.slice(-8));
+    } else if (e.event === "SubagentStop") { const h = (helpers.get(t) || []).find((x) => x.id === e.agent_id); if (h) { h.status = "done"; h.ts = h.end = at; h.report = e.message || ""; } }
   }
   function ingest(e) {
     if (!e?.terminal) return;
@@ -652,12 +666,11 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
   function mapRows(L) {
     const W2 = L.mainW, H2 = L.mainH, frame = Math.floor(Date.now() / 250);
     const ss = sessions(), axa = list.find((s) => s.mode === "axa");
-    mapSel = Math.max(0, Math.min(mapSel, ss.length - 1));
     const TX = 24; // the trunk's column
     const entries = []; // { kind, s, i, h, c }
     ss.forEach((s, i) => {
       entries.push({ kind: "session", s, i });
-      const hs = (helpers.get(s.id) || []).filter((h) => h.status === "running" || Date.now() - h.ts < 30 * 60_000).slice(-3);
+      const hs = (helpers.get(s.id) || []).filter((h) => h.status === "running" || Date.now() - h.ts < 30 * 60_000).slice(-6);
       for (const h of hs) entries.push({ kind: "helper", s, h });
       for (const c of chainsList.filter((c) => c.from === s.id && (!c.fired || Date.now() - c.fired < 30 * 60_000))) entries.push({ kind: "link", s, c });
       if (i < ss.length - 1) entries.push({ kind: "gap" });
@@ -667,8 +680,11 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
       rows[Math.floor(H2 / 2)] = [["   ◆ AXA", "title"], ["   no sessions yet: Ctrl-b c starts one, or ask the commander", "dim"]];
       return rows.map((r) => renderSegs(r, W2));
     }
-    // keep the selected session in view when the map is taller than the window
-    const selAt = entries.findIndex((e) => e.kind === "session" && e.i === mapSel);
+    // sessions and helper agents are the nodes you move between (↑/↓); keep the selected one in view
+    mapNodes = entries.filter((e) => e.kind === "session" || e.kind === "helper");
+    if (mapWant) { const i = mapNodes.findIndex((n) => n.kind === "session" && n.s.id === mapWant); if (i >= 0) mapSel = i; mapWant = null; }
+    mapSel = Math.max(0, Math.min(mapSel, mapNodes.length - 1));
+    const selected = mapNodes[mapSel], selAt = entries.indexOf(selected);
     const off = entries.length <= H2 ? -Math.floor((H2 - entries.length) / 2) : Math.max(0, Math.min(selAt - Math.floor(H2 / 2), entries.length - H2));
     const sessRows = entries.map((e, k) => (e.kind === "session" ? k : -1)).filter((k) => k >= 0);
     const first = sessRows[0], last = sessRows.at(-1), mid = Math.round((first + last) / 2);
@@ -697,13 +713,15 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
         let branch = "──────";
         if (s.status === "working") { const p = frame % 6; branch = "─".repeat(p) + "●" + "─".repeat(5 - p); }
         segs.push([branch, s.status === "working" ? "work" : s.status === "waiting" ? "wait" : "rule"]);
-        const isSel = e.i === mapSel;
+        const isSel = e === selected;
         segs.push([` ${g} `, role], [nameOf(s), isSel ? "sel" : role], ["  ", ""]);
         if (s.status === "waiting" && s.choices) segs.push([`${question(s.choices)}  `, "wait"], [`[y] ${yesOpt(s.choices).label}  [x] ${noOpt(s.choices).label}`, "waitSoft"]);
         else segs.push([`${word} · ${what(s)}`, "dim"]);
       } else if (e.kind === "helper") {
-        const h = e.h;
-        segs.push(["         └─ ", "rule"], [h.status === "running" ? "● " : "✓ ", h.status === "running" ? "work" : "done"], [h.type, h.status === "running" ? "work" : "dim"], [h.desc ? `: ${h.desc}` : "", "dim"]);
+        const h = e.h, isSel = e === selected;
+        segs.push(["         └─ ", "rule"], [h.status === "running" ? "● " : "✓ ", h.status === "running" ? "work" : "done"], [h.type, isSel ? "sel" : h.status === "running" ? "work" : "dim"], [h.desc ? `: ${cut(h.desc, 40)}` : "", "dim"]);
+        // its tool calls as leaves: the one it just used lights up
+        segs.push(...toolLeaves(h.calls));
       } else if (e.kind === "link") {
         const c = e.c, to = list.find((x) => x.id === c.to);
         segs.push(["         ──▶ ", c.fired ? "dim" : "accent"], [to ? nameOf(to) : c.to_name || "?", c.fired ? "dim" : "accent"], [c.fired ? `  ✓ sent ${fmtDur(Date.now() - c.fired)} ago` : c.failed ? `  ✗ ${c.failed}` : "  when this finishes: ", c.failed ? "stuck" : "dim"], [c.fired || c.failed ? "" : c.text, "idle"]);
@@ -712,12 +730,79 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
     }
     return rows.map((r) => renderSegs(r, W2));
   }
+  // "⟶ Read ×4 · Edit ×2 · Bash ×1" (most used first; the one used in the last moment is bright)
+  function toolLeaves(calls) {
+    if (!calls?.size) return [];
+    const now = Date.now(), top = [...calls.entries()].sort((a, b) => b[1].count - a[1].count).slice(0, 4);
+    return [["  ⟶ ", "rule"], ...top.flatMap(([t, c], i) => [[i ? " · " : "", "dim"], [`${t} ×${c.count}`, now - c.at < 1500 ? "title" : "dim"]])];
+  }
+  // a tool tally as panel rows: "● Read ×4   a.js · b.js · c.js"
+  function callLines(calls, w) {
+    const now = Date.now();
+    return [...calls.entries()].sort((a, b) => b[1].count - a[1].count).map(([tool, c]) => {
+      const hot = now - c.at < 1500;
+      return { raw: renderSegs([[`  ${hot ? "●" : "·"} `, hot ? "work" : "dim"], [`${tool} ×${c.count}`, hot ? "title" : "idle"], [c.recent.length ? `   ${c.recent.slice(0, 3).join(" · ")}` : "", "dim"]], w) };
+    });
+  }
+  const textLines = (t, empty) => (t ? String(t).split("\n").map((l) => ({ text: `  ${l}` })) : [{ text: `  ${empty}`, role: "dim" }]);
+  // A helper agent, live: its task, the instruction it got, its tool calls as they happen, its report
+  function helperDetail(h, s) {
+    const ov = { title: "", size: "large", lines: [], hint: "updates live · space/b scroll · Esc close" };
+    ov.render = (p) => {
+      const n = [...h.calls.values()].reduce((a, c) => a + c.count, 0);
+      ov.title = `${h.status === "running" ? "●" : "✓"} ${h.type} · ${h.status === "running" ? "working" : "done"} · ${fmtDur((h.end || Date.now()) - h.start)}${s ? ` · helping ${nameOf(s)}` : ""}`;
+      ov.lines = [
+        ...(h.desc ? [{ text: `Task: ${h.desc}`, role: "title" }] : []),
+        { text: "" }, { text: "The instruction it was given", role: "accent" }, ...textLines(h.prompt, "(not recorded; prompts are left out when AXA_LOG_PROMPTS=0)"),
+        { text: "" }, { text: `Tool calls, live · ${n} so far${h.failures ? ` · ${h.failures} failed` : ""}`, role: "accent" }, ...(h.calls.size ? callLines(h.calls, p.cols) : [{ text: "  none yet", role: "dim" }]),
+        { text: "" }, { text: "Its report", role: "accent" }, ...textLines(h.report, h.status === "running" ? "(still working)" : "(no report)"),
+      ];
+    };
+    overlay = ov; schedule();
+  }
+  // A session's agents and work, live: what it's doing, its helpers (pick one), its own tool calls, links, report
+  function sessionDetail(s) {
+    if (!s) return;
+    const ov = { title: "", size: "large", sel: 0, lines: [], hint: "j/k pick a helper · Enter its details · space/b scroll · Esc close" };
+    let hs = [];
+    ov.render = (p) => {
+      const cur = list.find((x) => x.id === s.id) || s, [g, word] = look(cur);
+      hs = (helpers.get(s.id) || []).slice().reverse();
+      ov.sel = Math.max(0, Math.min(ov.sel, hs.length - 1));
+      ov.title = `${g} ${nameOf(cur)} · ${word} · agents and work`;
+      const meta = [gitText(cur.git), cur.usage?.tokens ? `${fmtTok(cur.usage.tokens)} tokens` : "", cur.worktree ? `worktree ${cur.worktree.branch}` : ""].filter(Boolean).join(" · ");
+      const links = chainsList.filter((c) => c.from === s.id || c.to === s.id);
+      const calls = sessCalls.get(s.id) || new Map();
+      ov.lines = [
+        { text: `Now: ${what(cur)}`, role: "title" }, ...(meta ? [{ text: meta, role: "dim" }] : []),
+        { text: "" }, { text: `Helper agents (${hs.length})`, role: "accent" },
+        ...(hs.length ? hs.map((h, i) => ({ raw: renderSegs([[i === ov.sel ? " › " : "   ", "accent"], [h.status === "running" ? "● " : "✓ ", h.status === "running" ? "work" : "done"], [h.type, i === ov.sel ? "sel" : "title"], [h.desc ? `: ${h.desc}` : "", "idle"], [`   ${[...h.calls.values()].reduce((a, c) => a + c.count, 0)} calls · ${fmtDur((h.end || Date.now()) - h.start)}`, "dim"], ...toolLeaves(h.calls)], p.cols) })) : [{ text: "   none yet", role: "dim" }]),
+        { text: "" }, { text: "Its own tool calls, live", role: "accent" }, ...(calls.size ? callLines(calls, p.cols) : [{ text: "  none yet", role: "dim" }]),
+        ...(links.length ? [{ text: "" }, { text: "Links", role: "accent" }, ...links.map((c) => ({ text: `  ${c.from === s.id ? `→ ${c.to_name}` : `← ${c.from_name}`}: ${c.text}${c.fired ? "  (sent)" : ""}`, role: "dim" }))] : []),
+        ...(cur.last_report ? [{ text: "" }, { text: "Last report", role: "accent" }, ...textLines(cur.last_report)] : []),
+      ];
+    };
+    ov.onKey = (k) => {
+      if (k === "j" || k === "\x1b[B") { ov.sel++; return true; }
+      if (k === "k" || k === "\x1b[A") { ov.sel = Math.max(0, ov.sel - 1); return true; }
+      if (k === "\r" && hs[ov.sel]) {
+        const back = ov; helperDetail(hs[ov.sel], s);
+        overlay.onKey = (k2) => { if (k2 === ESC || k2 === "q") { overlay = back; fullRedraw = true; return true; } return false; };
+        return true;
+      }
+      return false;
+    };
+    overlay = ov; schedule();
+  }
   function mapKey(k) {
-    const ss = sessions(), s = ss[mapSel];
-    if (k === "j" || k === "\x1b[B") mapSel = Math.min(ss.length - 1, mapSel + 1);
+    const node = mapNodes[mapSel], s = node?.s;
+    if (k === "j" || k === "\x1b[B") mapSel = Math.min(mapNodes.length - 1, mapSel + 1);
     else if (k === "k" || k === "\x1b[A") mapSel = Math.max(0, mapSel - 1);
-    else if (/^[1-9]$/.test(k)) mapSel = Math.min(ss.length - 1, Number(k) - 1);
+    else if (/^[1-9]$/.test(k)) { const i = mapNodes.findIndex((n) => n.kind === "session" && n.i === Number(k) - 1); if (i >= 0) mapSel = i; }
+    // Enter: open a session / a helper's details; Space or →: details of either
+    else if (k === "\r" && node?.kind === "helper") helperDetail(node.h, s);
     else if (k === "\r" && s) { mapMode = false; fullRedraw = true; show(s); }
+    else if ((k === " " || k === "\x1b[C") && node) node.kind === "helper" ? helperDetail(node.h, s) : sessionDetail(s);
     else if ((k === "y" || k === "x") && s?.status === "waiting" && s.choices) answerSession(s, k === "y" ? yesOpt(s.choices) : noOpt(s.choices));
     else if (k === "d" && s) showDiff(s);
     else if (k === "g" && s) giveGoal(s);
@@ -945,6 +1030,7 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
     add("Link: when this session finishes, instruct another", () => linkFrom(), "l");
     add("Paste an image from the clipboard into this session", pasteImage, "i");
     add("Rename this session (your own label)", () => action("r"), "r");
+    add("Agents and work of this session", () => sessionDetail(sel()), "a");
     for (const c of chainsList.filter((c) => !c.fired && !c.failed)) add(`Remove link: ${c.from_name} → ${c.to_name}`, async () => { try { await api(`/api/chains/${c.id}`, { method: "DELETE" }); chainsList = await api("/api/chains"); } catch (e) { flash("Couldn't remove it", [e.message]); } });
     add(cfg.feed ? "Hide the activity strip" : "Show the activity strip", () => action("f"), "f");
     add("Settings: theme, prefix key, sidebar, bell", settings, ",");
@@ -1032,7 +1118,8 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
     if (k === "\t" || k === "\x1b[Z") { if (views.length > 1) { focus = (focus + 1) % views.length; schedule(); } return; }
     if (k === "z") { zoom = !zoom; fullRedraw = true; return schedule(); }
     if (k === "/") return searchAll();
-    if (k === "m") { mapMode = !mapMode; if (mapMode) { const i = sessions().findIndex((s) => s.id === selId()); mapSel = Math.max(0, i); } fullRedraw = true; return schedule(); }
+    if (k === "m") { mapMode = !mapMode; if (mapMode) mapWant = selId(); fullRedraw = true; return schedule(); }
+    if (k === "a") return sessionDetail(sel());
     if (k === "b") return briefing(false);
     if (k === "h") return history();
     if (k === "l") return linkFrom();
@@ -1149,7 +1236,10 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
     if (overlay) return;
     if (L.side && x > L.sideX && x <= L.sideX + L.side) {
       if (up || b !== 0) return;
-      const id = sideHits[y - 1], s = id && list.find((x) => x.id === id);
+      const hit = sideHits[y - 1] || "";
+      // a helper-agents row opens the agents panel; any other row opens that session
+      if (hit.startsWith("agents:")) return sessionDetail(list.find((x) => x.id === hit.slice(7)));
+      const s = hit && list.find((x) => x.id === hit);
       if (s) show(s);
       return;
     }
