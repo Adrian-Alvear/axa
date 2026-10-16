@@ -31,9 +31,13 @@ process.stdin.on("end", async () => {
     const what = describe(tool, input);
 
     const door = oneWayDoor(tool, input) || userEscalate(settings, tool, input);
-    if (door) { log(e, "escalate", `one-way door: ${door}`, "rule", what); return process.exit(0); }
+    // A rule that only matched words inside quotes ("npm publish" in an echo or test data) isn't a
+    // one-way door by itself: the approver judges it, told what matched. Commands that could run
+    // quoted text (sh -c, eval, xargs...) never get this.
+    const quotedOnly = door && tool === "Bash" && !RUNS_TEXT.test(String(input.command)) && !oneWayDoor(tool, { command: unquote(input.command) }) && !userEscalate(settings, tool, { command: unquote(input.command) });
+    if (door && !quotedOnly) { log(e, "escalate", `one-way door: ${door}`, "rule", what); return process.exit(0); }
 
-    const v = await judge(e, settings, what);
+    const v = await judge(e, settings, what, quotedOnly ? door : null);
     if (!v) { log(e, "escalate", "AXA couldn't decide (approver unavailable)", "error", what); return process.exit(0); }
     log(e, v.decision === "allow" ? "allow" : v.decision === "deny" ? "deny" : "escalate", v.reason, "judge", what);
     if (v.decision === "allow") out({ behavior: "allow" });
@@ -91,7 +95,11 @@ function branchOf(cwd) {
 // ---------- the decision: one tool-less Claude call ----------
 const SCHEMA = JSON.stringify({ type: "object", properties: { decision: { enum: ["allow", "deny", "ask"] }, reason: { type: "string" } }, required: ["decision", "reason"] });
 
-function judge(e, settings, what) {
+// Quoted strings removed, to see whether a rule matched real commands or only text
+const unquote = (cmd) => String(cmd).replace(/'[^']*'|"(?:[^"\\]|\\.)*"/g, "''");
+const RUNS_TEXT = /\b(?:ba|z|da)?sh\s+-c\b|\beval\b|\bxargs\b|\bsource\b|(?:^|[;&|\s])\.\s|\|\s*(?:sudo\s+)?(?:ba|z|da)?sh\b|\b(?:node|python3?|perl|ruby)\s+-[ec]\b|\bssh\b|\bwatch\b|\bparallel\b|\bnohup\b|\bsetsid\b|\bsend-keys\b/;
+
+function judge(e, settings, what, quotedDoor) {
   const cwd = e.cwd || process.cwd();
   const prompt = `You are AXA's approver. A Claude Code session working in a project on the user's laptop wants to do something its automatic rules didn't cover, and you decide in place of the user. The user wants AXA to handle routine decisions and only bother them for what truly needs them.
 
@@ -113,7 +121,7 @@ ${redact(goalOf(e.session_id)).slice(0, 4000) || "(unknown)"}
 ${redact(what).slice(0, 4000)}
 </request>
 
-Reply with the decision and a reason of one short sentence the user will read.`;
+${quotedDoor ? `Note: AXA's one-way-door rule "${quotedDoor}" matched only text inside quotes in this command. If that text is really run, sent or published (not just printed, written to a local file, or used as test data), answer ask.\n\n` : ""}Reply with the decision and a reason of one short sentence the user will read.`;
 
   return new Promise((done) => {
     const env = { ...process.env };
