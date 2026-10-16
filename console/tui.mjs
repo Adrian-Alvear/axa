@@ -6,11 +6,12 @@
 // Settings (theme, prefix, sidebar, bell) live in $AXA_HOME/ui.json and Ctrl-b , edits them live.
 // Same backend as the web console, so the browser, phone and this window always agree.
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { join, relative, isAbsolute } from "node:path";
 import { StringDecoder } from "node:string_decoder";
+import { fileURLToPath } from "node:url";
 
 const require = createRequire(import.meta.url);
 const out = process.stdout;
@@ -229,6 +230,9 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
       const [g, word, role] = look(axa), isSel = axa.id === selId();
       line([[" ◆ ", "title"], ["AXA", "title"], [`  0 ${g} ${word}`, role]], axa.id, isSel, spark(axa.id));
       line([[` ${ss.length ? "│" : " "}  `, "rule"], [what(axa), "dim"]], axa.id, isSel);
+      // AXA's own helper agents (researchers, builders, reviewers it dispatched), like the web map's orbit
+      for (const h of (helpers.get(axa.id) || []).filter((h) => h.status === "running" || Date.now() - h.ts < 15 * 60_000).slice(-4))
+        line([[` ${ss.length ? "│" : " "}  ├ `, "rule"], [h.status === "running" ? "● " : "✓ ", h.status === "running" ? "work" : "done"], [`${h.type}${h.desc ? `: ${h.desc}` : ""}`, h.status === "running" ? "idle" : "dim"]], axa.id, false);
     } else line([[" ◆ AXA", "title"], ["  not running · Ctrl-b o", "dim"]], null, false);
     ss.forEach((s, i) => {
       const last = i === ss.length - 1, stem = last ? " " : "│", [g, word, role] = look(s), isSel = s.id === selId();
@@ -289,10 +293,11 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
   }
   function statusRow() {
     const k = cfg.prefix.replace("C-", "Ctrl-");
-    if (notice && Date.now() < notice.until) { const t = ` ✓ ${notice.text} `; return sgr("tag", t) + sgr("dim", pad(" Shift+drag uses your terminal's own selection", Math.max(0, W - width(t)))); }
+    if (notice && Date.now() < notice.until) { const t = ` ✓ ${notice.text} `; return sgr("tag", t) + sgr("dim", pad(notice.hint || " Shift+drag uses your terminal's own selection", Math.max(0, W - width(t)))); }
+    if (updated) return sgr("tag", " ↻ AXA was updated ") + sgr("waitSoft", pad(` press ${keyName()} q, then run axa again to get the new version (your sessions keep running)`, Math.max(0, W - 19)));
     const tag = prefix ? " PREFIX " : "";
     const keys = prefix
-      ? " : palette · m map · b brief · h history · l link · s browse · / search · j/k move · 0-9 pick · % split · Tab pane · z zoom · f feed · y/x answer · ! go · c new · w worktree · g goal · d diff · v verify · , settings · q quit · ? help"
+      ? " : palette · m map · b brief · h history · l link · i image · s browse · / search · j/k move · 0-9 pick · % split · Tab pane · z zoom · f feed · y/x answer · ! go · c new · w worktree · g goal · d diff · v verify · , settings · q quit · ? help"
       : ` ${k} : palette · ${k} s browse · ${k} ? help · ${k} q leave (sessions keep running)`;
     const clock = new Date().toLocaleTimeString([], { hour12: false });
     const room = Math.max(0, W - 10 - tag.length);
@@ -333,6 +338,11 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
     }
     // panels float over the live sessions (which keep running and drawing underneath)
     if (overlay) o += floatingPanel(L);
+    // the copied / pasted popup, bottom center of the main area (like herdr's clipboard toast)
+    if (notice && Date.now() < notice.until && !overlay) {
+      const t = ` ✓ ${notice.text} `, x = L.mainX + Math.max(0, Math.floor((L.mainW - width(t)) / 2));
+      o += `${ESC}[${Math.max(1, L.mainH - 1)};${x + 1}H${sgr("tag", t)}`;
+    }
     if (L.alert) alertRows(L).forEach((r, i) => (o += `${ESC}[${L.mainH + 1 + i};${L.mainX + 1}H${r}`));
     if (L.feedRows) feedStripRows(L).forEach((r, i) => (o += `${ESC}[${L.mainH + L.alertRows + 1 + i};${L.mainX + 1}H${r}`));
     o += `${ESC}[${H};1H${statusRow()}`;
@@ -425,6 +435,7 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
     "  b          since you left: what happened while mission control was closed",
     "  h          run history: every instruction, its steps, approvals, checks and result",
     "  l          link: when this session finishes, send an instruction to another",
+    "  i          paste an image from your clipboard into the session (saved as a PNG, its path typed in)",
     "  y / x      answer the prompt in the yellow bar: its Yes… / No… option (the bar names them)",
     "  !          jump to whatever needs you",
     "  c          new session in a project     w  new session in its own git worktree",
@@ -876,6 +887,7 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
     add("Since you left: briefing", () => briefing(false), "b");
     add("Run history", history, "h");
     add("Link: when this session finishes, instruct another", () => linkFrom(), "l");
+    add("Paste an image from the clipboard into this session", pasteImage, "i");
     for (const c of chainsList.filter((c) => !c.fired && !c.failed)) add(`Remove link: ${c.from_name} → ${c.to_name}`, async () => { try { await api(`/api/chains/${c.id}`, { method: "DELETE" }); chainsList = await api("/api/chains"); } catch (e) { flash("Couldn't remove it", [e.message]); } });
     add(cfg.feed ? "Hide the activity strip" : "Show the activity strip", () => action("f"), "f");
     add("Settings: theme, prefix key, sidebar, bell", settings, ",");
@@ -964,6 +976,7 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
     if (k === "b") return briefing(false);
     if (k === "h") return history();
     if (k === "l") return linkFrom();
+    if (k === "i") return pasteImage();
     if (k === "f") { cfg.feed = !cfg.feed; saveCfg(); fullRedraw = true; return schedule(); }
     if (k === "y") return answerAlert("yes");
     if (k === "x") return answerAlert("no");
@@ -1017,6 +1030,57 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
     selection = { pane, a: { x: a, y }, b: { x: b, y }, active: false };
     copyText(line.slice(a, b + 1));
   }
+
+  // ---------- paste an image from your clipboard into the focused session ----------
+  // Terminals keep Ctrl+V for text, so Ctrl-b i grabs the clipboard image itself, saves it as a PNG in the
+  // session's project (.claude/axa-pastes, kept out of git status) and types its path into the session.
+  function grabClipboardImage(file) {
+    return new Promise((done) => {
+      if (process.env.AXA_PASTE_IMAGE_FROM) { try { copyFileSync(process.env.AXA_PASTE_IMAGE_FROM, file); return done(true); } catch { return done(false); } } // for tests
+      const has = (c) => spawnSync("which", [c], { stdio: "ignore" }).status === 0;
+      let cmd, args, viaStdout = false;
+      if (has("powershell.exe") && has("wslpath")) { // WSL: the Windows clipboard
+        const win = spawnSync("wslpath", ["-w", file], { encoding: "utf8" }).stdout.trim().replace(/'/g, "''");
+        cmd = "powershell.exe"; args = ["-NoProfile", "-STA", "-Command", `Add-Type -AssemblyName System.Windows.Forms; Add-Type -AssemblyName System.Drawing; $i = [System.Windows.Forms.Clipboard]::GetImage(); if ($i) { $i.Save('${win}', [System.Drawing.Imaging.ImageFormat]::Png); 'ok' }`];
+      } else if (process.platform === "darwin") { cmd = "osascript"; args = ["-e", `set f to open for access POSIX file "${file.replace(/"/g, "")}" with write permission`, "-e", "write (the clipboard as «class PNGf») to f", "-e", "close access f"]; }
+      else if (has("wl-paste")) { cmd = "wl-paste"; args = ["--type", "image/png"]; viaStdout = true; }
+      else if (has("xclip")) { cmd = "xclip"; args = ["-selection", "clipboard", "-t", "image/png", "-o"]; viaStdout = true; }
+      else return done(null);
+      const c = spawn(cmd, args, { stdio: ["ignore", "pipe", "ignore"] }), chunks = [];
+      c.stdout.on("data", (d) => chunks.push(d));
+      const timer = setTimeout(() => { try { c.kill(); } catch {} done(false); }, 15000);
+      c.on("error", () => { clearTimeout(timer); done(null); });
+      c.on("close", (code) => {
+        clearTimeout(timer);
+        if (viaStdout) { const b = Buffer.concat(chunks); if (code === 0 && b.length > 8 && b[0] === 0x89) { writeFileSync(file, b, { mode: 0o600 }); return done(true); } return done(false); }
+        try { done(statSync(file).size > 0); } catch { done(false); }
+      });
+    });
+  }
+  async function pasteImage() {
+    const v = views[focus], s = sel();
+    if (!v?.proc || v.dead || !s) return flash("Pick a session first", ["The image is pasted into the session you're looking at."]);
+    const top = spawnSync("git", ["rev-parse", "--show-toplevel"], { cwd: s.cwd, encoding: "utf8" });
+    const base = top.status === 0 ? top.stdout.trim() : s.cwd;
+    const dir = join(base, ".claude", "axa-pastes"), file = join(dir, `paste-${new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19)}.png`);
+    try { mkdirSync(dir, { recursive: true }); } catch (e) { return flash("Couldn't save the image", [e.message]); }
+    notice = { text: "reading the clipboard…", until: Date.now() + 15000, hint: " " }; schedule();
+    const ok = await grabClipboardImage(file);
+    if (!ok) { notice = null; return flash("No image on the clipboard", [ok === null ? "No clipboard tool was found on this machine." : `Copy an image first (on Windows: Win+Shift+S for a screenshot), then press ${keyName()} i.`]); }
+    // keep pasted images out of the project's git status (local only, nothing committed)
+    if (top.status === 0) try {
+      const common = spawnSync("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd: base, encoding: "utf8" }).stdout.trim(), ex = join(common, "info", "exclude");
+      const cur = existsSync(ex) ? readFileSync(ex, "utf8") : "";
+      if (!cur.split("\n").includes("/.claude/axa-pastes/")) writeFileSync(ex, cur + (cur && !cur.endsWith("\n") ? "\n" : "") + "/.claude/axa-pastes/\n");
+    } catch {}
+    v.proc.write(`${file} `); // Claude Code reads image files by path
+    notice = { text: "image pasted", until: Date.now() + 3000, hint: ` ${file.replace(homedir(), "~")}` }; schedule();
+  }
+
+  // ---------- an open window notices when AXA itself was updated ----------
+  let updated = false;
+  const selfFile = fileURLToPath(import.meta.url), selfMtime = (() => { try { return statSync(selfFile).mtimeMs; } catch { return 0; } })();
+  setInterval(() => { try { if (!updated && statSync(selfFile).mtimeMs !== selfMtime) { updated = true; schedule(); } } catch {} }, 15000);
 
   const decoder = new StringDecoder("utf8");
   const MOUSE = /\x1b\[<(\d+);(\d+);(\d+)([Mm])/g;

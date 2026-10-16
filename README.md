@@ -150,6 +150,12 @@ built in:
     the system copy tool where there is one (`clip.exe` on WSL, `pbcopy`, `wl-copy`, `xclip`).
   - Hold Shift while dragging to use your terminal's own selection instead.
   - Turn it off in settings (`Ctrl-b ,`), and drags go to the session again.
+- **Paste an image (`Ctrl-b i`):** copy an image (on Windows: Win+Shift+S for a screenshot), then press
+  `Ctrl-b i`. AXA takes it from your clipboard (on WSL through Windows PowerShell; also macOS and
+  Linux). It saves it as a PNG in the project's `.claude/axa-pastes/`, which is kept out of git status,
+  and types its path into the session, where Claude Code can read it.
+- **Updates:** if AXA's code changes while mission control is open, the status bar says so. Press
+  `Ctrl-b q`, then run `axa` again; your sessions keep running.
 - It rings the bell and puts ⚠ in the window title when something starts needing you.
 
 It shares one backend with the web console, so the terminal, the browser and your phone always show
