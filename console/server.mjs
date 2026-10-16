@@ -305,13 +305,14 @@ const server = createServer(async (req, res) => {
     }
     const m = path.match(/^\/api\/terms\/([\w-]+)$/);
     if (m && req.method === "DELETE") { const r = T.killTerm(m[1], { removeWorktree: u.searchParams.get("remove_worktree") === "1" }); return json(res, r ? 200 : 404, r || {}); }
-    // The user answering a prompt from the sessions list. Only the console page itself may do this:
-    // browsers stamp Sec-Fetch-Site (page scripts can't set it) and AXA's session tools never send it.
-    // It isn't a secret: what keeps project sessions out is that they can't reach the token (policy) or
-    // AXA's tmux (no $TMUX in sessions).
+    // The user answering a prompt: from the console page (browsers stamp Sec-Fetch-Site, which page
+    // scripts can't set) or the `axa` terminal UI (x-axa-client: tui). AXA's session tools never send
+    // either. Neither is a secret: what keeps project sessions out is that they can't reach the token
+    // (policy) or AXA's tmux (no $TMUX in sessions).
     const am = path.match(/^\/api\/terms\/([\w-]+)\/answer$/);
     if (am && req.method === "POST") {
-      if (req.headers["sec-fetch-site"] !== "same-origin" || !req.headers.origin) return json(res, 403, { error: "Only you can answer a prompt, from the console page." });
+      const fromPage = req.headers["sec-fetch-site"] === "same-origin" && req.headers.origin, fromTui = req.headers["x-axa-client"] === "tui";
+      if (!fromPage && !fromTui) return json(res, 403, { error: "Only you can answer a prompt, from the console or the axa terminal UI." });
       const b = await readBody(req);
       const r = T.answerTerm(am[1], b.n, String(b.label ?? ""));
       if (r.ok) {

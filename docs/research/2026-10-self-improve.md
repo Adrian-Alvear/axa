@@ -174,3 +174,4 @@ zero-dependency Node and plain-HTML style. Risk means risk to the user's work or
 | 20 | Auto-verify in the commander: after a supervisor "done", run `read_changes` + the verify skill in the session before reporting | Med | S | Low | Later |
 | 21 | Isolation beyond pattern checks: project sessions run as the user, so the console token and AXA's tmux are only kept out of reach by the policy and a clean env; a per-session OS user or container (see #18) would make it a hard boundary | Med | L | Low | Later (from review) |
 | 22 | Send photos/files from the phone into a session (as Claude Code Remote Control does) | Low-Med | M | Low | Later |
+| 23 | **Mission control in the terminal** (`axa`): herdr-style sidebar of AXA + sessions by urgency next to the live, interactive session (headless-terminal renderer), with Ctrl-b actions for answers, diff, verify, goals, worktrees, new/close; mouse; bell + title | High | M | Low | **Built** |

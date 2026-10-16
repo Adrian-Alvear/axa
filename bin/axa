@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // `axa`: your commander from any terminal.
-//   axa            start the AXA commander here (starts the console in the background if needed)
+//   axa            mission control in this terminal: AXA and every session, live (console/tui.mjs)
+//   axa chat       the commander as a plain Claude Code session here
+//   (both start the console in the background if needed)
 //   axa console    start the console if needed and open it in your browser
 //   axa status     list the sessions AXA is running, what needs you first
 //     --watch        live dashboard: updates every second, rings the bell when a session needs you,
@@ -54,7 +56,7 @@ function row(s, { cols = Infinity, num } = {}) {
   const u = s.usage ? `${fmtTok(s.usage.tokens)} tok${s.usage.over_budget ? "!" : ""}`.padEnd(10) : "";
   const tail = cut(`${name}${git ? git.padEnd(26) + " " : ""}${u}${what(s)}`, cols - head.length);
   // a waiting session: the prompt and its options on the next line (answer it with `axa attach`)
-  const ask = s.choices ? `\n${" ".repeat(Math.min(head.length, 14))}${paint("33", "↳")} ${cut(oneLine(`${s.choices.question.split("\n").pop()} ${s.choices.options.map((o) => `${o.n}. ${o.label}`).join("  ")}`), cols - 16)}` : "";
+  const ask = s.choices ? `\n${" ".repeat(Math.min(head.length, 14))}${paint("33", "↳")} ${cut(oneLine(`${[...s.choices.question.split("\n")].reverse().find((l) => l.includes("?")) || s.choices.question.split("\n").pop()} ${s.choices.options.map((o) => `${o.n}. ${o.label}`).join("  ")}`), cols - 16)}` : "";
   return paint(code, head) + tail + ask;
 }
 const fmtTok = (n) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${Math.round(n / 1e3)}k` : String(n));
@@ -196,16 +198,23 @@ if (cmd === "console") {
     rmSync(join(home, "sessions.json"), { force: true });
     console.log("All sessions ended.");
   } else console.log("Sessions keep running; `axa console` shows them again. `axa stop --all` ends them too.");
-} else if (!cmd || cmd.startsWith("-")) {
-  // The commander: Claude Code with the AXA plugin and the commander brief, in this terminal
+} else if (!cmd || cmd === "ui") {
+  // Mission control in this terminal: AXA and every session, live (console/tui.mjs)
+  if (!process.stdin.isTTY || !out.isTTY) { console.error("`axa` opens a full-screen UI and needs a terminal. In scripts use: axa status --json"); process.exit(1); }
+  if (!(await ensureConsole())) { console.error(`Couldn't start the console; see ${join(home, "console.log")}`); process.exit(1); }
+  const { runTui } = await import(join(root, "console", "tui.mjs"));
+  await runTui({ port, readToken, openUrl, root });
+} else if (cmd === "chat" || cmd.startsWith("-")) {
+  // The commander as a plain Claude Code session in this terminal (what `axa` used to open)
   await ensureConsole();
   const env = { ...process.env, AXA_ROLE: "commander" };
-  const args = ["--plugin-dir", root, "--append-system-prompt-file", join(root, "commander.md"), ...process.argv.slice(2)];
+  const args = ["--plugin-dir", root, "--append-system-prompt-file", join(root, "commander.md"), ...process.argv.slice(cmd === "chat" ? 3 : 2)];
   const child = spawn("claude", args, { stdio: "inherit", env });
   child.on("exit", (code) => process.exit(code ?? 0));
 } else {
   console.log(`Usage:
-  axa                      start the AXA commander in this terminal
+  axa                      mission control: AXA and every session, live, in this terminal (Ctrl-b ? for keys)
+  axa chat                 the commander as a plain Claude Code session in this terminal
   axa console              open the console in your browser
   axa status [--watch|--json]   sessions, what needs you first (--watch: live, 1-9 attach, q quit)
   axa attach <name|id>     take over a session here (Ctrl-] detaches; it keeps running)

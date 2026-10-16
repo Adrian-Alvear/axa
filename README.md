@@ -18,7 +18,7 @@ live console shows you every agent, skill and tool call as it happens.
 | `skills/axa` | The orchestrator playbook: decompose → assign from your roster → run in parallel → verify → short report. Triggers on `/axa`, "split this up", "use agents", etc. |
 | `skills/verify` | Runs the project's own checks (typecheck, lint, tests, build, syntax checks) as one PASS/FAIL table, plus screenshots for UI changes. |
 | `agents/` | `axa:builder`, `axa:reviewer` (read-only), `axa:researcher` (web). |
-| `bin/axa` | The commander from any terminal: `axa` starts it, `axa console` opens the dashboard, `axa status` lists sessions (`--watch` for a live dashboard), `axa attach <name>` takes one over, `axa stop` stops the console (sessions keep running), `axa stop --all` ends them too. |
+| `bin/axa` | AXA from any terminal: `axa` opens mission control (AXA and every session, live), `axa chat` the plain commander, `axa console` opens the dashboard, `axa status` lists sessions (`--watch` for a live dashboard), `axa attach <name>` takes one over, `axa stop` stops the console (sessions keep running), `axa stop --all` ends them too. |
 | `mcp/` | The commander's session tools: open a session per project, give it a goal, check its status and last report, read its screen and its changes (git diff), close it. |
 | `scripts/shot.mjs` | Desktop and phone screenshots of the console (or any page) for a look-then-fix review loop. |
 | `hooks/` | Logs every prompt, tool, skill and subagent event to `~/.axa/events.jsonl` (async, never slows Claude down). For project sessions only: the permission policy, the approver, and the verify gate. |
@@ -43,8 +43,9 @@ ln -s ~/path/to/axa/bin/axa ~/.local/bin/axa   # once
 axa                                             # in any terminal
 ```
 
-`axa` starts the console in the background (if it isn't running) and opens a Claude Code session
-that is your commander. Tell it what you want across projects ("keep going on v7 in launches, and
+`axa` starts the console in the background (if it isn't running) and opens mission control (below)
+with your commander selected. `axa chat` opens the commander as a plain Claude Code session instead.
+Tell it what you want across projects ("keep going on v7 in launches, and
 have the feed fix its phone layout"): it opens a session per project in the console, hands each its
 work (`/goal` for long runs), tracks their status, and reports back. The same commander is in the
 console under **Terminals → AXA commander**, and every session shows up there live.
@@ -82,6 +83,34 @@ transcript. A resumed chat counts from its start. Set a budget per project, and 
 session goes over it, so it stops handing that session work:
 `{ "default": { "budget": { "tokens": 5000000 } } }` in `~/.axa/policy.json` (or under
 `"projects"`).
+
+### Mission control in your terminal: `axa`
+
+```
+axa          # AXA and every session, live, in this terminal
+axa chat     # the commander as a plain Claude Code session (what `axa` used to open)
+```
+
+`axa` opens a full-screen mission control, like a terminal multiplexer for agents, with AXA's brain
+built in:
+
+- **Sidebar:** AXA (the commander) at the top, then every session sorted by what needs you. Each
+  shows a status symbol and word, what it's doing or asking, its branch and changes, and tokens used.
+- **Live session:** the selected session runs right there, fully interactive. Type into it as usual,
+  and flip between sessions instantly. If no commander is running, one starts, so you land in AXA.
+- **Answer from anywhere:** when another session needs you, a yellow bar shows its question.
+  `Ctrl-b y` / `Ctrl-b x` answer with its Yes or No option (the bar names them). `Ctrl-b !` jumps
+  to it.
+- **Actions:** press **Ctrl-b**, then `j`/`k` (or `0`–`9`) to switch sessions, `c` new session,
+  `w` new session in its own worktree, `g` give a goal, `d` its diff, `v` run the project's
+  checks, `o` the web console, `X` close it, `q` leave (sessions keep running), `?` for all keys.
+  `Ctrl-b Ctrl-b` sends a literal Ctrl-b.
+- **Mouse:** click a session to select it. Scrolling and clicks inside the session go to it; hold Shift
+  to select text with your terminal.
+- It rings the bell and puts ⚠ in the window title when something starts needing you.
+
+It shares one backend with the web console, so the terminal, the browser and your phone always show
+the same thing.
 
 ### From the terminal
 
