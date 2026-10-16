@@ -26,7 +26,7 @@ const THEMES = {
   mono: { title: "1", accent: "1", wait: "1;4", waitSoft: "1", stuck: "1", work: "0", done: "0", idle: "0", off: "2", dim: "2", sel: "7", rule: "2", tag: "7", add: "1", del: "2", hunk: "1" },
 };
 const PREFIXES = { "C-b": 0x02, "C-a": 0x01, "C-g": 0x07, "C-\\": 0x1c };
-const DEFAULTS = { theme: "terminal", prefix: "C-b", sidebar: "left", sidebarWidth: 30, bell: true, newSession: "claude", feed: true };
+const DEFAULTS = { theme: "terminal", prefix: "C-b", sidebar: "left", sidebarWidth: 30, bell: true, newSession: "claude", feed: true, copyOnSelect: true };
 const FEED_ROWS = 5; // the activity strip: a rule plus the latest 4 events
 const SPARK = "▁▂▃▄▅▆▇█", SPARK_BUCKETS = 10, SPARK_MIN = 3; // activity over the last 30 minutes, 3 minutes per bar
 
@@ -176,8 +176,11 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
     else if (c.isBgPalette()) { const p = c.getBgColor(); a.push(p < 8 ? 40 + p : p < 16 ? 92 + p : `48;5;${p}`); }
     return a.join(";");
   }
-  function viewRows(v, p) {
+  function viewRows(v, p, pane) {
     const rows = [];
+    // the text being selected (copy-on-select) shows inverted
+    const [sa, sb] = selection && selection.pane === pane ? selRange() : [null, null];
+    const inSel = (x, y) => sa && (y > sa.y || (y === sa.y && x >= sa.x)) && (y < sb.y || (y === sb.y && x <= sb.x));
     if (!v || v.dead || !v.term) {
       const msg = v?.dead || "Pick a session: Ctrl-b j/k, or Ctrl-b s to browse with previews";
       for (let y = 0; y < p.rows; y++) rows.push(y === Math.floor(p.rows / 2) ? pad(" ".repeat(Math.max(0, Math.floor((p.cols - width(msg)) / 2))) + sgr("dim", cut(msg, p.cols)), p.cols + 20) : " ".repeat(p.cols));
@@ -191,7 +194,7 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
         line.getCell(x, cell);
         const w = cell.getWidth();
         if (w === 0) continue;
-        const a = cellSgr(cell);
+        const base = cellSgr(cell), a = inSel(x, y) ? (base ? `${base};7` : "7") : base;
         if (a !== cur) { s += `${ESC}[0${a ? ";" + a : ""}m`; cur = a; }
         // a wide character that doesn't fit in the last column would spill over the pane's border
         if (x + w > p.cols) { s += " "; n += 1; break; }
@@ -249,6 +252,7 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
   }
   function statusRow() {
     const k = cfg.prefix.replace("C-", "Ctrl-");
+    if (notice && Date.now() < notice.until) { const t = ` ✓ ${notice.text} `; return sgr("tag", t) + sgr("dim", pad(" Shift+drag uses your terminal's own selection", Math.max(0, W - width(t)))); }
     const tag = prefix ? " PREFIX " : "";
     const keys = prefix
       ? " : palette · m map · b brief · h history · l link · s browse · / search · j/k move · 0-9 pick · % split · Tab pane · z zoom · f feed · y/x answer · ! go · c new · w worktree · g goal · d diff · v verify · , settings · q quit · ? help"
@@ -277,7 +281,7 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
       L.panes.forEach((p, i) => {
         const v = views[i];
         o += `${ESC}[${p.y + 1};${p.x + 1}H${paneHeader(v, p, i === focus)}`;
-        const rows = viewRows(v, p);
+        const rows = viewRows(v, p, i);
         for (let y = 0; y < p.rows; y++) {
           if (v && v.lastRows[y] === rows[y]) continue;
           o += `${ESC}[${p.y + y + 2};${p.x + 1}H${rows[y]}`;
@@ -391,8 +395,8 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
     "  o          open the web console         X  close the session",
     `  ${keyName()}     send a literal ${keyName()}            q  leave (sessions keep running)`,
     "",
-    "Mouse: click a session or a pane to focus it; scrolling inside a session goes to it.",
-    "Hold Shift while dragging to select text with your terminal.",
+    "Mouse: drag across text to copy it (double-click: a word); click a session or pane to focus it; scroll goes to the session.",
+    "Hold Shift while dragging to use your terminal's own selection instead.",
     `Settings live in ${cfgPath}.`,
   ];
 
@@ -879,6 +883,7 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
       { key: "bell", label: "Bell when something needs you", values: [true, false] },
       { key: "newSession", label: "New sessions start as", values: ["claude", "shell"] },
       { key: "feed", label: "Activity strip", values: [true, false], about: "the latest events across sessions, under the panes" },
+      { key: "copyOnSelect", label: "Copy on select", values: [true, false], about: "drag across text to copy it (off: drags go to the session)" },
     ];
     const ov = { title: "Settings · ↑/↓ choose · ←/→ or Enter change · saved as you go · Esc close", sel: 0, lines: [] };
     const fmt = (v) => (v === true ? "on" : v === false ? "off" : String(v));
@@ -937,6 +942,44 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
   // ---------- input: prefix keys, mouse, everything else to the focused session ----------
   // one keypress at a time for AXA's own screens: escape sequences (arrows, PgUp…) or single characters
   const keysOf = (d) => d.match(/\x1b\[[0-9;?]*[A-Za-z~]|\x1bO[A-Za-z]|\x1b|[\s\S]/gu) || [];
+  // ---------- copy-on-select: drag across a session's text and it's copied when you let go ----------
+  // selection: { pane, a: {x, y}, b: {x, y}, active } in the pane's cells
+  let selection = null, lastClick = { at: 0, x: -1, y: -1 }, notice = null, selClear = null;
+  const selRange = () => { const { a, b } = selection; return a.y < b.y || (a.y === b.y && a.x <= b.x) ? [a, b] : [b, a]; };
+  function selText() {
+    const v = views[selection.pane]; if (!v?.term) return "";
+    const [a, b] = selRange(), buf = v.term.buffer.active, lines = [];
+    for (let y = a.y; y <= b.y; y++) lines.push((buf.getLine(buf.baseY + y)?.translateToString(true, y === a.y ? a.x : 0, y === b.y ? b.x + 1 : undefined) || "").replace(/\s+$/, ""));
+    return lines.join("\n");
+  }
+  // the terminal's own clipboard (OSC 52: Windows Terminal, iTerm2, kitty, WezTerm…), plus the system's
+  // copy tool where there is one (clip.exe on WSL, pbcopy, wl-copy, xclip), for terminals that ignore OSC 52
+  const clipTool = process.env.AXA_NO_CLIP_TOOL ? null : [["clip.exe", []], ["pbcopy", []], ["wl-copy", []], ["xclip", ["-selection", "clipboard"]], ["xsel", ["--clipboard", "--input"]]]
+    .find(([c]) => spawnSync("which", [c], { stdio: "ignore" }).status === 0) || null;
+  function copyText(t) {
+    out.write(`${ESC}]52;c;${Buffer.from(t, "utf8").toString("base64")}\x07`);
+    // clip.exe reads the console's code page: give it plain text only (OSC 52 covers the rest)
+    if (clipTool && !(clipTool[0] === "clip.exe" && /[^\x00-\x7f]/.test(t))) {
+      try { const c = spawn(clipTool[0], clipTool[1], { stdio: ["pipe", "ignore", "ignore"] }); c.on("error", () => {}); c.stdin.end(clipTool[0] === "clip.exe" ? t.replace(/\n/g, "\r\n") : t); } catch {}
+    }
+    const n = t.split("\n").length;
+    notice = { text: `copied ${n > 1 ? `${n} lines` : `${[...t].length} characters`}`, until: Date.now() + 2500 };
+    clearTimeout(selClear); selClear = setTimeout(() => { selection = null; schedule(); }, 1200);
+    schedule();
+  }
+  // double-click: the word under the pointer
+  function selectWord(pane, x, y) {
+    const v = views[pane]; if (!v?.term) return;
+    const buf = v.term.buffer.active, line = buf.getLine(buf.baseY + y)?.translateToString(false) || "";
+    const isWord = (ch) => ch && /[^\s"'`()[\]{}<>│|,;]/.test(ch);
+    if (!isWord(line[x])) return;
+    let a = x, b = x;
+    while (a > 0 && isWord(line[a - 1])) a--;
+    while (b < line.length - 1 && isWord(line[b + 1])) b++;
+    selection = { pane, a: { x: a, y }, b: { x: b, y }, active: false };
+    copyText(line.slice(a, b + 1));
+  }
+
   const decoder = new StringDecoder("utf8");
   const MOUSE = /\x1b\[<(\d+);(\d+);(\d+)([Mm])/g;
   function onMouse(b, x, y, up) {
@@ -949,10 +992,28 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
       return;
     }
     if (L.alert && y > L.mainH && y <= L.mainH + 2) { if (!up && b === 0 && x > L.mainX + Math.floor(L.mainW * 0.6)) show(L.alert); return; }
-    const i = L.panes.findIndex((p) => x > p.x && x <= p.x + p.cols && y > p.y && y <= p.y + p.h);
-    if (i < 0) return;
-    if (i !== focus && !up && b === 0) { focus = i; schedule(); }
+    // a drag that started in a pane keeps selecting even if the pointer strays outside it
+    const i = selection?.active ? selection.pane : L.panes.findIndex((p) => x > p.x && x <= p.x + p.cols && y > p.y && y <= p.y + p.h);
+    if (i < 0 || mapMode) return;
     const v = views[i], p = L.panes[i];
+    const left = (b & 3) === 0 && !(b & 64), motion = (b & 32) !== 0;
+    if (cfg.copyOnSelect && left && v?.term && !v.dead) {
+      const cx = Math.max(0, Math.min(p.cols - 1, x - p.x - 1)), cy = Math.max(0, Math.min(p.rows - 1, y - p.y - 2));
+      if (!up && !motion) { // press
+        if (i !== focus) focus = i;
+        const dbl = Date.now() - lastClick.at < 400 && lastClick.x === cx && lastClick.y === cy;
+        lastClick = { at: Date.now(), x: cx, y: cy };
+        if (dbl) return selectWord(i, cx, cy);
+        selection = { pane: i, a: { x: cx, y: cy }, b: { x: cx, y: cy }, active: true };
+      } else if (motion && selection?.active) selection.b = { x: cx, y: cy };
+      else if (up && selection?.active) {
+        selection.active = false;
+        const same = selection.a.x === selection.b.x && selection.a.y === selection.b.y;
+        if (same) selection = null; else { const t = selText(); if (t.trim()) copyText(t); else selection = null; }
+      }
+      return schedule();
+    }
+    if (i !== focus && !up && b === 0) { focus = i; schedule(); }
     // inside the session: forward when its program asked for the mouse (tmux does: scroll, click)
     if (v?.term && !v.dead && y >= p.y + 2 && v.term.modes.mouseTrackingMode !== "none") v.proc.write(`\x1b[<${b};${x - p.x};${y - p.y - 1}${up ? "m" : "M"}`);
   }
@@ -974,6 +1035,7 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
       const i = d.indexOf(P);
       const chunk = i < 0 ? d : d.slice(0, i);
       const v = views[focus];
+      if (chunk && selection && !selection.active) { selection = null; schedule(); } // typing clears a finished selection
       if (chunk && mapMode) keysOf(chunk).forEach(mapKey); // on the map, keys move around it
       else if (chunk && v?.proc && !v.dead) v.proc.write(chunk);
       if (i < 0) break;
@@ -982,8 +1044,9 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
   });
 
   // ---------- start: AXA is always there ----------
-  const enter = () => { out.write(`${ESC}[?1049h${ESC}[?1000h${ESC}[?1006h${ESC}[2J`); process.stdin.setRawMode(true); process.stdin.resume(); };
-  const leave = () => { out.write(`${ESC}[?1000l${ESC}[?1006l${ESC}[0m${ESC}[?25h${ESC}[?1049l`); try { process.stdin.setRawMode(false); } catch {} };
+  // mouse: clicks and wheel (1000), drags (1002, for copy-on-select), in SGR form (1006)
+  const enter = () => { out.write(`${ESC}[?1049h${ESC}[?1000h${ESC}[?1002h${ESC}[?1006h${ESC}[2J`); process.stdin.setRawMode(true); process.stdin.resume(); };
+  const leave = () => { out.write(`${ESC}[?1002l${ESC}[?1000l${ESC}[?1006l${ESC}[0m${ESC}[?25h${ESC}[?1049l`); try { process.stdin.setRawMode(false); } catch {} };
   function quit() { quitting = true; cfg.lastSeenAt = Date.now(); saveCfg(); views.forEach(closeView); leave(); console.log("AXA keeps running: `axa` reopens this, `axa console` opens the web console."); process.exit(0); }
   process.on("SIGTERM", quit); process.on("SIGHUP", quit);
   process.on("uncaughtException", (e) => { quitting = true; try { views.forEach(closeView); } catch {} leave(); console.error(e); process.exit(1); });

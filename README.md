@@ -140,8 +140,13 @@ built in:
   - **Prefix key:** Ctrl-b, Ctrl-a, Ctrl-g or Ctrl-\.
   - **Sidebar:** left or right, and its width.
   - **Bell** on or off, and whether new sessions start as Claude or a shell.
-- **Mouse:** click a session to select it. Scrolling and clicks inside the session go to it; hold Shift
-  to select text with your terminal.
+- **Mouse:** click a session to select it; scrolling inside a session goes to it.
+- **Copy on select:** drag across any text in a session and it's copied when you let go (a ✓ copied
+  notice confirms it). Double-click copies a word.
+  - It uses your terminal's clipboard code (OSC 52: Windows Terminal, iTerm2, kitty, WezTerm…), plus
+    the system copy tool where there is one (`clip.exe` on WSL, `pbcopy`, `wl-copy`, `xclip`).
+  - Hold Shift while dragging to use your terminal's own selection instead.
+  - Turn it off in settings (`Ctrl-b ,`), and drags go to the session again.
 - It rings the bell and puts ⚠ in the window title when something starts needing you.
 
 It shares one backend with the web console, so the terminal, the browser and your phone always show
