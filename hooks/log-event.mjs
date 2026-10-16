@@ -49,7 +49,7 @@ process.stdin.on("end", () => {
       summary: e.tool_name ? summarize(e.tool_name, input) : undefined,
       skill: e.tool_name === "Skill" ? input.skill : undefined,
       subagent_type: ["Agent", "Task"].includes(e.tool_name) ? input.subagent_type || "general-purpose" : undefined,
-      prompt: logText ? clip(e.prompt || (["Agent", "Task"].includes(e.tool_name) ? input.prompt : undefined), 2000) : undefined,
+      prompt: logText ? clip(e.prompt || (["Agent", "Task"].includes(e.tool_name) ? input.prompt : undefined), 8000) : undefined, // room for a whole /goal (4000) plus context
       message: logText ? clip(e.last_assistant_message ?? (e.hook_event_name === "Notification" ? e.message : undefined), 2000) : undefined,
       error: clip(e.error, 500),
       duration_ms: e.duration_ms,
