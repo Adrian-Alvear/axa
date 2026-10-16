@@ -94,8 +94,11 @@ axa chat     # the commander as a plain Claude Code session (what `axa` used to 
 `axa` opens a full-screen mission control, like a terminal multiplexer for agents, with AXA's brain
 built in:
 
-- **Sidebar:** AXA (the commander) at the top, then every session sorted by what needs you. Each
-  shows a status symbol and word, what it's doing or asking, its branch and changes, and tokens used.
+- **Sidebar, a live diagram:** AXA (the commander) is the root at the top, and every session branches
+  off it, sorted by what needs you. A dot runs along the branch of each session that's working. Each
+  shows a status symbol and word, what it's doing or asking, its branch and changes, and tokens used,
+  with its helper agents and its links underneath. Click any row to open that session. Prefer a
+  compact list? Settings (`Ctrl-b ,`) → Sidebar style → list.
 - **Live session:** the selected session runs right there, fully interactive. Type into it as usual,
   and flip between sessions instantly. If no commander is running, one starts, so you land in AXA.
 - **Answer from anywhere:** when another session needs you, a yellow bar shows its question.

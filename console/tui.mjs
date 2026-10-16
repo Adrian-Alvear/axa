@@ -26,7 +26,7 @@ const THEMES = {
   mono: { title: "1", accent: "1", wait: "1;4", waitSoft: "1", stuck: "1", work: "0", done: "0", idle: "0", off: "2", dim: "2", sel: "7", rule: "2", tag: "7", add: "1", del: "2", hunk: "1" },
 };
 const PREFIXES = { "C-b": 0x02, "C-a": 0x01, "C-g": 0x07, "C-\\": 0x1c };
-const DEFAULTS = { theme: "terminal", prefix: "C-b", sidebar: "left", sidebarWidth: 30, bell: true, newSession: "claude", feed: true, copyOnSelect: true };
+const DEFAULTS = { theme: "terminal", prefix: "C-b", sidebar: "left", sidebarWidth: 34, bell: true, newSession: "claude", feed: true, copyOnSelect: true, sidebarStyle: "tree" };
 const FEED_ROWS = 5; // the activity strip: a rule plus the latest 4 events
 const SPARK = "▁▂▃▄▅▆▇█", SPARK_BUCKETS = 10, SPARK_MIN = 3; // activity over the last 30 minutes, 3 minutes per bar
 
@@ -214,13 +214,49 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
     const room = Math.max(0, p.cols - width(head));
     return sgr(isFocus || views.length < 2 ? role : "dim", head) + sgr("dim", pad(cut(rest, room), room));
   }
+  // which session each sidebar row belongs to (for clicks), rebuilt on every draw
+  let sideHits = [];
+  // Sidebar as a diagram (the default): AXA at the root, sessions branching off it with a dot running
+  // along each working one, their helper agents and their links underneath
+  function treeRows(L, rows, hits) {
+    const w = L.side, frame = Math.floor(Date.now() / 250), ss = sessions(), axa = list.find((s) => s.mode === "axa");
+    const line = (segs, id, isSel, sp = "") => {
+      const spW = sp ? SPARK_BUCKETS + 1 : 0, body = renderSegs(isSel ? segs.map(([t]) => [t, ""]) : segs, w - spW);
+      rows.push((isSel ? sgr("sel", body + (sp ? " " + sp : "")) : body + (sp ? " " + sgr("work", sp) : "")));
+      hits[rows.length - 1] = id;
+    };
+    if (axa) {
+      const [g, word, role] = look(axa), isSel = axa.id === selId();
+      line([[" ◆ ", "title"], ["AXA", "title"], [`  0 ${g} ${word}`, role]], axa.id, isSel, spark(axa.id));
+      line([[` ${ss.length ? "│" : " "}  `, "rule"], [what(axa), "dim"]], axa.id, isSel);
+    } else line([[" ◆ AXA", "title"], ["  not running · Ctrl-b o", "dim"]], null, false);
+    ss.forEach((s, i) => {
+      const last = i === ss.length - 1, stem = last ? " " : "│", [g, word, role] = look(s), isSel = s.id === selId();
+      // a working session's branch carries a moving dot
+      const p = frame % 3, branch = s.status === "working" ? [0, 1, 2].map((k) => (k === p ? "●" : "─")).join("") : "───";
+      line([[" │", "rule"]], null, false);
+      line([[` ${last ? "└" : "├"}`, "rule"], [branch, s.status === "working" ? "work" : s.status === "waiting" ? "wait" : "rule"], [` ${i < 9 ? i + 1 : " "} ${g} `, role], [nameOf(s), role]], s.id, isSel, spark(s.id));
+      const sub = s.status === "waiting" && s.choices ? question(s.choices) : s.mode === "shell" && word === "shell" ? what(s) : `${word} · ${what(s)}`;
+      line([[` ${stem}     `, "rule"], [sub, s.status === "waiting" ? "waitSoft" : "dim"]], s.id, isSel);
+      const meta = [gitText(s.git), s.usage?.tokens ? `${fmtTok(s.usage.tokens)} tok${s.usage.over_budget ? "!" : ""}` : ""].filter(Boolean).join(" · ");
+      if (meta) line([[` ${stem}     `, "rule"], [meta, "dim"]], s.id, isSel);
+      for (const h of (helpers.get(s.id) || []).filter((h) => h.status === "running" || Date.now() - h.ts < 15 * 60_000).slice(-2))
+        line([[` ${stem}     └ `, "rule"], [h.status === "running" ? "● " : "✓ ", h.status === "running" ? "work" : "done"], [`${h.type}${h.desc ? `: ${h.desc}` : ""}`, "dim"]], s.id, false);
+      for (const c of chainsList.filter((c) => c.from === s.id && !c.failed && (!c.fired || Date.now() - c.fired < 15 * 60_000))) {
+        const to = list.find((x) => x.id === c.to);
+        line([[` ${stem}     ──▶ `, c.fired ? "dim" : "accent"], [to ? nameOf(to) : c.to_name || "?", c.fired ? "dim" : "accent"], [c.fired ? " ✓ sent" : " when done", "dim"]], s.id, false);
+      }
+    });
+  }
   function sideRows(L) {
-    const rows = [], o = ordered(), w = L.side;
+    const rows = [], o = ordered(), w = L.side, hits = [];
+    sideHits = hits;
     const n = (st) => list.filter((s) => s.mode !== "axa" && s.status === st).length;
     rows.push(sgr("title", pad(" AXA mission control", w)));
     rows.push(sgr("rule", "─".repeat(w)));
+    if (cfg.sidebarStyle !== "list") treeRows(L, rows, hits);
     const nums = new Map(sessions().map((s, i) => [s.id, i < 9 ? String(i + 1) : " "]));
-    for (const s of o) {
+    for (const s of cfg.sidebarStyle === "list" ? o : []) {
       const [g, word, role] = look(s);
       const isSel = s.id === selId(), shown = onScreen(s.id), num = s.mode === "axa" ? "0" : nums.get(s.id);
       const head = `${shown && !isSel ? "▸" : " "}${num} ${g} ${cut(nameOf(s), w - 7)}`;
@@ -232,6 +268,7 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
       for (const [t, r, withSpark] of lines) {
         const body = withSpark && sp ? pad(t, w - spW) : pad(t, w);
         rows.push(isSel ? sgr("sel", body + (withSpark && sp ? " " + sp : "")) : sgr(r, body) + (withSpark && sp ? " " + sgr(role === "off" ? "dim" : "work", sp) : ""));
+        hits[rows.length - 1] = s.id;
       }
     }
     if (!list.some((s) => s.mode !== "axa")) rows.push(sgr("dim", pad("   no sessions yet: Ctrl-b c", w)));
@@ -878,6 +915,7 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
     const items = [
       { key: "theme", label: "Theme", values: Object.keys(THEMES), about: "terminal = your terminal's own colors" },
       { key: "prefix", label: "Prefix key", values: Object.keys(PREFIXES), about: "the key before every AXA action" },
+      { key: "sidebarStyle", label: "Sidebar style", values: ["tree", "list"], about: "tree: the live diagram (AXA, sessions, helpers, links); list: compact" },
       { key: "sidebar", label: "Sidebar side", values: ["left", "right"] },
       { key: "sidebarWidth", label: "Sidebar width", values: [24, 26, 28, 30, 34, 38, 42, 48] },
       { key: "bell", label: "Bell when something needs you", values: [true, false] },
@@ -987,8 +1025,8 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
     if (overlay) return;
     if (L.side && x > L.sideX && x <= L.sideX + L.side) {
       if (up || b !== 0) return;
-      let row = 3; // title, rule, then 2-3 rows per entry
-      for (const s of ordered()) { const h = s.mode === "axa" ? 2 : 3; if (y >= row && y < row + h) return show(s); row += h; }
+      const id = sideHits[y - 1], s = id && list.find((x) => x.id === id);
+      if (s) show(s);
       return;
     }
     if (L.alert && y > L.mainH && y <= L.mainH + 2) { if (!up && b === 0 && x > L.mainX + Math.floor(L.mainW * 0.6)) show(L.alert); return; }
@@ -1068,7 +1106,8 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
   if (cmdError) flash("Couldn't start the AXA commander", [cmdError, "", "Sessions still work; start it later from the web console (Ctrl-b o)."]);
   setInterval(poll, 1000);
   streamEvents();
-  setInterval(() => { if (mapMode && !overlay) schedule(); }, 250); // the map's flowing links
+  // the map's and the diagram sidebar's flowing links (only while something is working)
+  setInterval(() => { if ((mapMode || cfg.sidebarStyle !== "list") && list.some((s) => s.status === "working")) schedule(); }, 250);
   // "since you left" counts from when mission control was last open
   setInterval(() => { cfg.lastSeenAt = Date.now(); saveCfg(); }, 60_000);
   if (!cmdError) setTimeout(() => { if (!overlay) briefing(true); }, 1500);
