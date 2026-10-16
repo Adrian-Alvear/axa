@@ -161,6 +161,7 @@ setInterval(() => {
 // carries no untrusted text. It's only typed when the commander is idle and the user hasn't typed
 // into it for a while; updates queue up meanwhile. AXA_SUPERVISOR=0 turns this off.
 const SUPERVISE = process.env.AXA_SUPERVISOR !== "0";
+const WAIT_MS = 15_000; // how long a prompt must stay open before it counts as needing the user
 const QUIET_MS = 30_000; // don't type while the user is typing in the commander tab
 const WAKES_PER_HOUR = Number(process.env.AXA_WAKES_PER_HOUR) || 30;
 const NOTABLE = { done: "finished its turn", waiting: "needs the user's approval", stuck: "looks stuck", exited: "exited" };
@@ -176,12 +177,15 @@ function supervise() {
     lastSeen.set(s.id, s.status);
     // the first pass only learns the current states; afterwards, report changes into a notable state
     if (!primed || prev === undefined || prev === s.status) continue;
-    if (NOTABLE[s.status]) pending.set(s.id, { name: s.name, status: s.status });
+    if (NOTABLE[s.status]) pending.set(s.id, { name: s.name, status: s.status, since: Date.now() });
     else pending.delete(s.id); // back to work before AXA got to it
   }
+  // A prompt can show on screen a moment before the approver picks it up: "needs the user" only
+  // counts once it has lasted WAIT_MS
+  const ready = [...pending.entries()].filter(([, p]) => p.status !== "waiting" || Date.now() - p.since >= WAIT_MS);
   for (const id of lastSeen.keys()) if (!list.some((s) => s.id === id)) { lastSeen.delete(id); pending.delete(id); }
   primed = true;
-  if (!pending.size) return;
+  if (!ready.length) return;
 
   const cmd = list.find((s) => s.mode === "axa" && s.alive);
   if (!cmd || !["ready", "done"].includes(cmd.status) || cmd.awaiting_permission) return;
@@ -189,12 +193,12 @@ function supervise() {
   while (wakes.length && Date.now() - wakes[0] > 3600_000) wakes.shift();
   if (wakes.length >= WAKES_PER_HOUR) return; // a runaway loop: updates wait (the needs-you badge still shows them)
 
-  const items = [...pending.entries()].map(([id, p]) => `${p.name} (${id}) ${NOTABLE[p.status]}`);
+  const items = ready.map(([id, p]) => `${p.name} (${id}) ${NOTABLE[p.status]}`);
   const text = `[AXA supervisor: automatic update from the console, not typed by the user] ${items.join("; ")}. Handle this under your supervisor rules: check each one, verify any claims, take the next step if it is within what the user asked, and end with a short report for the user.`;
   T.sendToTerm(cmd.id, text).then((r) => {
     if (!r.ok) return;
     wakes.push(Date.now());
-    pending.clear();
+    for (const [id] of ready) pending.delete(id);
     const ev = { ts: Date.now(), event: "SupervisorWake", terminal: cmd.id, role: "console", items };
     try { appendFileSync(logPath, JSON.stringify(ev) + "\n"); } catch {}
   });
