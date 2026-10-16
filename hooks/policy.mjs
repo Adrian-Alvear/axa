@@ -19,7 +19,15 @@ const MAX_INPUT = 1024 * 1024;
 const home = process.env.AXA_HOME || join(homedir(), ".axa");
 const CONSOLE_PORT = Number(process.env.AXA_PORT || 4747);
 // Bash that reaches for AXA's controls: the console token, the console's address, ~/.axa, AXA's tmux
-const AXA_CONTROLS = new RegExp(String.raw`console-token|(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]):${CONSOLE_PORT}\b|(?:~|\$HOME|\$\{HOME\}|/home/[^/\s]+|/Users/[^/\s]+)/\.a.a\b|\btmux\b`);
+const AXA_CONTROLS = new RegExp(String.raw`console-token|(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]):${CONSOLE_PORT}\b|(?:~|\$HOME|\$\{HOME\}|/home/[^/\s]+|/Users/[^/\s]+)/\.a.a\b`);
+// tmux reaching AXA's live server: no -L/-S (inside an AXA session that's AXA's server), -L axa-<port>,
+// or -S pointing at that socket. Private sockets (tmux -L axa-clitest, a project's own) are fine.
+const reachesAxaTmux = (cmd) => [...cmd.matchAll(/\btmux\b([^\n;&|]*)/g)].some(([, args]) => {
+  const sock = /(?:^|\s)-([LS])\s*(\S+)/.exec(args);
+  if (!sock) return true;
+  const name = sock[2].replace(/^["']|["']$/g, "");
+  return sock[1] === "L" ? name === `axa-${CONSOLE_PORT}` : name.split("/").pop() === `axa-${CONSOLE_PORT}`;
+});
 
 let raw = "";
 process.stdin.on("data", (c) => { if (raw.length < MAX_INPUT) raw += c; });
@@ -114,7 +122,7 @@ function bash(cmd, ctx, ok) {
   if (danger) return deny(`blocked: ${danger}. Ask the user if this is really needed`);
   // (a pattern check, so a speed bump against a determined session rather than a wall; together with
   // sessions not inheriting $TMUX it keeps project sessions off AXA's controls)
-  if (AXA_CONTROLS.test(cmd) || (home !== join(homedir(), ".axa") && cmd.includes(home))) return deny(AXA_PRIVATE);
+  if (AXA_CONTROLS.test(cmd) || reachesAxaTmux(cmd) || (home !== join(homedir(), ".axa") && cmd.includes(home))) return deny(AXA_PRIVATE);
   for (const re of ctx.settings.denyBash || []) if (safeRe(re)?.test(cmd)) return deny(`blocked by your policy (${re})`);
   if (ctx.settings.mode === "strict") return null;
   for (const re of ctx.settings.allowBash || []) if (safeRe(re, true)?.test(cmd)) return ok(`allowed by your policy (${re})`);

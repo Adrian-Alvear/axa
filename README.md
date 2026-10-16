@@ -191,7 +191,7 @@ Project sessions that AXA starts check every tool call against a policy before r
   `log`, `add`, `commit`, new branches, pushing a branch that isn't `main`/`master`).
 - **Refused, with a reason the agent can act on:** the dangerous-command list above, editing files
   outside the project, `.git` internals, or secret files (`.env*`, keys, credentials), reading secrets,
-  and anything touching AXA's own files (`~/.axa`, the console token), the console's address or tmux.
+  and anything touching AXA's own files (`~/.axa`, the console token), the console's address or AXA's own tmux server (tmux on a private socket is fine).
   Sessions also start without `$TMUX`, so they can't reach AXA's terminals and answer their own (or
   another session's) prompts. These are pattern checks, a strong speed bump rather than a sandbox: a
   session runs as you.
