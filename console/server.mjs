@@ -102,9 +102,10 @@ function track(e) {
   if (e.session && e.event === "SessionStart" && e.role && e.source !== "compact") T?.noteSession?.(e.terminal, e.session);
   const s = sessions.get(e.terminal) || { inflight: new Map() };
   s.at = e.ts;
+  if (e.session && e.role) s.session = e.session;
   switch (e.event) {
     case "SessionStart": s.status = "ready"; s.inflight.clear(); break;
-    case "UserPromptSubmit": s.status = "working"; s.doing = "reading the instruction"; s.tool = s.summary = undefined; s.error = undefined; s.asking = null; s.inflight.clear(); break;
+    case "UserPromptSubmit": s.status = "working"; s.doing = "reading the instruction"; s.tool = s.summary = undefined; s.error = undefined; s.asking = null; s.stopAt = s.gateAt = null; s.inflight.clear(); break;
     case "PreToolUse":
       s.status = "working"; s.doing = [e.tool, e.summary].filter(Boolean).join(" · "); s.tool = e.tool; s.summary = e.skill || e.summary; s.skill = e.skill;
       if (e.tool_use_id) s.inflight.set(e.tool_use_id, { tool: e.tool, summary: e.summary, since: e.ts });
@@ -124,7 +125,23 @@ function track(e) {
       s.decisions = [...(s.decisions || []), { ts: e.ts, decision: e.decision, reason: e.reason, summary: e.summary, by: e.by }].slice(-20);
       break;
     case "Notification": if (/permission/i.test(e.notification_type || e.message || "")) { s.status = "waiting"; s.asking = null; s.doing = e.message; } break;
-    case "Stop": s.status = "done"; s.doing = s.tool = s.summary = s.skill = undefined; s.asking = null; s.inflight.clear(); if (e.message) s.report = e.message; break;
+    case "Stop":
+      // AXA's verify gate sent it back to check its work (hooks/verify-gate.mjs): it isn't done yet
+      // (the two hooks log in either order; each marker is used once)
+      if (s.gateAt && Math.abs(e.ts - s.gateAt) < 10_000) { s.gateAt = null; s.status = "working"; s.doing = "AXA verify gate: checking its work before reporting"; break; }
+      s.stopAt = e.ts;
+      s.status = "done"; s.doing = s.tool = s.summary = s.skill = undefined; s.asking = null; s.inflight.clear(); if (e.message) s.report = e.message; break;
+    case "VerifyGate":
+      if (s.stopAt && e.ts - s.stopAt < 10_000) s.stopAt = null; // its Stop was already logged
+      else s.gateAt = e.ts;
+      s.status = "working"; s.doing = "AXA verify gate: checking its work before reporting"; break;
+    // You answered its prompt from the console. Declining stops the step and Claude waits for you (no
+    // other event follows), so it's ready for the next instruction; anything else lets it carry on.
+    case "UserAnswer":
+      s.asking = null;
+      if (/^(?:no\b|continue without|cancel|deny|reject|don'?t)/i.test(e.answer || "")) { s.status = "ready"; s.doing = `you declined (${e.answer}); waiting for the next instruction`; s.inflight.clear(); }
+      else { s.status = "working"; s.doing = `you answered: ${e.answer}`; }
+      break;
   }
   sessions.set(e.terminal, s);
 }
@@ -164,8 +181,9 @@ const SUPERVISE = process.env.AXA_SUPERVISOR !== "0";
 const WAIT_MS = 15_000; // how long a prompt must stay open before it counts as needing the user
 const QUIET_MS = 30_000; // don't type while the user is typing in the commander tab
 const WAKES_PER_HOUR = Number(process.env.AXA_WAKES_PER_HOUR) || 30;
-const NOTABLE = { done: "finished its turn", waiting: "needs the user's approval", stuck: "looks stuck", exited: "exited" };
-const lastSeen = new Map(), pending = new Map(), wakes = [];
+const DONE_MS = 6_000; // "done" must hold this long (a verify-gate bounce flips it back to working)
+const NOTABLE = { done: "finished its turn", waiting: "needs the user's approval", stuck: "looks stuck", exited: "exited", over_budget: "went over its token budget: don't give it more work; report its usage to the user" };
+const lastSeen = new Map(), pending = new Map(), wakes = [], budgetTold = new Set();
 let primed = false;
 
 function supervise() {
@@ -175,6 +193,8 @@ function supervise() {
     if (s.mode !== "claude") continue;
     const prev = lastSeen.get(s.id);
     lastSeen.set(s.id, s.status);
+    // over budget: tell AXA once per session
+    if (primed && s.usage?.over_budget && !budgetTold.has(s.id)) { budgetTold.add(s.id); pending.set(`${s.id}:budget`, { id: s.id, name: s.name, status: "over_budget", since: Date.now() }); }
     // the first pass only learns the current states; afterwards, report changes into a notable state
     if (!primed || prev === undefined || prev === s.status) continue;
     if (NOTABLE[s.status]) pending.set(s.id, { name: s.name, status: s.status, since: Date.now() });
@@ -182,8 +202,8 @@ function supervise() {
   }
   // A prompt can show on screen a moment before the approver picks it up: "needs the user" only
   // counts once it has lasted WAIT_MS
-  const ready = [...pending.entries()].filter(([, p]) => p.status !== "waiting" || Date.now() - p.since >= WAIT_MS);
-  for (const id of lastSeen.keys()) if (!list.some((s) => s.id === id)) { lastSeen.delete(id); pending.delete(id); }
+  const ready = [...pending.entries()].filter(([, p]) => (p.status === "waiting" ? Date.now() - p.since >= WAIT_MS : p.status === "done" ? Date.now() - p.since >= DONE_MS : true));
+  for (const id of lastSeen.keys()) if (!list.some((s) => s.id === id)) { lastSeen.delete(id); pending.delete(id); pending.delete(`${id}:budget`); budgetTold.delete(id); }
   primed = true;
   if (!ready.length) return;
 
@@ -193,7 +213,7 @@ function supervise() {
   while (wakes.length && Date.now() - wakes[0] > 3600_000) wakes.shift();
   if (wakes.length >= WAKES_PER_HOUR) return; // a runaway loop: updates wait (the needs-you badge still shows them)
 
-  const items = ready.map(([id, p]) => `${p.name} (${id}) ${NOTABLE[p.status]}`);
+  const items = ready.map(([id, p]) => `${p.name} (${p.id || id}) ${NOTABLE[p.status]}`);
   const text = `[AXA supervisor: automatic update from the console, not typed by the user] ${items.join("; ")}. Handle this under your supervisor rules: check each one, verify any claims, take the next step if it is within what the user asked, and end with a short report for the user.`;
   T.sendToTerm(cmd.id, text).then((r) => {
     if (!r.ok) return;
@@ -281,7 +301,22 @@ const server = createServer(async (req, res) => {
       } catch (e) { return json(res, 400, { error: e.message }); }
     }
     const m = path.match(/^\/api\/terms\/([\w-]+)$/);
-    if (m && req.method === "DELETE") return json(res, T.killTerm(m[1]) ? 200 : 404, {});
+    if (m && req.method === "DELETE") { const r = T.killTerm(m[1], { removeWorktree: u.searchParams.get("remove_worktree") === "1" }); return json(res, r ? 200 : 404, r || {}); }
+    // The user answering a prompt from the sessions list. Only the console page itself may do this:
+    // browsers stamp Sec-Fetch-Site (page scripts can't set it) and AXA's session tools never send it.
+    // It isn't a secret: what keeps project sessions out is that they can't reach the token (policy) or
+    // AXA's tmux (no $TMUX in sessions).
+    const am = path.match(/^\/api\/terms\/([\w-]+)\/answer$/);
+    if (am && req.method === "POST") {
+      if (req.headers["sec-fetch-site"] !== "same-origin" || !req.headers.origin) return json(res, 403, { error: "Only you can answer a prompt, from the console page." });
+      const b = await readBody(req);
+      const r = T.answerTerm(am[1], b.n, String(b.label ?? ""));
+      if (r.ok) {
+        const ev = { ts: Date.now(), event: "UserAnswer", terminal: am[1], session: sessions.get(am[1])?.session, role: "console", answer: r.option.label.slice(0, 120), summary: r.question.slice(-200) };
+        try { appendFileSync(logPath, JSON.stringify(ev) + "\n"); } catch {}
+      }
+      return json(res, r.ok ? 200 : 409, r);
+    }
     const sm = path.match(/^\/api\/terms\/([\w-]+)\/screen$/);
     if (sm && req.method === "GET") { const r = T.readTerm(sm[1], Number(u.searchParams.get("lines")) || 60); return json(res, r ? 200 : 404, r || { error: "no such terminal" }); }
     const dm = path.match(/^\/api\/terms\/([\w-]+)\/diff$/);

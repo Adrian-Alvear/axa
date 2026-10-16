@@ -113,6 +113,9 @@
 
   /* ---------- sessions list: what needs you first, then what's working, done, idle ---------- */
   #inbox { border-bottom: 1px solid var(--line); padding: 14px 18px 12px; max-height: 40vh; overflow: auto; }
+  /* room for a prompt's options: the selected-node detail steps aside while something waits on you */
+  #inbox:has(.sess[data-state=waiting]) { max-height: 64vh; }
+  aside:has(.sess[data-state=waiting]) #detail { display: none; }
   #inbox .title { display: flex; justify-content: space-between; gap: 8px; }
   #inboxsum { letter-spacing: .12em; text-transform: none; }
   #inboxsum .w { color: var(--st-wait); }
@@ -130,11 +133,19 @@
   .sess .sd { margin-top: 3px; line-height: 1.4; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
   .sess .sg { color: var(--dim); font-size: 11px; margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .sess .sg .add { color: var(--st-done); } .sess .sg .del { color: var(--red); }
+  .sess .sg .over { color: var(--st-wait); }
+  /* the prompt's last lines (the actual question) matter most: anchor it to the bottom */
+  .sess .sq { margin-top: 6px; color: var(--text); white-space: pre-wrap; font-size: 11px; line-height: 1.4; max-height: 5.6em; overflow: hidden; border-left: 2px solid var(--c); padding-left: 8px; display: flex; flex-direction: column; justify-content: flex-end; }
+  .sess .sq:empty, .sess .sc:empty { display: none; }
+  .sess .sc { display: flex; flex-direction: column; gap: 5px; margin-top: 7px; }
+  .sess .sc button { text-align: left; text-transform: none; letter-spacing: .02em; font-size: 12px; padding: 6px 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .sess .sc button.armed { border-color: var(--c); color: #1a1000; background: var(--c); font-weight: 600; }
   .sess .sa { display: flex; gap: 6px; margin-top: 6px; }
   .sess .sa button { padding: 3px 10px; }
   .sess .sa button.hot { border-color: var(--c); color: var(--c); }
   #sesslist .none { color: var(--dim); padding: 4px 0 2px; }
   .planet .pg { color: var(--dim); font-size: 10px; margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .planet .pg .over { color: var(--st-wait); }
   .planet .pg .add, #diffhead .add { color: var(--st-done); } .planet .pg .del, #diffhead .del { color: var(--red); }
 
   /* ---------- changes viewer (a session's uncommitted diff) ---------- */
@@ -226,6 +237,8 @@
     .sess { padding: 10px 12px 11px; }
     .sess .nm { font-size: 14px; }
     .sess .sa button { min-height: 40px; padding: 6px 14px; flex: 1; font-size: 11px; }
+    .sess .sc button { min-height: 44px; font-size: 13px; }
+    .sess .sq { font-size: 12px; }
     .row { grid-template-columns: 58px 70px 1fr; padding: 5px 16px; }
     .planet { width: 170px; }
     #mnav { display: grid; grid-template-columns: repeat(4, 1fr); position: fixed; left: 0; right: 0; bottom: 0; z-index: 10; background: rgba(4,9,14,.97); border-top: 1px solid var(--line2); padding-bottom: env(safe-area-inset-bottom); }
@@ -789,7 +802,7 @@ $("fit").onclick = () => { autoFit = true; };
 $("fit").ondblclick = () => { mapLayout = { planets: {}, callout: null }; saveMapLayout(); autoFit = true; };
 
 // ---------- side panel ----------
-const esc = (t) => String(t ?? "").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+const esc = (t) => String(t ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const dur = (ms) => ms < 60000 ? (ms / 1000).toFixed(1) + "s" : Math.floor(ms / 60000) + "m " + Math.round((ms % 60000) / 1000) + "s";
 const short = (id) => String(id || "").replace(/^agent-/, "").slice(0, 6);
 const kv = (rows) => `<div class="kv">${rows.filter(([, v]) => v).map(([k, v]) => `<span class="k">${k}</span><span>${v}</span>`).join("")}</div>`;
@@ -839,6 +852,8 @@ function describe(e) {
         : e.decision === "deny" ? ["fail", `AXA declined: ${esc(e.reason)}`]
         : ["perm", `needs your approval (${esc(e.reason)}): ${esc(e.summary)}`];
     case "Notification": return /permission/i.test(e.notification_type || "") ? ["perm", "waiting for your approval"] : null;
+    case "UserAnswer": return ["", `you answered: <b>${esc(e.answer)}</b>`];
+    case "VerifyGate": return ["perm", `AXA verify gate: sent back to check its work (${esc(e.summary)})`];
     case "PostToolUseFailure": return ["fail", `${esc(toolName(e.tool))} failed: ${esc(e.error)}`];
     case "PreToolUse": {
       if (isSpawn) return ["call", `started a helper (<b>${esc(roleFor(e.subagent_type))}</b>): ${esc(e.summary)}`];
@@ -1033,7 +1048,7 @@ function renderPlanets() {
     el.querySelector(".ps").textContent = (STATUS_TEXT[p.status] || p.status) + since;
     el.querySelector(".pd").textContent = planetDetail(p);
     el.querySelector(".pe").textContent = p.error && p.status !== "done" ? `last error: ${p.error}` : "";
-    el.querySelector(".pg").innerHTML = gitHtml(p.git);
+    el.querySelector(".pg").innerHTML = [gitHtml(p.git), usageHtml(p.usage)].filter(Boolean).join(" · ");
     el.title = `${p.name} · ${p.cwd}\nClick to open its terminal`;
   }
 }
@@ -1043,6 +1058,28 @@ function gitHtml(g) {
   if (!g) return "";
   const files = g.files ? `${g.files} file${g.files > 1 ? "s" : ""} <span class="add">+${g.added}</span> <span class="del">−${g.removed}</span>` : "no changes";
   return `⎇ ${esc(g.branch)} · ${files}${g.ahead ? ` · ↑${g.ahead} not pushed` : ""}`;
+}
+
+// "1.2M tok" (amber and flagged when over the budget set in ~/.axa/policy.json)
+const fmtTok = (n) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${Math.round(n / 1e3)}k` : String(n));
+const usageHtml = (u) => (!u ? "" : u.over_budget ? `<span class="over">⚠ ${fmtTok(u.tokens)} tok · over ${fmtTok(u.budget)} budget</span>` : `${fmtTok(u.tokens)} tok${u.budget ? ` of ${fmtTok(u.budget)}` : ""}`);
+
+// Answer a session's prompt: first tap arms the option (so a stray tap on a phone does nothing), the
+// second sends it. The server checks the same prompt is still on screen before typing the number.
+async function answer(p, b) {
+  if (!b.classList.contains("armed")) {
+    for (const x of b.parentElement.querySelectorAll("button")) { x.classList.remove("armed"); if (x.dataset.label) x.textContent = x.dataset.label; }
+    b.dataset.label = b.textContent; b.classList.add("armed"); b.textContent = `Tap again: ${b.dataset.label}`;
+    clearTimeout(b._t); b._t = setTimeout(() => { b.classList.remove("armed"); b.textContent = b.dataset.label; }, 4000);
+    return;
+  }
+  clearTimeout(b._t); b.disabled = true;
+  const opt = p.choices?.options.find((o) => o.n === Number(b.dataset.n));
+  const r = await fetch(`/api/terms/${p.id}/answer`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ n: opt?.n, label: opt?.label }) });
+  const body = await r.json().catch(() => ({}));
+  b.disabled = false; b.classList.remove("armed"); b.textContent = b.dataset.label;
+  if (!r.ok) alert(body.error || "Couldn't answer it");
+  pollNow();
 }
 
 // ---------- sessions list: urgency first (needs you, stuck, working, done, idle, ended) ----------
@@ -1063,8 +1100,12 @@ function renderInbox() {
     if (!el) {
       el = document.createElement("div");
       el.className = "sess"; el.tabIndex = 0;
-      el.innerHTML = `<div class="sh"><span class="chip"></span><b class="nm"></b><span class="ago"></span></div><div class="sd"></div><div class="sg"></div><div class="sa"><button data-a="open">Open</button><button data-a="diff">Changes</button></div>`;
-      el.onclick = (ev) => { const cur = terms.find((x) => x.id === p.id) || p; if (ev.target.dataset.a === "diff") showDiff(cur); else openSession(cur); };
+      el.innerHTML = `<div class="sh"><span class="chip"></span><b class="nm"></b><span class="ago"></span></div><div class="sd"></div><div class="sg"></div><div class="sq"></div><div class="sc"></div><div class="sa"><button data-a="open">Open</button><button data-a="diff">Changes</button></div>`;
+      el.onclick = (ev) => {
+        const cur = terms.find((x) => x.id === p.id) || p, b = ev.target.closest("button");
+        if (b?.dataset.n) return answer(cur, b);
+        if (b?.dataset.a === "diff") showDiff(cur); else openSession(cur);
+      };
       el.onkeydown = (ev) => { if (ev.key === "Enter" && ev.target === el) openSession(terms.find((x) => x.id === p.id) || p); };
       inboxEls.set(p.id, el);
     }
@@ -1074,8 +1115,15 @@ function renderInbox() {
     el.querySelector(".nm").textContent = p.name + (p.mode === "shell" ? " · sh" : "");
     el.querySelector(".ago").textContent = p.status === "working" ? "" : ago(p.idle_seconds * 1000);
     el.querySelector(".sd").textContent = planetDetail(p) + (p.error && p.status !== "done" ? ` · last error: ${p.error}` : "");
-    el.querySelector(".sg").innerHTML = gitHtml(p.git);
-    el.querySelector("[data-a=open]").textContent = p.status === "waiting" ? "Answer it" : p.status === "stuck" ? "Look" : "Open";
+    el.querySelector(".sg").innerHTML = [gitHtml(p.git), usageHtml(p.usage)].filter(Boolean).join(" · ");
+    // The prompt it's waiting on, answerable here: a tap arms an option, a second tap sends it
+    const c = p.status === "waiting" ? p.choices : null, sig = c ? c.question + c.options.map((o) => o.label).join("|") : "";
+    if (el.dataset.sig !== sig) {
+      el.dataset.sig = sig;
+      el.querySelector(".sq").textContent = c ? c.question : "";
+      el.querySelector(".sc").innerHTML = c ? c.options.map((o) => `<button data-n="${o.n}" title="${esc(o.label)}">${o.n}. ${esc(o.label)}</button>`).join("") : "";
+    }
+    el.querySelector("[data-a=open]").textContent = p.status === "waiting" ? (c ? "Terminal" : "Answer it") : p.status === "stuck" ? "Look" : "Open";
     el.querySelector("[data-a=open]").classList.toggle("hot", p.status === "waiting" || p.status === "stuck");
     el.querySelector("[data-a=diff]").hidden = !p.git?.files;
     el.title = `${p.name} · ${p.cwd}`;
@@ -1186,7 +1234,9 @@ $("bell").onclick = async () => {
   try { localStorage.setItem("axa.bell", bellOn ? "1" : "0"); } catch {}
 };
 
-async function pollTerms() {
+async function pollTerms() { await refreshTerms(); setTimeout(pollTerms, 2000); }
+const pollNow = () => setTimeout(refreshTerms, 400); // after an action: show its effect without waiting for the next poll
+async function refreshTerms() {
   try {
     const r = await fetch("/api/terms");
     if (r.ok) {
@@ -1196,7 +1246,6 @@ async function pollTerms() {
       renderPlanets(); renderInbox(); dirty = true;
     }
   } catch {}
-  setTimeout(pollTerms, 2000);
 }
 function setView(m) {
   mission = m;

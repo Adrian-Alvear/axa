@@ -220,6 +220,136 @@ export async function diffTerm(id) {
   return { ...summary(t), diff, truncated, untracked: untracked.slice(0, 200).map(safe), untracked_total: untracked.length };
 }
 
+// ---------- usage: the tokens each session's chat has used (from Claude Code's own transcript) ----------
+// Read incrementally in the background (one refresh per chat every USAGE_MS); helper agents' transcripts
+// (<chat>/subagents/*.jsonl) count too. Each API response is counted once (by message and request id).
+const USAGE_MS = 15_000;
+const usageCache = new Map(); // chat id -> { at, busy, dir, files: Map(path -> { offset, partial }), seen: Set, tot }
+function findChatDir(chat) {
+  const root = join(homedir(), ".claude", "projects");
+  try { for (const d of readdirSync(root)) if (existsSync(join(root, d, `${chat}.jsonl`))) return join(root, d); } catch {}
+  return null;
+}
+function refreshUsage(chat) {
+  const c = usageCache.get(chat) || { files: new Map(), seen: new Map(), tot: { input: 0, cached: 0, output: 0 } };
+  usageCache.set(chat, c);
+  if (c.busy || (c.at && Date.now() - c.at < USAGE_MS)) return;
+  c.busy = true;
+  try {
+    c.dir ||= findChatDir(chat);
+    if (!c.dir) return;
+    const sub = join(c.dir, chat, "subagents");
+    const paths = [join(c.dir, `${chat}.jsonl`)];
+    try { for (const f of readdirSync(sub)) if (f.endsWith(".jsonl")) paths.push(join(sub, f)); } catch {}
+    for (const p of paths) {
+      const f = c.files.get(p) || { offset: 0, partial: "" };
+      c.files.set(p, f);
+      const size = statSync(p).size;
+      if (size < f.offset) Object.assign(f, { offset: 0, partial: "" });
+      // at most 8MB per refresh, so a huge first read is spread out
+      const end = Math.min(size, f.offset + 8 * 1024 * 1024);
+      if (end <= f.offset) continue;
+      const fd = openSync(p, "r"), buf = Buffer.alloc(end - f.offset);
+      readSync(fd, buf, 0, buf.length, f.offset); closeSync(fd);
+      f.offset = end;
+      const lines = (f.partial + buf.toString("utf8")).split("\n");
+      f.partial = lines.pop();
+      for (const line of lines) {
+        if (!line.includes('"usage"')) continue;
+        let o; try { o = JSON.parse(line); } catch { continue; }
+        const u = o.type === "assistant" && o.message?.usage;
+        if (!u) continue;
+        const key = `${o.message.id}:${o.requestId}`;
+        // a streamed response repeats its line as it grows: count the largest numbers once
+        const now = { input: (u.input_tokens || 0) + (u.cache_creation_input_tokens || 0), cached: u.cache_read_input_tokens || 0, output: u.output_tokens || 0 };
+        const was = c.seen.get(key) || { input: 0, cached: 0, output: 0 };
+        for (const k of ["input", "cached", "output"]) if (now[k] > was[k]) { c.tot[k] += now[k] - was[k]; was[k] = now[k]; }
+        c.seen.set(key, was);
+      }
+    }
+  } catch {} finally { c.busy = false; c.at = Date.now(); }
+}
+// Per-project token budget from ~/.axa/policy.json: { "default": { "budget": { "tokens": 5000000 } }, "projects": { "x": { ... } } }
+function budgetFor(cwd) {
+  try {
+    const file = JSON.parse(readFileSync(join(home, "policy.json"), "utf8"));
+    const match = Object.entries(file.projects || {}).find(([k]) => (k.startsWith("/") || k.startsWith("~") ? expand(k) === cwd || cwd.startsWith(expand(k) + "/") : k === basename(cwd) || cwd.includes(`/${k}/.claude/worktrees/`)));
+    return Number(match?.[1]?.budget?.tokens ?? file.default?.budget?.tokens) || 0;
+  } catch { return 0; }
+}
+function usageOf(t) {
+  const chat = meta.get(t.id)?.claudeSession;
+  if (!chat || t.mode === "shell") return null;
+  if (t.alive) refreshUsage(chat);
+  const tot = usageCache.get(chat)?.tot;
+  if (!tot) return null;
+  // tokens = new input + output (what a budget limits); cache re-reads are cheap and reported apart
+  const tokens = tot.input + tot.output, budget = budgetFor(t.cwd);
+  return { tokens, input: tot.input, cached: tot.cached, output: tot.output, budget: budget || undefined, over_budget: budget > 0 && tokens > budget };
+}
+
+// ---------- the dialog on screen: its question and numbered options ----------
+// So the user can answer a permission/trust prompt from the sessions list (on their phone) with one tap.
+// Only the user, from the console page, can answer (see answerTerm and the server's /answer route).
+// Claude Code's menus (numbered or not) are a block of lines just above "Enter to confirm", one marked
+// with the ❯ cursor; option labels line up with the cursor line's label (deeper lines are descriptions).
+const BOX = /[│┃╭╮╰╯─━╌╍┄┅┈┉═║]/g;
+const paneWidth = (t) => {
+  if (!t.tmux) return t.screen?.cols || 100;
+  if (!(t.width && Date.now() - t.width.at < 2000)) t.width = { at: Date.now(), n: Number(tmux("display-message", "-p", "-t", paneTarget(t.id), "#{pane_width}").stdout) || 100 };
+  return t.width.n;
+};
+function choicesOf(t) {
+  const lines = screenLines(t, 40).map((l) => l.replace(BOX, " ").trimEnd());
+  let end = lines.length;
+  for (let i = lines.length - 1; i >= 0; i--) if (/Enter to (?:confirm|select)|Esc to (?:cancel|exit)/i.test(lines[i])) { end = i; break; }
+  let i = end - 1;
+  while (i >= 0 && !lines[i].trim()) i--;
+  const block = [];
+  for (; i >= 0 && lines[i].trim(); i--) block.unshift({ text: lines[i], at: i });
+  const cur = block.find((b) => /^\s*❯/.test(b.text));
+  if (!cur) return null;
+  const col = cur.text.search(/❯/) + 1 + (cur.text.slice(cur.text.search(/❯/) + 1).search(/\S/));
+  const numbered = /^\d\.\s/.test(cur.text.slice(col));
+  const width = paneWidth(t);
+  const options = [];
+  let cursor = -1, last = "";
+  for (const b of block) {
+    const isCur = b === cur;
+    const start = isCur ? col : b.text.search(/\S/);
+    if (start !== col) continue; // a description line under an option, or the question above
+    const text = b.text.slice(col).trim();
+    // A long label wraps onto the next line at the same indent: in a numbered menu every option has
+    // its number; otherwise a line continues the previous one if its first word wouldn't have fit there
+    // (or it starts lowercase right after a nearly full line)
+    const wraps = options.length && !isCur && (numbered ? !/^\d\.\s/.test(text) : col + last.length + 1 + text.split(" ")[0].length > width - 4 || (/^[a-z]/.test(text) && col + last.length > (width - 4) * 0.75));
+    if (wraps) { options[options.length - 1] += " " + text; last = text; continue; }
+    if (isCur) cursor = options.length;
+    options.push(text.replace(/^\d\.\s+/, ""));
+    last = text;
+  }
+  if (!options.length || options.length > 9 || cursor < 0) return null;
+  const firstAt = block.find((b) => (b === cur ? col : b.text.search(/\S/)) === col)?.at ?? cur.at;
+  const above = lines.slice(Math.max(0, firstAt - 12), firstAt).map((l) => l.trim()).filter(Boolean);
+  return { question: safe(above.slice(-5).join("\n")), options: options.map((label, k) => ({ n: k + 1, label: safe(label) })), cursor };
+}
+// The user picked option n (and saw `label`): move the menu's cursor to it and press Enter, but only if
+// the same menu is still on screen, so a tap never lands on a different prompt.
+export function answerTerm(id, n, label) {
+  const t = terms.get(id);
+  if (!t || !t.alive) return { ok: false, error: "That session isn't running." };
+  t.capture = null;
+  const c = awaitingPermission(t) && choicesOf(t);
+  if (!c) return { ok: false, error: "That prompt is no longer on screen." };
+  const o = c.options.find((x) => x.n === Number(n));
+  if (!o || o.label !== label) return { ok: false, error: "The prompt changed. Look again before answering." };
+  const moves = o.n - 1 - c.cursor, key = moves > 0 ? "Down" : "Up";
+  if (t.tmux) tmux("send-keys", "-t", paneTarget(t.id), ...Array(Math.abs(moves)).fill(key), "Enter");
+  else t.proc.write((moves > 0 ? "\x1b[B" : "\x1b[A").repeat(Math.abs(moves)) + "\r");
+  t.capture = null;
+  return { ok: true, option: o, question: c.question };
+}
+
 const summary = (t) => {
   const traced = statusOf(t.id);
   // While AXA's approver is deciding, the prompt is already drawn on screen: not the user's turn yet
@@ -235,6 +365,12 @@ const summary = (t) => {
     awaiting_permission: waiting,
     // uncommitted work in its folder: { branch, files, untracked, added, removed, ahead, behind }
     git: gitOf(t),
+    // tokens its chat has used: { tokens, input, cached, output, budget?, over_budget }
+    usage: usageOf(t),
+    // the prompt on screen, when it's waiting: { question, options: [{ n, label }] }
+    choices: waiting ? choicesOf(t) : undefined,
+    // its own git worktree (open_session with worktree): { repo, path, branch }
+    worktree: meta.get(t.id)?.worktree || undefined,
     // relaunched (resuming its chat) after the machine restarted
     recovered: !!t.recovered,
   };
@@ -316,16 +452,47 @@ export const lastInputAt = (id) => terms.get(id)?.lastInput || 0;
 
 const isDir = (p) => { try { return statSync(p).isDirectory(); } catch { return false; } };
 
-// resume: continue a previous chat (an id from listChats) instead of starting a new one
-export function createTerm({ cwd, mode = "claude", cols = 100, rows = 30, resume }) {
-  if (resume !== undefined && !CHAT_ID.test(String(resume))) throw new Error("not a chat id");
-  const dir = expand(cwd || homedir());
-  if (!inHome(dir) || !isDir(dir)) throw new Error("cwd must be an existing folder in your home folder");
-  const id = randomUUID().slice(0, 8);
-  return summary(launch({ id, cwd: dir, mode, cols, rows, resume, created: Date.now() }));
+// ---------- worktrees: a session on its own branch and folder, so parallel work can't collide ----------
+// <repo>/.claude/worktrees/<name> on branch axa/<name> (the folder Claude Code itself uses), hidden from
+// the main checkout through .git/info/exclude. Inside the repo, so the folder trust you gave the repo applies.
+const gitSync = (cwd, ...args) => spawnSync("git", args, { cwd, encoding: "utf8", env: gitEnv(), timeout: 15_000 });
+function makeWorktree(dir, want) {
+  const name = (typeof want === "string" && want.trim() ? want : `goal-${new Date().toISOString().slice(5, 16).replace(/[-T:]/g, "")}`)
+    .toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40);
+  if (!name) throw new Error("worktree name must have letters or digits");
+  const top = gitSync(dir, "rev-parse", "--show-toplevel");
+  if (top.status !== 0) throw new Error(`${dir} isn't a git repository, so it can't have a worktree`);
+  const repo = top.stdout.trim();
+  if (!inHome(repo)) throw new Error("the repository must be in your home folder");
+  const path = join(repo, ".claude", "worktrees", name), branch = `axa/${name}`;
+  if (!isDir(path)) {
+    const hasBranch = gitSync(repo, "rev-parse", "--verify", "-q", `refs/heads/${branch}`).status === 0;
+    const r = hasBranch ? gitSync(repo, "worktree", "add", path, branch) : gitSync(repo, "worktree", "add", "-b", branch, path, "HEAD");
+    if (r.status !== 0) throw new Error(`couldn't create the worktree: ${(r.stderr || "").trim()}`);
+  }
+  // keep the worktree folder out of the main checkout's git status (local only, nothing committed)
+  try {
+    const common = gitSync(repo, "rev-parse", "--path-format=absolute", "--git-common-dir").stdout.trim();
+    const exclude = join(common, "info", "exclude");
+    const cur = existsSync(exclude) ? readFileSync(exclude, "utf8") : "";
+    if (!cur.split("\n").includes("/.claude/worktrees/")) { mkdirSync(dirname(exclude), { recursive: true }); writeFileSync(exclude, cur + (cur && !cur.endsWith("\n") ? "\n" : "") + "/.claude/worktrees/\n"); }
+  } catch {}
+  return { repo, path, branch, name: `${basename(repo)}:${name}` };
 }
 
-function launch({ id, cwd, mode, cols, rows, resume, created, recovered = false }) {
+// resume: continue a previous chat (an id from listChats) instead of starting a new one
+// worktree: true or a name: run the session in its own git worktree of that repo (see makeWorktree)
+export function createTerm({ cwd, mode = "claude", cols = 100, rows = 30, resume, worktree }) {
+  if (resume !== undefined && !CHAT_ID.test(String(resume))) throw new Error("not a chat id");
+  let dir = expand(cwd || homedir());
+  if (!inHome(dir) || !isDir(dir)) throw new Error("cwd must be an existing folder in your home folder");
+  let wt = null;
+  if (worktree && mode !== "axa") { wt = makeWorktree(dir, worktree); dir = wt.path; }
+  const id = randomUUID().slice(0, 8);
+  return summary(launch({ id, cwd: dir, mode, cols, rows, resume, created: Date.now(), name: wt?.name, worktree: wt ? { repo: wt.repo, path: wt.path, branch: wt.branch } : undefined }));
+}
+
+function launch({ id, cwd, mode, cols, rows, resume, created, recovered = false, name, worktree }) {
   const resumeArg = resume ? ` --resume ${resume}` : "";
   const shell = process.env.SHELL || "/bin/bash";
   // claude/axa: run Claude Code (traced), and drop to a normal shell if it exits
@@ -334,15 +501,17 @@ function launch({ id, cwd, mode, cols, rows, resume, created, recovered = false 
     : ["-l"];
   // AXA_TERMINAL_ID tags this session's events so the console knows its status
   const tag = { AXA_TERMINAL_ID: id, AXA_ROLE: mode === "axa" ? "commander" : "worker" };
-  const t = { id, name: mode === "axa" ? "AXA" : basename(cwd), cwd, mode, buf: "", alive: true, created, lastOutput: Date.now(), sockets: new Set(), recovered, tmux: backend === "tmux" };
+  const t = { id, name: mode === "axa" ? "AXA" : name || meta.get(id)?.name || basename(cwd), cwd, mode, buf: "", alive: true, created, lastOutput: Date.now(), sockets: new Set(), recovered, tmux: backend === "tmux" };
   if (t.tmux) {
     // tmux 3.2+ sets the session's env with -e; older versions get it through `env`
     const withEnv = tmuxVersion >= 3.02;
-    const cmd = "exec " + [...(withEnv ? [] : ["env", ...Object.entries(tag).map(([k, v]) => `${k}=${v}`)]), shell, ...args].map(shq).join(" ");
+    // `env -u TMUX`: tmux tells every pane where its server is; a session must not be able to reach
+    // AXA's tmux (and type into other sessions' prompts) through it
+    const cmd = "exec " + ["env", "-u", "TMUX", "-u", "TMUX_PANE", ...(withEnv ? [] : Object.entries(tag).map(([k, v]) => `${k}=${v}`)), shell, ...args].map(shq).join(" ");
     const envArgs = withEnv ? Object.entries(tag).flatMap(([k, v]) => ["-e", `${k}=${v}`]) : [];
     const r = tmux("new-session", "-d", "-s", tmuxName(id), "-c", cwd, "-x", String(cols), "-y", String(rows), ...envArgs, cmd);
     if (r.status !== 0) throw new Error(`couldn't start the session in tmux: ${(r.stderr || r.error?.message || "").trim()}`);
-    meta.set(id, { ...meta.get(id), id, name: t.name, cwd, mode, created, resume: resume || null, recovered });
+    meta.set(id, { ...meta.get(id), id, name: t.name, cwd, mode, created, resume: resume || null, recovered, ...(worktree ? { worktree } : {}) });
     saveMeta();
     attach(t, cols, rows);
   } else {
@@ -428,16 +597,21 @@ export function restoreTerms() {
   return restored;
 }
 
-export function killTerm(id) {
+// removeWorktree: also remove the session's worktree folder, only if it has nothing uncommitted (git
+// refuses otherwise). Its branch is always kept, so committed work is never lost.
+export function killTerm(id, { removeWorktree = false } = {}) {
   const t = terms.get(id);
   if (!t) return false;
+  const wt = meta.get(id)?.worktree;
   t.closing = true;
   if (t.tmux) { tmux("kill-session", "-t", `=${tmuxName(id)}`); meta.delete(id); saveMeta(); }
   try { t.proc?.kill(); } catch {}
   try { t.screen?.dispose(); } catch {}
   for (const ws of t.sockets) ws.close();
   terms.delete(id);
-  return true;
+  if (!removeWorktree || !wt) return { closed: true };
+  const r = gitSync(wt.repo, "worktree", "remove", wt.path);
+  return { closed: true, worktree_removed: r.status === 0, branch_kept: wt.branch, ...(r.status !== 0 ? { worktree_error: (r.stderr || "").trim() } : {}) };
 }
 
 // Console stopping: detach from tmux sessions (they keep running); plain PTY sessions end with it

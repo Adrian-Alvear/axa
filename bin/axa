@@ -51,9 +51,13 @@ function row(s, { cols = Infinity, num } = {}) {
   const head = `${num ? `${num} ` : ""}${utf8 ? g : ascii} ${word.padEnd(9)} `;
   const name = (s.mode === "axa" ? "AXA" : oneLine(s.name)).slice(0, 16).padEnd(17);
   const git = gitText(s.git);
-  const tail = cut(`${name}${git ? git.padEnd(26) + " " : ""}${what(s)}`, cols - head.length);
-  return paint(code, head) + tail;
+  const u = s.usage ? `${fmtTok(s.usage.tokens)} tok${s.usage.over_budget ? "!" : ""}`.padEnd(10) : "";
+  const tail = cut(`${name}${git ? git.padEnd(26) + " " : ""}${u}${what(s)}`, cols - head.length);
+  // a waiting session: the prompt and its options on the next line (answer it with `axa attach`)
+  const ask = s.choices ? `\n${" ".repeat(Math.min(head.length, 14))}${paint("33", "↳")} ${cut(oneLine(`${s.choices.question.split("\n").pop()} ${s.choices.options.map((o) => `${o.n}. ${o.label}`).join("  ")}`), cols - 16)}` : "";
+  return paint(code, head) + tail + ask;
 }
+const fmtTok = (n) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${Math.round(n / 1e3)}k` : String(n));
 const summaryLine = (list) => {
   const n = (st) => list.filter((s) => s.status === st).length;
   const needs = n("waiting") + n("stuck");
@@ -120,7 +124,7 @@ async function watch() {
     const lines = [
       `${paint("1;36", "AXA")}  ${summaryLine(list)}`,
       "",
-      ...(err ? [paint("31", cut(err, cols))] : list.length ? list.slice(0, rows - 4).map((s, i) => row(s, { cols, num: i < 9 ? i + 1 : " " })) : ["No sessions running. Start one with `axa` (the commander) or from the console."]),
+      ...(err ? [paint("31", cut(err, cols))] : list.length ? list.flatMap((s, i) => row(s, { cols, num: i < 9 ? i + 1 : " " }).split("\n")) : ["No sessions running. Start one with `axa` (the commander) or from the console."]),
     ];
     while (lines.length < rows - 1) lines.push("");
     lines.length = rows - 1;

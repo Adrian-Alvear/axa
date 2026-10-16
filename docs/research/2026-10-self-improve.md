@@ -157,11 +157,11 @@ zero-dependency Node and plain-HTML style. Risk means risk to the user's work or
 | 3 | **Terminal**: `axa status` urgency-sorted with NO_COLOR/TTY rules, `--json`, `--watch` live dashboard (bell on new needs-you, 1-9 attach), `axa attach <name>` with Ctrl-] detach | High | M | Low | **Built** |
 | 4 | **Visual review loop**: `scripts/shot.mjs` (desktop + phone screenshots, `--eval` to open dialogs) | Med | S | Low | **Built** |
 | 5 | Fix: xterm replies (`1;2c0;276;0c`) typed into sessions on every page load | Med | XS | Low | **Built** (bug found while verifying) |
-| 6 | Opt-in phone push when a session needs you (ntfy/Telegram URL in policy.json; name + status only, redacted) | Very high | S | Med (data leaves the machine; opt-in) | Next |
-| 7 | Answer a prompt from the list: show the numbered choices of a waiting session as buttons; the user's tap sends the key (never the commander) | High | M | Med (keystrokes into a permission dialog) | Next |
-| 8 | Stop-hook "done means verified" gate + `verify` skill | High | M | Med (can loop; needs bypass and retry cap) | Next |
-| 9 | Worktree per goal (opt-in on `open_session`), with cleanup and a "merge back" step | High | M | Med (changes where work lands) | Next |
-| 10 | Usage and cost per session from Claude's local logs, with a budget the commander enforces | Med | M | Low | Later |
+| 6 | Opt-in phone push when a session needs you (ntfy/Telegram URL in policy.json; name + status only, redacted) | Very high | S | Med (data leaves the machine; opt-in) | **On hold** (owner's call, 2026-10-16) |
+| 7 | Answer a prompt from the list: the waiting session's options (numbered or not) as buttons; tap to arm, tap to send; the server re-checks the same prompt is on screen; only the console page may call it (Sec-Fetch-Site), and project sessions are refused access to `~/.axa` and the console API | High | M | Med | **Built** |
+| 8 | Stop-hook "done means verified" gate (once per turn via `stop_hook_active`, docs exempt, switchable) + `verify` skill (`verify.mjs` PASS/FAIL table) | High | M | Med | **Built** |
+| 9 | Worktree per goal: opt-in `worktree` on `open_session` (`<repo>/.claude/worktrees/<name>`, branch `axa/<name>`), `remove_worktree` on close (refuses if dirty; branch kept); merge stays the user's call | High | M | Med | **Built** |
+| 10 | Usage per session from Claude's transcripts (helpers included, deduplicated), per-project token budget; the commander is told when one goes over | Med | M | Low | **Built** (tokens; no dollar cost, since prices change and subscriptions don't bill per token) |
 | 11 | Git snapshot (tag or `stash create`) before each `start_goal`, for one-step rollback | Med | S | Low | Later |
 | 12 | `axa wait <name>`, `axa log` (tail decisions), tmux status-line counter, shell completions | Med | S | Low | Later |
 | 13 | Feed filters (needs you / decisions / errors) and search | Med | S | Low | Later |
@@ -170,3 +170,6 @@ zero-dependency Node and plain-HTML style. Risk means risk to the user's work or
 | 16 | Spec-first goal template (requirements → design → tasks in SPEC.md) | Med | S | Low | Later |
 | 17 | One-line AI summary per session (a cheap `claude -p` per state change) | Med | S | Low (cost) | Later |
 | 18 | Container sandbox for overnight auto-approve runs | High | L | Med | Later |
+| 19 | Fix: tmux "window-size latest" leaves a dotted, mis-sized terminal in one browser after another client (phone, `axa attach`) was used last, until you type in it; resize the window on focus | Med | S | Low | Later (found while verifying) |
+| 20 | Auto-verify in the commander: after a supervisor "done", run `read_changes` + the verify skill in the session before reporting | Med | S | Low | Later |
+| 21 | Isolation beyond pattern checks: project sessions run as the user, so the console token and AXA's tmux are only kept out of reach by the policy and a clean env; a per-session OS user or container (see #18) would make it a hard boundary | Med | L | Low | Later (from review) |
