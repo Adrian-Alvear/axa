@@ -493,7 +493,7 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
     "  b          since you left: what happened while mission control was closed",
     "  h          run history: every instruction, its steps, approvals, checks and result",
     "  l          link: when this session finishes, send an instruction to another",
-    "  i          paste an image from your clipboard into the session (saved as a PNG, its path typed in)",
+    "  i          paste an image from your clipboard into the session (saved as a PNG, its path typed in); Ctrl+V does this too",
     "  y / x      answer the prompt in the yellow bar: its Yes… / No… option (the bar names them)",
     "  !          jump to whatever needs you",
     "  c          new session in a project     w  new session in its own git worktree",
@@ -1179,7 +1179,7 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
   }
 
   // ---------- paste an image from your clipboard into the focused session ----------
-  // Terminals keep Ctrl+V for text, so Ctrl-b i grabs the clipboard image itself, saves it as a PNG in the
+  // Ctrl-b i (or Ctrl+V, below) grabs the clipboard image itself, saves it as a PNG in the
   // session's project (.claude/axa-pastes, kept out of git status) and types its path into the session.
   function grabClipboardImage(file) {
     return new Promise((done) => {
@@ -1204,16 +1204,23 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
       });
     });
   }
-  async function pasteImage() {
-    const v = views[focus], s = sel();
-    if (!v?.proc || v.dead || !s) return flash("Pick a session first", ["The image is pasted into the session you're looking at."]);
+  // Where a pasted image goes: the session's project, .claude/axa-pastes (kept out of git status)
+  function pasteTarget(s) {
     const top = spawnSync("git", ["rev-parse", "--show-toplevel"], { cwd: s.cwd, encoding: "utf8" });
     const base = top.status === 0 ? top.stdout.trim() : s.cwd;
-    const dir = join(base, ".claude", "axa-pastes"), file = join(dir, `paste-${new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19)}.png`);
-    try { mkdirSync(dir, { recursive: true }); } catch (e) { return flash("Couldn't save the image", [e.message]); }
-    notice = { text: "reading the clipboard…", until: Date.now() + 15000, hint: " " }; schedule();
-    const ok = await grabClipboardImage(file);
-    if (!ok) { notice = null; return flash("No image on the clipboard", [ok === null ? "No clipboard tool was found on this machine." : `Copy an image first (on Windows: Win+Shift+S for a screenshot), then press ${keyName()} i.`]); }
+    return { top, base, dir: join(base, ".claude", "axa-pastes"), file: join(base, ".claude", "axa-pastes", `paste-${new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19)}.png`) };
+  }
+  async function pasteImage(grabbed) {
+    const v = views[focus], s = sel();
+    if (!v?.proc || v.dead || !s) return flash("Pick a session first", ["The image is pasted into the session you're looking at."]);
+    const { top, base, dir, file: target } = grabbed || pasteTarget(s);
+    let file = target;
+    if (!grabbed) {
+      try { mkdirSync(dir, { recursive: true }); } catch (e) { return flash("Couldn't save the image", [e.message]); }
+      notice = { text: "reading the clipboard…", until: Date.now() + 15000, hint: " " }; schedule();
+      const ok = await grabClipboardImage(file);
+      if (!ok) { notice = null; return flash("No image on the clipboard", [ok === null ? "No clipboard tool was found on this machine." : `Copy an image first (on Windows: Win+Shift+S for a screenshot), then press Ctrl+V or ${keyName()} i.`]); }
+    }
     // keep pasted images out of the project's git status (local only, nothing committed)
     if (top.status === 0) try {
       const common = spawnSync("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd: base, encoding: "utf8" }).stdout.trim(), ex = join(common, "info", "exclude");
@@ -1222,6 +1229,73 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
     } catch {}
     v.proc.write(`${file} `); // Claude Code reads image files by path
     notice = { text: "image pasted", until: Date.now() + 3000, hint: ` ${file.replace(homedir(), "~")}` }; schedule();
+  }
+
+  // ---------- Ctrl+V: paste an image if the clipboard has one, else its text ----------
+  // Needs the terminal to pass Ctrl+V through (Windows Terminal binds it to its own text paste unless
+  // unbound; its Ctrl+Shift+V still pastes text the usual way). One clipboard read decides: an image is
+  // saved and its path typed in (like Ctrl-b i); text goes in as a bracketed paste. Typing during the
+  // read is held back and sent after it, so nothing lands out of order.
+  function readClipboard(file) {
+    return new Promise((done) => {
+      const has = (c) => spawnSync("which", [c], { stdio: "ignore" }).status === 0;
+      if (process.env.AXA_PASTE_IMAGE_FROM) { try { copyFileSync(process.env.AXA_PASTE_IMAGE_FROM, file); return done({ image: true }); } catch {} }
+      if (process.env.AXA_PASTE_TEXT != null) return done({ text: process.env.AXA_PASTE_TEXT }); // for tests
+      let cmd, args;
+      if (has("powershell.exe") && has("wslpath")) {
+        const win = spawnSync("wslpath", ["-w", file], { encoding: "utf8" }).stdout.trim().replace(/'/g, "''");
+        cmd = "powershell.exe"; args = ["-NoProfile", "-STA", "-Command", `[Console]::OutputEncoding = [Text.Encoding]::UTF8; Add-Type -AssemblyName System.Windows.Forms; Add-Type -AssemblyName System.Drawing; $i = [System.Windows.Forms.Clipboard]::GetImage(); if ($i) { $i.Save('${win}', [System.Drawing.Imaging.ImageFormat]::Png); [Console]::Out.Write('IMG') } else { [Console]::Out.Write('TXT' + [System.Windows.Forms.Clipboard]::GetText()) }`];
+      } else {
+        // elsewhere: try the image tools first, then the text ones
+        return grabClipboardImage(file).then((ok) => {
+          if (ok) return done({ image: true });
+          const t = process.platform === "darwin" ? ["pbpaste", []] : has("wl-paste") ? ["wl-paste", ["-n"]] : has("xclip") ? ["xclip", ["-selection", "clipboard", "-o"]] : null;
+          if (!t) return done(null);
+          const r = spawnSync(t[0], t[1], { encoding: "utf8", timeout: 5000 });
+          done(r.status === 0 ? { text: r.stdout } : null);
+        });
+      }
+      const c = spawn(cmd, args, { stdio: ["ignore", "pipe", "ignore"] }), chunks = [];
+      c.stdout.on("data", (d) => chunks.push(d));
+      const timer = setTimeout(() => { try { c.kill(); } catch {} done(null); }, 15000);
+      c.on("error", () => { clearTimeout(timer); done(null); });
+      c.on("close", () => {
+        clearTimeout(timer);
+        const outp = Buffer.concat(chunks).toString("utf8");
+        if (outp.startsWith("IMG")) return done({ image: true });
+        if (outp.startsWith("TXT")) return done({ text: outp.slice(3).replace(/\r\n/g, "\n") });
+        done(null);
+      });
+    });
+  }
+  let pasting = null; // the Ctrl+V in progress; input typed meanwhile waits for it
+  const held = [];
+  function ctrlV() {
+    const v = views[focus], s = sel();
+    if (!v?.proc || v.dead || !s) return;
+    const t = pasteTarget(s);
+    try { mkdirSync(t.dir, { recursive: true }); } catch {}
+    notice = { text: "reading the clipboard…", until: Date.now() + 15000, hint: " " }; schedule();
+    pasting = readClipboard(t.file).then(async (r) => {
+      notice = null;
+      if (r?.image) await pasteImage(t);
+      else if (r?.text) { if (!v.dead) v.proc.write(`${ESC}[200~${r.text.replace(/\x1b\[20[01]~/g, "")}${ESC}[201~`); }
+      else flash("Nothing to paste", ["The clipboard is empty, or no clipboard tool was found."]);
+      schedule();
+    }).finally(() => {
+      pasting = null;
+      const rest = held.splice(0).join("");
+      if (rest && !v.dead) send(v, rest);
+    });
+  }
+  // Text for the focused session; Ctrl+V (0x16) is handled above instead of being passed on
+  function send(v, chunk) {
+    if (pasting) return held.push(chunk);
+    const k = chunk.indexOf("\x16");
+    if (k < 0) return v.proc.write(chunk);
+    if (k) v.proc.write(chunk.slice(0, k));
+    ctrlV();
+    if (chunk.length > k + 1) held.push(chunk.slice(k + 1));
   }
 
   // ---------- an open window notices when AXA itself was updated ----------
@@ -1291,7 +1365,7 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
       const v = views[focus];
       if (chunk && selection && !selection.active) { selection = null; schedule(); } // typing clears a finished selection
       if (chunk && mapMode) keysOf(chunk).forEach(mapKey); // on the map, keys move around it
-      else if (chunk && v?.proc && !v.dead) v.proc.write(chunk);
+      else if (chunk && v?.proc && !v.dead) send(v, chunk);
       if (i < 0) break;
       prefix = true; d = d.slice(i + 1); schedule();
     }
