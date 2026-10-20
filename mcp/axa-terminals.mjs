@@ -53,9 +53,11 @@ const TOOLS = [
       "List every session open in the AXA console (usually one Claude Code session per project) with its status: starting, ready, working (and what it's doing), done (with its last report), waiting (needs the user's approval), or exited. Also lists the known projects you can open.",
     inputSchema: { type: "object", properties: {} },
     run: async () => {
-      const [sessions, projects] = await Promise.all([api("/api/terms"), api("/api/projects")]);
+      const [sessions, projects, chains] = await Promise.all([api("/api/terms"), api("/api/projects"), api("/api/chains").catch(() => [])]);
       const open = sessions.length ? sessions.map(describe).join("\n") : "No sessions open.";
-      return `${open}\n\nProjects: ${projects.map((p) => `${p.name} (${p.path})`).join(", ") || "none found"}${sessions.length ? `\n\n${UNTRUSTED_NOTE}` : ""}`;
+      const active = chains.filter((c) => !c.fired && !c.failed);
+      const links = active.length ? `\n\nLinks (fire when the first session finishes): ${active.map((c) => `[${c.id}] ${c.from_name} → ${c.to_name}`).join("; ")}` : "";
+      return `${open}${links}\n\nProjects: ${projects.map((p) => `${p.name} (${p.path})`).join(", ") || "none found"}${sessions.length ? `\n\n${UNTRUSTED_NOTE}` : ""}`;
     },
   },
   {
@@ -93,6 +95,19 @@ const TOOLS = [
       const extra = s.untracked_total ? `\nNew files (${s.untracked_total}): ${s.untracked.join(", ")}` : "";
       return `${describe(s)}\n---\n${untrusted((s.diff || "(no changes to tracked files)") + extra + (s.truncated ? "\n(diff cut: too long)" : ""))}\n\n${UNTRUSTED_NOTE}`;
     },
+  },
+  {
+    name: "link_sessions",
+    description:
+      "Chain two sessions: when session `from` next finishes its turn (verified, settled), AXA sends `instruction` to session `to` (once, when `to` is idle). Use it for handoffs the user asked for, e.g. \"when launches finishes, have feed rebase on it and re-run its tests\". The instruction must be complete and self-contained. Shows on the map in the console and the terminal UI.",
+    inputSchema: { type: "object", properties: { from: { type: "string", description: "Session id that finishes first" }, to: { type: "string", description: "Session id that gets the next instruction" }, instruction: { type: "string" } }, required: ["from", "to", "instruction"] },
+    run: async ({ from, to, instruction }) => { const c = await api("/api/chains", { method: "POST", body: { from, to, text: instruction } }); return `Linked [${c.id}]: when ${c.from_name} finishes, ${c.to_name} gets the instruction.`; },
+  },
+  {
+    name: "unlink_sessions",
+    description: "Remove a link made with link_sessions (its id is shown in list_sessions).",
+    inputSchema: { type: "object", properties: { id: { type: "string" } }, required: ["id"] },
+    run: async ({ id }) => api(`/api/chains/${encodeURIComponent(id)}`, { method: "DELETE" }).then(() => `removed link ${id}`),
   },
   {
     name: "start_goal",

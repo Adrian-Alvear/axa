@@ -94,19 +94,84 @@ axa chat     # the commander as a plain Claude Code session (what `axa` used to 
 `axa` opens a full-screen mission control, like a terminal multiplexer for agents, with AXA's brain
 built in:
 
-- **Sidebar:** AXA (the commander) at the top, then every session sorted by what needs you. Each
-  shows a status symbol and word, what it's doing or asking, its branch and changes, and tokens used.
+- **Sidebar, a live diagram organized like herdr:** AXA (the commander) is the root at the top, with
+  its own helper agents. Below it come **workspaces**, one per project (a worktree session belongs to
+  its repo).
+  - **Workspace state** rolls up from its sessions: needs you > working > done > idle, so you see which
+    project needs attention.
+  - **Each session** branches off its workspace, with a dot running along the branch while it works.
+    It shows its status, what it's doing or asking, its branch and changes, tokens used, and its links.
+  - **Helper agents** are grouped by the work they do (`● builder ×2 · ✓ reviewer`).
+  - **Done stays marked (•)** until you've looked at it; then it shows as idle.
+  - Click any row to open it. Prefer a compact list? Settings (`Ctrl-b ,`) → Sidebar style → list.
+- **Tabs:** the row above the session shows its workspace and the workspace's sessions as tabs. Click
+  one, or press `Ctrl-b n` / `Ctrl-b p`. `Ctrl-b r` gives a session your own name (like
+  "reviewer").
 - **Live session:** the selected session runs right there, fully interactive. Type into it as usual,
   and flip between sessions instantly. If no commander is running, one starts, so you land in AXA.
 - **Answer from anywhere:** when another session needs you, a yellow bar shows its question.
   `Ctrl-b y` / `Ctrl-b x` answer with its Yes or No option (the bar names them). `Ctrl-b !` jumps
   to it.
+- **Palette:** `Ctrl-b :` opens a searchable list of every action and session ("changes in feed",
+  "goal for launches", "answer n2s: Yes", "theme: hud"…). Type a few letters, then press Enter.
+- **Browse with previews:** `Ctrl-b s` lists every session next to a live, read-only preview of the
+  highlighted one's screen. Enter shows it, `%` opens it in a split, and `d`/`g` show its diff or give
+  it a goal.
+- **Split and zoom:** `Ctrl-b %` puts a second live session side by side (stacked on narrow
+  windows), and `Tab` switches which one you're typing into. `Ctrl-b z` hides the sidebar.
+- **Search every session:** `Ctrl-b /` searches what's on each session's screen and its recent
+  history, highlighting matches. Enter jumps to that session.
+- **Activity at a glance:** each session's name row ends with a sparkline of its activity over the
+  last 30 minutes. A strip under the panes shows the latest events across sessions in plain words:
+  "AXA approved: …", "policy refused: …", "verify gate: sent back to check its work", "finished: …",
+  "you answered: …". `Ctrl-b f` shows or hides the strip.
+- **Floating panels:** help, the palette, diffs, checks, settings, search and browse open as panels
+  over the live sessions, which keep running underneath.
+- **Map (`Ctrl-b m`):** AXA at the center, every session branching off it, each session's helper
+  agents hanging below it, and the links between sessions. A dot runs along the branch of each session
+  that's working, and each helper shows its tool calls as leaves (`⟶ Read ×3 · Edit ×2`), with the
+  one it just used lighting up.
+  - **Moving around:** ↑/↓ moves through sessions *and* helpers. Enter opens a session, or a helper's
+    details; Space or → shows details.
+  - **On a session:** `y`/`x` answer its prompt, `d` diff, `g` goal, `l` link. Esc goes back.
+- **Agents and work (`Ctrl-b a`, or click a helper row in the sidebar):** a live panel for the
+  session. It shows what it's doing now, its git changes and tokens, its helper agents (each with call
+  count, time and tools), its own tool calls with recent files and commands, its links, and its last
+  report. Pick a helper (↑/↓, Enter) to see the instruction it was given, every tool it has called,
+  updating as it works, failures, and its report, as in the web console.
+- **Since you left (`Ctrl-b b`):** when you open `axa`, a briefing shows what happened while mission
+  control was closed. It lists what's waiting on you, and for each session the runs that finished,
+  verify-gate bounces, approvals, things that asked you, and its latest report.
+- **Run history (`Ctrl-b h`):** every instruction a session got, newest first, with how long it took.
+  Enter shows the details: steps, helper agents, what AXA approved or declined, policy refusals,
+  verify-gate bounces, your answers, and the result.
+- **Links (`Ctrl-b l`):** "when launches finishes, tell feed: rebase on it and re-run the tests". AXA
+  sends the instruction once, after the first session finishes (and its checks settle) and when the
+  second is idle. The commander can make links too (`link_sessions`), so you can just ask it for a
+  handoff. Links show on the map, and you can remove them from the palette.
 - **Actions:** press **Ctrl-b**, then `j`/`k` (or `0`–`9`) to switch sessions, `c` new session,
   `w` new session in its own worktree, `g` give a goal, `d` its diff, `v` run the project's
   checks, `o` the web console, `X` close it, `q` leave (sessions keep running), `?` for all keys.
   `Ctrl-b Ctrl-b` sends a literal Ctrl-b.
-- **Mouse:** click a session to select it. Scrolling and clicks inside the session go to it; hold Shift
-  to select text with your terminal.
+- **Settings and themes:** `Ctrl-b ,` changes them live, and they're saved in `~/.axa/ui.json`.
+  - **Theme:** `terminal` (default: your terminal's own colors), `hud` (the console's cyan look),
+    `light`, `contrast` and `mono`. `NO_COLOR` always means no colors.
+  - **Prefix key:** Ctrl-b, Ctrl-a, Ctrl-g or Ctrl-\.
+  - **Sidebar:** left or right, and its width.
+  - **Bell** on or off, and whether new sessions start as Claude or a shell.
+- **Mouse:** click a session to select it; scrolling inside a session goes to it.
+- **Copy on select:** drag across any text in a session and it's copied when you let go (a ✓ copied
+  notice confirms it). Double-click copies a word.
+  - It uses your terminal's clipboard code (OSC 52: Windows Terminal, iTerm2, kitty, WezTerm…), plus
+    the system copy tool where there is one (`clip.exe` on WSL, `pbcopy`, `wl-copy`, `xclip`).
+  - Hold Shift while dragging to use your terminal's own selection instead.
+  - Turn it off in settings (`Ctrl-b ,`), and drags go to the session again.
+- **Paste an image (`Ctrl-b i`):** copy an image (on Windows: Win+Shift+S for a screenshot), then press
+  `Ctrl-b i`. AXA takes it from your clipboard (on WSL through Windows PowerShell; also macOS and
+  Linux). It saves it as a PNG in the project's `.claude/axa-pastes/`, which is kept out of git status,
+  and types its path into the session, where Claude Code can read it.
+- **Updates:** if AXA's code changes while mission control is open, the status bar says so. Press
+  `Ctrl-b q`, then run `axa` again; your sessions keep running.
 - It rings the bell and puts ⚠ in the window title when something starts needing you.
 
 It shares one backend with the web console, so the terminal, the browser and your phone always show
