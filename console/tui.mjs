@@ -20,7 +20,7 @@ const ESC = "\x1b";
 // ---------- themes: roles -> SGR codes ----------
 // "terminal" uses the 16 basic colors, so your terminal's own theme applies (the default)
 const THEMES = {
-  terminal: { title: "1;36", accent: "36", wait: "1;33", waitSoft: "33", stuck: "31", work: "36", done: "32", idle: "0", off: "2", dim: "2", sel: "7", rule: "2", tag: "1;7", add: "32", del: "31", hunk: "36" },
+  terminal: { title: "1;36", accent: "36", wait: "1;33", waitSoft: "33", stuck: "31", work: "36", done: "32", idle: "0", off: "90", dim: "90", sel: "7", rule: "90", tag: "1;7", add: "32", del: "31", hunk: "36" },
   hud: { title: "1;38;2;79;216;255", accent: "38;2;79;216;255", wait: "1;38;2;255;181;71", waitSoft: "38;2;255;181;71", stuck: "38;2;255;138;92", work: "38;2;79;216;255", done: "38;2;94;242;194", idle: "38;2;143;179;196", off: "38;2;108;138;153", dim: "38;2;108;138;153", sel: "48;2;14;48;66;38;2;233;251;255", rule: "38;2;34;78;98", tag: "1;48;2;79;216;255;38;2;3;16;24", add: "38;2;94;242;194", del: "38;2;255;84;104", hunk: "38;2;79;216;255" },
   light: { title: "1;38;5;25", accent: "38;5;25", wait: "1;38;5;130", waitSoft: "38;5;130", stuck: "38;5;160", work: "38;5;25", done: "38;5;28", idle: "0", off: "38;5;245", dim: "38;5;242", sel: "48;5;153;38;5;16", rule: "38;5;250", tag: "1;7", add: "38;5;28", del: "38;5;160", hunk: "38;5;25" },
   contrast: { title: "1;97", accent: "1;96", wait: "1;93", waitSoft: "93", stuck: "1;91", work: "1;96", done: "1;92", idle: "97", off: "37", dim: "37", sel: "1;7", rule: "97", tag: "1;7", add: "1;92", del: "1;91", hunk: "1;96" },
@@ -28,7 +28,7 @@ const THEMES = {
 };
 const PREFIXES = { "C-b": 0x02, "C-a": 0x01, "C-g": 0x07, "C-\\": 0x1c };
 const DEFAULTS = { theme: "terminal", prefix: "C-b", sidebar: "left", sidebarWidth: 34, bell: true, newSession: "claude", feed: true, copyOnSelect: true, sidebarStyle: "tree" };
-const FEED_ROWS = 5; // the activity strip: a rule plus the latest 4 events
+const FEED_ROWS = 4; // the activity strip: a rule plus the latest 3 events
 const SPARK = "▁▂▃▄▅▆▇█", SPARK_BUCKETS = 10, SPARK_MIN = 3; // activity over the last 30 minutes, 3 minutes per bar
 
 export async function runTui({ port, readToken, openUrl, root, home }) {
@@ -136,7 +136,8 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
     else if (mainW >= 100) { const a = Math.floor((mainW - 1) / 2); panes.push({ x: mainX, y: tabRow, w: a, h: ph }, { x: mainX + a + 1, y: tabRow, w: mainW - a - 1, h: ph }); }
     else { const a = Math.floor(ph / 2); panes.push({ x: mainX, y: tabRow, w: mainW, h: a }, { x: mainX, y: tabRow + a, w: mainW, h: ph - a }); }
     // each pane: a header row, then the session's rows
-    for (const p of panes) { p.cols = Math.max(10, p.w); p.rows = Math.max(3, p.h - 1); }
+    // a header row per pane only when there are two; one pane is described by the tab row
+    for (const p of panes) { p.hdr = panes.length > 1 ? 1 : 0; p.cols = Math.max(10, p.w); p.rows = Math.max(3, p.h - p.hdr); }
     return { side, sideX, mainX, mainW, mainH, panes, alert, alertRows, feedRows };
   }
 
@@ -234,8 +235,9 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
   let tabHits = []; // [{ x0, x1, id }] in screen columns (1-based)
   function workspaceOf(id) { return workspaces().find((w) => w.sessions.some((s) => s.id === id)); }
   function tabStrip(L) {
-    const cur = sel(), ws = cur && cur.mode !== "axa" ? workspaceOf(cur.id) : null, tabs = ws ? ws.sessions : cur ? [cur] : [];
-    const label = ws ? ` ▣ ${ws.name} ` : " ◆ AXA ";
+    // a project with several sessions shows them as tabs; one session (or AXA) is just its name
+    const cur = sel(), ws = cur && cur.mode !== "axa" ? workspaceOf(cur.id) : null, tabs = ws && ws.sessions.length > 1 ? ws.sessions : [];
+    const label = ws ? ` ▣ ${ws.name}${tabs.length || shortName(cur) === ws.name ? "" : ` · ${shortName(cur)}`} ` : cur ? " ◆ AXA commander " : " ◆ AXA ";
     let o = sgr("title", label), n = width(label);
     tabHits = [];
     for (const s of tabs) {
@@ -246,7 +248,15 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
       n += width(t) + 1;
       tabHits.push({ x0, x1: x0 + width(t) - 1, id: s.id });
     }
-    return o + sgr("rule", "│") + " ".repeat(Math.max(0, L.mainW - n - 1));
+    o += sgr("rule", "│"); n += 1;
+    const s = sel();
+    if (L.panes.length === 1 && s) {
+      const [, word, role] = look(s);
+      const bits = [gitText(s.git), s.usage?.tokens ? `${fmtTok(s.usage.tokens)} tok${s.usage.budget ? ` of ${fmtTok(s.usage.budget)}` : ""}` : "", s.worktree ? "worktree" : ""].filter(Boolean);
+      const right = cut(`${word}${bits.length ? " · " + bits.join(" · ") : ""} `, Math.max(0, L.mainW - n - 2));
+      return o + " ".repeat(Math.max(1, L.mainW - n - width(right))) + sgr(role === "off" ? "dim" : role, word) + sgr("dim", right.slice(word.length));
+    }
+    return o + " ".repeat(Math.max(0, L.mainW - n));
   }
   function paneHeader(v, p, isFocus) {
     const s = list.find((x) => x.id === v?.id);
@@ -265,8 +275,11 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
   function treeRows(L, rows, hits) {
     const w = L.side, frame = Math.floor(Date.now() / 250), ss = sessions(), axa = list.find((s) => s.mode === "axa");
     const line = (segs, id, isSel, sp = "") => {
-      const spW = sp ? SPARK_BUCKETS + 1 : 0, body = renderSegs(isSel ? segs.map(([t]) => [t, ""]) : segs, w - spW);
-      rows.push((isSel ? sgr("sel", body + (sp ? " " + sp : "")) : body + (sp ? " " + sgr("work", sp) : "")));
+      const spW = sp ? SPARK_BUCKETS + 1 : 0;
+      // the selected session: a bar at the left edge, its text kept in its own colors
+      const marked = isSel && segs[0]?.[0]?.startsWith(" ") ? [["▌", "accent"], [segs[0][0].slice(1), segs[0][1]], ...segs.slice(1)] : segs;
+      const body = renderSegs(marked, w - spW);
+      rows.push(body + (sp ? " " + sgr("work", sp) : ""));
       hits[rows.length - 1] = id;
     };
     const recent = (id) => (helpers.get(id) || []).filter((h) => h.status === "running" || Date.now() - h.ts < 15 * 60_000);
@@ -274,7 +287,7 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
     if (axa) {
       const [g, word, role] = look(axa), isSel = axa.id === selId(), down = wss.length ? "│" : " ";
       line([[" ◆ ", "title"], ["AXA", "title"], [`  0 ${g} ${word}`, role]], axa.id, isSel, spark(axa.id));
-      line([[` ${down}  `, "rule"], [what(axa), "dim"]], axa.id, isSel);
+      line([[` ${down}  `, "rule"], [axa.status === "done" ? "ready for your next message" : what(axa), "dim"]], axa.id, isSel);
       // AXA's own helper agents, grouped by the work they do (like the web map's orbit)
       const hg = helperGroups(recent(axa.id));
       if (hg.length) line([[` ${down}  └ `, "rule"], ...hg.flatMap(([t, r], k) => [[k ? " · " : "", "dim"], [t, r]]), [hg.length === 1 && hg[0][2] ? `: ${hg[0][2]}` : "", "dim"]], `agents:${axa.id}`, false);
@@ -282,8 +295,22 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
     wss.forEach((ws, wi) => {
       const lastWs = wi === wss.length - 1, wstem = lastWs ? " " : "│", [wg, wword, wrole] = ws.state;
       line([[" │", "rule"]], null, false);
+      if (ws.sessions.length === 1) {
+        // one session: the project row is the session
+        const s = ws.sessions[0], [g0, word, role0] = look(s), isSel = s.id === selId(), fresh = unseenDone(s), role = s.status === "done" && !fresh ? "off" : role0;
+        const p = frame % 3, branch = s.status === "working" ? [0, 1, 2].map((k) => (k === p ? "●" : "─")).join("") : "──";
+        line([[` ${lastWs ? "└" : "├"}`, "rule"], [branch, s.status === "working" ? "work" : s.status === "waiting" ? "wait" : "rule"], [` ${nums.get(s.id)} ${g0} `, role], [shortName(s), s.status === "waiting" ? "wait" : "title"], [fresh ? " •" : "", "done"]], s.id, isSel, spark(s.id));
+        const pre = ` ${wstem}     `;
+        const subText = s.status === "waiting" && s.choices ? question(s.choices) : s.mode === "shell" && word === "shell" ? what(s) : `${word} · ${what(s)}`;
+        line([[pre, "rule"], [subText, s.status === "waiting" ? "waitSoft" : "dim"]], s.id, isSel);
+        const meta = [gitText(s.git), s.usage?.tokens ? `${fmtTok(s.usage.tokens)} tok${s.usage.over_budget ? "!" : ""}` : ""].filter(Boolean).join(" · ");
+        if (meta) line([[pre, "rule"], [meta, "dim"]], s.id, isSel);
+        const hg = helperGroups(recent(s.id));
+        if (hg.length) line([[`${pre}└ `, "rule"], ...hg.flatMap(([t, r], k) => [[k ? " · " : "", "dim"], [t, r]])], `agents:${s.id}`, false);
+        return;
+      }
       // the workspace (project): its state rolls up from its sessions
-      line([[` ${lastWs ? "└" : "├"}─ `, "rule"], ["▣ ", "accent"], [ws.name, "title"], [`  ${wg} ${wword}`, wrole], [ws.sessions.length > 1 ? ` · ${ws.sessions.length} sessions` : "", "dim"]], ws.sessions[0].id, false);
+      line([[` ${lastWs ? "└" : "├"}─ `, "rule"], ["▣ ", "accent"], [ws.name, "title"], [`  ${wg} ${wword}`, wrole], [` · ${ws.sessions.length} sessions`, "dim"]], ws.sessions[0].id, false);
       ws.sessions.forEach((s, i) => {
         const last = i === ws.sessions.length - 1, stem = last ? " " : "│", [g0, word, role0] = look(s), isSel = s.id === selId();
         // done but already seen: shown as idle (dim); not yet seen: bright, with a dot
@@ -328,12 +355,8 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
       }
     }
     if (!list.some((s) => s.mode !== "axa")) rows.push(sgr("dim", pad("   no sessions yet: Ctrl-b c", w)));
-    while (rows.length < H - 3) rows.push(" ".repeat(w));
-    rows.length = H - 3;
-    const needs = n("waiting") + n("stuck");
-    rows.push(sgr("rule", "─".repeat(w)));
-    const needText = needs ? `⚠ ${needs} need${needs > 1 ? "" : "s"} you` : "nothing needs you", rest = n("working") ? ` · ${n("working")} working` : "";
-    rows.push(" " + sgr(needs ? "wait" : "dim", needText) + sgr("dim", pad(rest, Math.max(0, w - 1 - width(needText)))));
+    while (rows.length < H - 1) rows.push(" ".repeat(w));
+    rows.length = H - 1;
     return rows;
   }
   function alertRows(L) {
@@ -350,10 +373,13 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
     const tag = prefix ? " PREFIX " : "";
     const keys = prefix
       ? " : palette · m map · b brief · h history · l link · i image · s browse · / search · j/k move · 0-9 pick · % split · Tab pane · z zoom · f feed · y/x answer · ! go · c new · w worktree · g goal · d diff · v verify · , settings · q quit · ? help"
-      : ` ${k} : palette · ${k} s browse · ${k} ? help · ${k} q leave (sessions keep running)`;
+      : ` ${k} : palette · ${k} s browse · ${k} ? help · ${k} q leave`;
     const clock = new Date().toLocaleTimeString([], { hour12: false });
-    const room = Math.max(0, W - 10 - tag.length);
-    return (tag ? sgr("tag", tag) : "") + sgr("dim", pad(keys, room)) + sgr("dim", pad(clock, 10));
+    // left: does anything need you; then the keys; the clock at the right end
+    const cnt = (st) => list.filter((s) => s.mode !== "axa" && s.status === st).length, needs = cnt("waiting") + cnt("stuck"), busy = cnt("working");
+    const state = ` ${needs ? `⚠ ${needs} need${needs > 1 ? "" : "s"} you` : "✓ nothing needs you"}${busy ? ` · ${busy} working` : ""} `;
+    const room = Math.max(0, W - 11 - tag.length - width(state) - 1);
+    return sgr(needs ? "wait" : "done", state) + sgr("rule", "│") + (tag ? sgr("tag", tag) : "") + sgr("dim", pad(keys, room)) + sgr("dim", pad(clock, 9) + " ");
   }
   function draw() {
     if (quitting) return;
@@ -377,11 +403,11 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
       o += `${ESC}[1;${L.mainX + 1}H${tabStrip(L)}`;
       L.panes.forEach((p, i) => {
         const v = views[i];
-        o += `${ESC}[${p.y + 1};${p.x + 1}H${paneHeader(v, p, i === focus)}`;
+        if (p.hdr) o += `${ESC}[${p.y + 1};${p.x + 1}H${paneHeader(v, p, i === focus)}`;
         const rows = viewRows(v, p, i);
         for (let y = 0; y < p.rows; y++) {
           if (v && v.lastRows[y] === rows[y]) continue;
-          o += `${ESC}[${p.y + y + 2};${p.x + 1}H${rows[y]}`;
+          o += `${ESC}[${p.y + y + 1 + p.hdr};${p.x + 1}H${rows[y]}`;
           if (v) v.lastRows[y] = rows[y];
         }
       });
@@ -405,7 +431,7 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
     const v = views[focus], p = L.panes[focus];
     if (!overlay && !mapMode && v?.term && !v.dead && v.cursorOn && p) {
       const b = v.term.buffer.active;
-      o += `${ESC}[${p.y + b.cursorY + 2};${p.x + b.cursorX + 1}H${ESC}[?25h`;
+      o += `${ESC}[${p.y + b.cursorY + 1 + p.hdr};${p.x + b.cursorX + 1}H${ESC}[?25h`;
     } else if (overlay?.cursor) o += `${ESC}[${overlay.cursor[0]};${overlay.cursor[1]}H${ESC}[?25h`;
     // the window title says whether anything needs you
     const title = list.some((s) => s.status === "waiting" || s.status === "stuck") ? "⚠ AXA" : "AXA";
@@ -1326,7 +1352,7 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
     const v = views[i], p = L.panes[i];
     const left = (b & 3) === 0 && !(b & 64), motion = (b & 32) !== 0;
     if (cfg.copyOnSelect && left && v?.term && !v.dead) {
-      const cx = Math.max(0, Math.min(p.cols - 1, x - p.x - 1)), cy = Math.max(0, Math.min(p.rows - 1, y - p.y - 2));
+      const cx = Math.max(0, Math.min(p.cols - 1, x - p.x - 1)), cy = Math.max(0, Math.min(p.rows - 1, y - p.y - 1 - p.hdr));
       if (!up && !motion) { // press
         if (i !== focus) focus = i;
         const dbl = Date.now() - lastClick.at < 400 && lastClick.x === cx && lastClick.y === cy;
@@ -1343,7 +1369,7 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
     }
     if (i !== focus && !up && b === 0) { focus = i; schedule(); }
     // inside the session: forward when its program asked for the mouse (tmux does: scroll, click)
-    if (v?.term && !v.dead && y >= p.y + 2 && v.term.modes.mouseTrackingMode !== "none") v.proc.write(`\x1b[<${b};${x - p.x};${y - p.y - 1}${up ? "m" : "M"}`);
+    if (v?.term && !v.dead && y >= p.y + 1 + p.hdr && v.term.modes.mouseTrackingMode !== "none") v.proc.write(`\x1b[<${b};${x - p.x};${y - p.y - p.hdr}${up ? "m" : "M"}`);
   }
   process.stdin.on("data", (buf) => {
     let d = decoder.write(buf);
