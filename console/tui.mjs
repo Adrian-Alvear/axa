@@ -27,8 +27,7 @@ const THEMES = {
   mono: { title: "1", accent: "1", wait: "1;4", waitSoft: "1", stuck: "1", work: "0", done: "0", idle: "0", off: "2", dim: "2", sel: "7", rule: "2", tag: "7", add: "1", del: "2", hunk: "1" },
 };
 const PREFIXES = { "C-b": 0x02, "C-a": 0x01, "C-g": 0x07, "C-\\": 0x1c };
-const DEFAULTS = { theme: "terminal", prefix: "C-b", sidebar: "left", sidebarWidth: 34, bell: true, newSession: "claude", feed: true, copyOnSelect: true, sidebarStyle: "tree" };
-const FEED_ROWS = 4; // the activity strip: a rule plus the latest 3 events
+const DEFAULTS = { theme: "terminal", prefix: "C-b", sidebar: "left", sidebarWidth: 34, bell: true, newSession: "claude", copyOnSelect: true, sidebarStyle: "tree" };
 const SPARK = "▁▂▃▄▅▆▇█", SPARK_BUCKETS = 10, SPARK_MIN = 3; // activity over the last 30 minutes, 3 minutes per bar
 
 export async function runTui({ port, readToken, openUrl, root, home }) {
@@ -97,6 +96,7 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
   let mapMode = false, mapSel = 0, mapNodes = [], mapWant = null, chainsList = []; // the map view, its selected node (session or helper), the links between sessions
   const briefSince = cfg.lastSeenAt || 0; // when you last had mission control open (for "since you left")
   let W = out.columns || 120, H = out.rows || 36;
+  let toastShown = false, toastTimer = null; // the copied/pasted popup, and the repaint when it ends
   const views = []; // live panes: { id, proc, term, cursorOn, cols, rows, dead, lastRows }
   let focus = 0; // which pane gets your typing
   const byUrgency = (a, b) => URGENCY.indexOf(a.status) - URGENCY.indexOf(b.status) || (b.last_event_at || b.created) - (a.last_event_at || a.created);
@@ -127,7 +127,7 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
     const sideX = cfg.sidebar === "right" ? W - side : 0; // 0-based column of the sidebar
     const mainX = side && cfg.sidebar !== "right" ? side + 1 : 0, mainW = W - (side ? side + 1 : 0);
     const alert = alertFor(), alertRows = alert ? 2 : 0;
-    const feedRows = cfg.feed && H >= 24 ? FEED_ROWS : 0;
+    const feedRows = 0; // the activity strip is gone: the briefing (b) and history (h) cover it
     const mainH = H - 1 - alertRows - feedRows; // rows above the alert bar, the activity strip and the status line
     // the tab row (sessions of the focused workspace) sits above the panes
     const tabRow = mapMode ? 0 : 1, ph = mainH - tabRow;
@@ -272,62 +272,67 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
   let sideHits = [];
   // Sidebar as a diagram (the default): AXA at the root, sessions branching off it with a dot running
   // along each working one, their helper agents and their links underneath
+  // Sidebar as a tree (the default). AXA is the root; each project hangs off it with its status at the
+  // right edge, then what it's doing and its branch underneath. A project with several sessions lists
+  // them one level deeper. The selected session is marked with a bar at the left edge.
   function treeRows(L, rows, hits) {
     const w = L.side, frame = Math.floor(Date.now() / 250), ss = sessions(), axa = list.find((s) => s.mode === "axa");
-    const line = (segs, id, isSel, sp = "") => {
-      const spW = sp ? SPARK_BUCKETS + 1 : 0;
-      // the selected session: a bar at the left edge, its text kept in its own colors
+    // one row: left segments, and right-aligned segments (the status)
+    const line = (segs, id, isSel, right = []) => {
       const marked = isSel && segs[0]?.[0]?.startsWith(" ") ? [["▌", "accent"], [segs[0][0].slice(1), segs[0][1]], ...segs.slice(1)] : segs;
-      const body = renderSegs(marked, w - spW);
-      rows.push(body + (sp ? " " + sgr("work", sp) : ""));
+      const rw = right.reduce((n, [t]) => n + width(t), 0);
+      rows.push(renderSegs(marked, Math.max(0, w - rw)) + (rw ? renderSegs(right, rw) : ""));
       hits[rows.length - 1] = id;
     };
+    const status = (s) => {
+      const [g, word, role0] = look(s), fresh = unseenDone(s), role = s.status === "done" && !fresh ? "off" : role0;
+      const sp = spark(s.id);
+      return [...(sp ? [[sp + " ", "work"]] : []), [`${g} ${word}`, role], [fresh ? " •" : "", "done"], [" ", ""]];
+    };
+    const doing = (s) => (s.status === "waiting" && s.choices ? [question(s.choices), "waitSoft"] : s.mode === "shell" ? null : s.status === "done" && !unseenDone(s) ? null : [what(s), "dim"]);
+    const meta = (s) => [gitText(s.git), s.usage?.tokens ? `${fmtTok(s.usage.tokens)} tok${s.usage.over_budget ? "!" : ""}` : "", s.worktree ? "worktree" : ""].filter(Boolean).join(" · ");
     const recent = (id) => (helpers.get(id) || []).filter((h) => h.status === "running" || Date.now() - h.ts < 15 * 60_000);
-    const wss = workspaces(), nums = new Map(ss.map((s, i) => [s.id, i < 9 ? String(i + 1) : " "]));
-    if (axa) {
-      const [g, word, role] = look(axa), isSel = axa.id === selId(), down = wss.length ? "│" : " ";
-      line([[" ◆ ", "title"], ["AXA", "title"], [`  0 ${g} ${word}`, role]], axa.id, isSel, spark(axa.id));
-      line([[` ${down}  `, "rule"], [axa.status === "done" ? "ready for your next message" : what(axa), "dim"]], axa.id, isSel);
-      // AXA's own helper agents, grouped by the work they do (like the web map's orbit)
-      const hg = helperGroups(recent(axa.id));
-      if (hg.length) line([[` ${down}  └ `, "rule"], ...hg.flatMap(([t, r], k) => [[k ? " · " : "", "dim"], [t, r]]), [hg.length === 1 && hg[0][2] ? `: ${hg[0][2]}` : "", "dim"]], `agents:${axa.id}`, false);
-    } else line([[" ◆ AXA", "title"], ["  not running · Ctrl-b o", "dim"]], null, false);
-    wss.forEach((ws, wi) => {
-      const lastWs = wi === wss.length - 1, wstem = lastWs ? " " : "│", [wg, wword, wrole] = ws.state;
-      line([[" │", "rule"]], null, false);
-      if (ws.sessions.length === 1) {
-        // one session: the project row is the session
-        const s = ws.sessions[0], [g0, word, role0] = look(s), isSel = s.id === selId(), fresh = unseenDone(s), role = s.status === "done" && !fresh ? "off" : role0;
-        const p = frame % 3, branch = s.status === "working" ? [0, 1, 2].map((k) => (k === p ? "●" : "─")).join("") : "──";
-        line([[` ${lastWs ? "└" : "├"}`, "rule"], [branch, s.status === "working" ? "work" : s.status === "waiting" ? "wait" : "rule"], [` ${nums.get(s.id)} ${g0} `, role], [shortName(s), s.status === "waiting" ? "wait" : "title"], [fresh ? " •" : "", "done"]], s.id, isSel, spark(s.id));
-        const pre = ` ${wstem}     `;
-        const subText = s.status === "waiting" && s.choices ? question(s.choices) : s.mode === "shell" && word === "shell" ? what(s) : `${word} · ${what(s)}`;
-        line([[pre, "rule"], [subText, s.status === "waiting" ? "waitSoft" : "dim"]], s.id, isSel);
-        const meta = [gitText(s.git), s.usage?.tokens ? `${fmtTok(s.usage.tokens)} tok${s.usage.over_budget ? "!" : ""}` : ""].filter(Boolean).join(" · ");
-        if (meta) line([[pre, "rule"], [meta, "dim"]], s.id, isSel);
-        const hg = helperGroups(recent(s.id));
-        if (hg.length) line([[`${pre}└ `, "rule"], ...hg.flatMap(([t, r], k) => [[k ? " · " : "", "dim"], [t, r]])], `agents:${s.id}`, false);
-        return;
+    const helpersRow = (pre, id) => { const hg = helperGroups(recent(id)); if (hg.length) line([[`${pre}└ `, "rule"], ...hg.flatMap(([t, r], k) => [[k ? " · " : "", "dim"], [t, r]]), [hg.length === 1 && hg[0][2] ? `: ${hg[0][2]}` : "", "dim"]], `agents:${id}`, false); };
+    const linksRows = (pre, s) => {
+      for (const c of chainsList.filter((c) => c.from === s.id && !c.failed && (!c.fired || Date.now() - c.fired < 15 * 60_000))) {
+        const to = list.find((x) => x.id === c.to);
+        line([[`${pre}──▶ `, c.fired ? "dim" : "accent"], [to ? nameOf(to) : c.to_name || "?", c.fired ? "dim" : "accent"], [c.fired ? " ✓ sent" : " when done", "dim"]], s.id, false);
       }
-      // the workspace (project): its state rolls up from its sessions
-      line([[` ${lastWs ? "└" : "├"}─ `, "rule"], ["▣ ", "accent"], [ws.name, "title"], [`  ${wg} ${wword}`, wrole], [` · ${ws.sessions.length} sessions`, "dim"]], ws.sessions[0].id, false);
+    };
+    // a session: its name row (with the branch animating while it works), then details under it
+    const session = (s, stemPre, joint, pre, name) => {
+      const isSel = s.id === selId(), n = nums.get(s.id), p = frame % 3;
+      const wire = s.status === "working" ? [0, 1, 2].map((k) => (k === p ? "●" : "─")).join("").slice(0, 2) : "──";
+      line([[`${stemPre}${joint}`, "rule"], [wire, s.status === "working" ? "work" : s.status === "waiting" ? "wait" : "rule"], [" ", ""], [n.trim() ? `${n} ` : "", "dim"], [name, s.status === "waiting" ? "wait" : "title"]], s.id, isSel, status(s));
+      const d = doing(s);
+      if (d) line([[pre, "rule"], d], s.id, isSel);
+      const m = meta(s);
+      if (m) line([[pre, "rule"], [m, "dim"]], s.id, isSel);
+      helpersRow(pre, s.id);
+      linksRows(pre, s);
+    };
+
+    const wss = workspaces(), nums = new Map(ss.map((s, i) => [s.id, i < 9 ? String(i + 1) : " "]));
+    const down = wss.length ? "│" : " ";
+    if (axa) {
+      const isSel = axa.id === selId(), [g, word, role] = look(axa);
+      line([[" ◆ ", "title"], ["AXA", "title"]], axa.id, isSel, [[`${g} ${axa.status === "done" ? "ready" : word}`, axa.status === "done" ? "idle" : role], [" ", ""]]);
+      const d = axa.status === "working" ? what(axa) : axa.status === "waiting" ? "needs your approval" : "ready for your next message";
+      line([[` ${down} `, "rule"], [d, axa.status === "waiting" ? "waitSoft" : "dim"]], axa.id, isSel);
+      helpersRow(` ${down} `, axa.id);
+    } else line([[" ◆ AXA", "title"]], null, false, [["not running · Ctrl-b o ", "dim"]]);
+    if (!wss.length) return;
+    wss.forEach((ws, wi) => {
+      const lastWs = wi === wss.length - 1, wstem = lastWs ? " " : "│";
+      line([[" │", "rule"]], null, false);
+      // one session: the project row is the session
+      if (ws.sessions.length === 1) return session(ws.sessions[0], " ", lastWs ? "└" : "├", ` ${wstem}    `, ws.name);
+      // several: the project, then its sessions one level deeper
+      const [wg, wword, wrole] = ws.state;
+      line([[` ${lastWs ? "└" : "├"}── `, "rule"], [ws.name, "title"], [`  ${ws.sessions.length} sessions`, "dim"]], ws.sessions[0].id, false, [[`${wg} ${wword}`, wrole], [" ", ""]]);
       ws.sessions.forEach((s, i) => {
-        const last = i === ws.sessions.length - 1, stem = last ? " " : "│", [g0, word, role0] = look(s), isSel = s.id === selId();
-        // done but already seen: shown as idle (dim); not yet seen: bright, with a dot
-        const fresh = unseenDone(s), role = s.status === "done" && !fresh ? "off" : role0, g = g0;
-        const p = frame % 3, branch = s.status === "working" ? [0, 1, 2].map((k) => (k === p ? "●" : "─")).join("") : "───";
-        line([[` ${wstem}  ${last ? "└" : "├"}`, "rule"], [branch, s.status === "working" ? "work" : s.status === "waiting" ? "wait" : "rule"], [` ${nums.get(s.id)} ${g} `, role], [shortName(s), role], [fresh ? " •" : "", "done"]], s.id, isSel, spark(s.id));
-        const pre = ` ${wstem}  ${stem}    `;
-        const sub = s.status === "waiting" && s.choices ? question(s.choices) : s.mode === "shell" && word === "shell" ? what(s) : `${word} · ${what(s)}`;
-        line([[pre, "rule"], [sub, s.status === "waiting" ? "waitSoft" : "dim"]], s.id, isSel);
-        const meta = [gitText(s.git), s.usage?.tokens ? `${fmtTok(s.usage.tokens)} tok${s.usage.over_budget ? "!" : ""}` : "", s.worktree ? "worktree" : ""].filter(Boolean).join(" · ");
-        if (meta) line([[pre, "rule"], [meta, "dim"]], s.id, isSel);
-        const hg = helperGroups(recent(s.id));
-        if (hg.length) line([[` ${wstem}  ${stem}    └ `, "rule"], ...hg.flatMap(([t, r], k) => [[k ? " · " : "", "dim"], [t, r]]), [hg.length === 1 && hg[0][2] ? `: ${hg[0][2]}` : "", "dim"]], `agents:${s.id}`, false);
-        for (const c of chainsList.filter((c) => c.from === s.id && !c.failed && (!c.fired || Date.now() - c.fired < 15 * 60_000))) {
-          const to = list.find((x) => x.id === c.to);
-          line([[` ${wstem}  ${stem}    ──▶ `, c.fired ? "dim" : "accent"], [to ? nameOf(to) : c.to_name || "?", c.fired ? "dim" : "accent"], [c.fired ? " ✓ sent" : " when done", "dim"]], s.id, false);
-        }
+        const last = i === ws.sessions.length - 1;
+        session(s, ` ${wstem}   `, last ? "└" : "├", ` ${wstem}   ${last ? " " : "│"}    `, shortName(s));
       });
     });
   }
@@ -335,9 +340,8 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
     const rows = [], o = ordered(), w = L.side, hits = [];
     sideHits = hits;
     const n = (st) => list.filter((s) => s.mode !== "axa" && s.status === st).length;
-    rows.push(sgr("title", pad(" AXA mission control", w)));
-    rows.push(sgr("rule", "─".repeat(w)));
     if (cfg.sidebarStyle !== "list") treeRows(L, rows, hits);
+    else { rows.push(sgr("title", pad(" AXA mission control", w))); rows.push(sgr("rule", "─".repeat(w))); }
     const nums = new Map(sessions().map((s, i) => [s.id, i < 9 ? String(i + 1) : " "]));
     for (const s of cfg.sidebarStyle === "list" ? o : []) {
       const [g, word, role] = look(s);
@@ -372,7 +376,7 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
     if (updated) return sgr("tag", " ↻ AXA was updated ") + sgr("waitSoft", pad(` press ${keyName()} q, then run axa again to get the new version (your sessions keep running)`, Math.max(0, W - 19)));
     const tag = prefix ? " PREFIX " : "";
     const keys = prefix
-      ? " : palette · m map · b brief · h history · l link · i image · s browse · / search · j/k move · 0-9 pick · % split · Tab pane · z zoom · f feed · y/x answer · ! go · c new · w worktree · g goal · d diff · v verify · , settings · q quit · ? help"
+      ? " : palette · m map · b brief · h history · l link · i image · s browse · / search · j/k move · 0-9 pick · % split · Tab pane · z zoom · y/x answer · ! go · c new · w worktree · g goal · d diff · v verify · , settings · q quit · ? help"
       : ` ${k} : palette · ${k} s browse · ${k} ? help · ${k} q leave`;
     const clock = new Date().toLocaleTimeString([], { hour12: false });
     // left: does anything need you; then the keys; the clock at the right end
@@ -420,12 +424,19 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
     // panels float over the live sessions (which keep running and drawing underneath)
     if (overlay) o += floatingPanel(L);
     // the copied / pasted popup, bottom center of the main area (like herdr's clipboard toast)
-    if (notice && Date.now() < notice.until && !overlay) {
+    const toast = !!(notice && Date.now() < notice.until && !overlay);
+    if (toast !== toastShown || toast) {
+      // repaint what the toast covered, now or when it ends
+      views.forEach((v) => v && (v.lastRows = []));
+      if (toast) { clearTimeout(toastTimer); toastTimer = setTimeout(schedule, Math.max(20, notice.until - Date.now() + 20)); }
+      if (!toast) schedule(); // it just ended: repaint the rows it covered on the next frame
+      toastShown = toast;
+    }
+    if (toast) {
       const t = ` ✓ ${notice.text} `, x = L.mainX + Math.max(0, Math.floor((L.mainW - width(t)) / 2));
       o += `${ESC}[${Math.max(1, L.mainH - 1)};${x + 1}H${sgr("tag", t)}`;
     }
     if (L.alert) alertRows(L).forEach((r, i) => (o += `${ESC}[${L.mainH + 1 + i};${L.mainX + 1}H${r}`));
-    if (L.feedRows) feedStripRows(L).forEach((r, i) => (o += `${ESC}[${L.mainH + L.alertRows + 1 + i};${L.mainX + 1}H${r}`));
     o += `${ESC}[${H};1H${statusRow()}`;
     // the focused session's own cursor, when it shows one
     const v = views[focus], p = L.panes[focus];
@@ -636,21 +647,10 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
     activity.set(id, ts);
     for (const t of ts) b[SPARK_BUCKETS - 1 - Math.floor((now - t) / span)]++;
     const max = Math.max(...b);
+    if (b.filter(Boolean).length < 3) return "";
     return max ? b.map((n) => (n ? SPARK[Math.min(7, Math.ceil((n / max) * 7))] : " ")).join("") : "";
   }
-  function feedStripRows(L) {
-    const rows = [sgr("rule", "─ activity " + "─".repeat(Math.max(0, L.mainW - 11)))];
-    const name = (f) => { const s = list.find((x) => x.id === f.terminal); return f.commander || s?.mode === "axa" ? "AXA" : s ? clean(s.name) : f.terminal.slice(0, 8); };
-    const last = feed.slice(-(L.feedRows - 1));
-    for (let i = 0; i < L.feedRows - 1; i++) {
-      const f = last[i - (L.feedRows - 1 - last.length)];
-      if (!f) { rows.push(" ".repeat(L.mainW)); continue; }
-      const time = new Date(f.ts).toLocaleTimeString([], { hour12: false, hour: "2-digit", minute: "2-digit" });
-      const head = ` ${time} ${pad(name(f), 14)} `;
-      rows.push(sgr("dim", head) + sgr(f.role || "idle", pad(f.text, Math.max(0, L.mainW - width(head)))));
-    }
-    return rows;
-  }
+
 
   // ---------- search every session's screen and recent history ----------
   async function searchAll() {
@@ -1058,7 +1058,6 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
     add("Rename this session (your own label)", () => action("r"), "r");
     add("Agents and work of this session", () => sessionDetail(sel()), "a");
     for (const c of chainsList.filter((c) => !c.fired && !c.failed)) add(`Remove link: ${c.from_name} → ${c.to_name}`, async () => { try { await api(`/api/chains/${c.id}`, { method: "DELETE" }); chainsList = await api("/api/chains"); } catch (e) { flash("Couldn't remove it", [e.message]); } });
-    add(cfg.feed ? "Hide the activity strip" : "Show the activity strip", () => action("f"), "f");
     add("Settings: theme, prefix key, sidebar, bell", settings, ",");
     add("Open the web console", () => action("o"), "o");
     add("Help: all keys", () => action("?"), "?");
@@ -1101,7 +1100,6 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
       { key: "sidebarWidth", label: "Sidebar width", values: [24, 26, 28, 30, 34, 38, 42, 48] },
       { key: "bell", label: "Bell when something needs you", values: [true, false] },
       { key: "newSession", label: "New sessions start as", values: ["claude", "shell"] },
-      { key: "feed", label: "Activity strip", values: [true, false], about: "the latest events across sessions, under the panes" },
       { key: "copyOnSelect", label: "Copy on select", values: [true, false], about: "drag across text to copy it (off: drags go to the session)" },
     ];
     const ov = { title: "Settings · ↑/↓ choose · ←/→ or Enter change · saved as you go · Esc close", sel: 0, lines: [] };
@@ -1150,7 +1148,6 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
     if (k === "h") return history();
     if (k === "l") return linkFrom();
     if (k === "i") return pasteImage();
-    if (k === "f") { cfg.feed = !cfg.feed; saveCfg(); fullRedraw = true; return schedule(); }
     if (k === "y") return answerAlert("yes");
     if (k === "x") return answerAlert("no");
     if (k === "c") return newSession(false);
