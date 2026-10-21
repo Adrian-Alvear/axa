@@ -8,6 +8,9 @@ import { randomUUID } from "node:crypto";
 import { execFile, spawnSync } from "node:child_process";
 import { consoleDir, home, pluginRoot, port } from "./ensure.mjs";
 import { cleanText, dangerousShell, redact } from "../lib/safety.mjs";
+import { answerKeys, awaitingPermission, choicesOf, screenTail } from "./prompt.mjs";
+import { forgetGit, gitOf, gitRun, rawDiff, untrackedFiles } from "./gitinfo.mjs";
+import { forgetUsage, usageOf } from "./usage.mjs";
 
 const require = createRequire(import.meta.url);
 const pty = require("node-pty");
@@ -134,7 +137,11 @@ const tmuxEnv = () => {
   for (const k of ["TMUX", "TMUX_PANE", "AXA_TERMINAL_ID", "AXA_ROLE"]) delete env[k];
   return env;
 };
-const tmux = (...args) => spawnSync("tmux", ["-L", SOCKET, "-f", TMUX_CONF, ...args], { encoding: "utf8", env: tmuxEnv(), timeout: 5000 });
+// Async, so no tmux call ever holds up the server (the session list, typing, answering). Resolves to
+// { status, stdout, stderr } like spawnSync would.
+const TMUX_ENV = tmuxEnv();
+const tmux = (...args) => new Promise((ok) => execFile("tmux", ["-L", SOCKET, "-f", TMUX_CONF, ...args], { encoding: "utf8", env: TMUX_ENV, timeout: 5000, maxBuffer: 4 << 20 },
+  (err, stdout, stderr) => ok({ status: err ? (typeof err.code === "number" ? err.code : 1) : 0, stdout: stdout || "", stderr: stderr || err?.message || "" })));
 // 3.2 -> 3.02, 3.10 -> 3.1 (so versions compare as numbers); null when tmux isn't there
 const tmuxVersion = (() => {
   if (process.env.AXA_NO_TMUX) return null;
@@ -147,7 +154,7 @@ const tmuxVersion = (() => {
 export const backend = tmuxVersion ? "tmux" : "pty";
 const tmuxName = (id) => `axa-${id}`;
 const paneTarget = (id) => `=axa-${id}:`;
-const tmuxHas = (id) => tmux("has-session", "-t", `=${tmuxName(id)}`).status === 0;
+const tmuxHas = async (id) => (await tmux("has-session", "-t", `=${tmuxName(id)}`)).status === 0;
 
 // What each tmux session is (so a console restart shows it again, and a machine restart can resume
 // its Claude chat): $AXA_HOME/sessions.json, readable only by you
@@ -171,193 +178,114 @@ export function noteSession(terminalId, sessionId) {
   saveMeta();
 }
 
-// ---------- what each session changed (git): branch, files, lines, for review at a glance ----------
-// Read-only and throttled (one refresh per folder every GIT_MS, in the background). GIT_OPTIONAL_LOCKS=0
-// keeps `git status` from taking the index lock while the session itself runs git.
-const GIT_MS = 10_000;
-const gitCache = new Map(); // cwd -> { at, busy, info }
-const gitEnv = () => ({ ...cleanEnv(), GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0" });
-const git = (cwd, args, max = 1 << 20) => new Promise((ok) =>
-  execFile("git", args, { cwd, env: gitEnv(), timeout: 5000, maxBuffer: max }, (err, out) => ok(err ? null : out)));
-// Secret files never show in a diff (their contents would also be redacted, but leave them out entirely)
-const NO_SECRETS = ["--", ".", ":(exclude,glob)**/.env*", ":(glob,exclude)**/*.pem", ":(glob,exclude)**/*.key", ":(glob,exclude)**/id_rsa*", ":(glob,exclude)**/credentials*"];
-
-function refreshGit(cwd) {
-  const c = gitCache.get(cwd) || {};
-  if (c.busy || (c.at && Date.now() - c.at < GIT_MS)) return;
-  c.busy = true; gitCache.set(cwd, c);
-  (async () => {
-    const st = await git(cwd, ["status", "--porcelain=v1", "-b"]);
-    if (st == null) return null;
-    const [head, ...files] = st.split("\n").filter(Boolean);
-    const m = /^## (?:No commits yet on |Initial commit on )?(.+?)(?:\.\.\.\S+)?(?: \[(.+)\])?$/.exec(head || "") || [];
-    const info = { branch: m[1] === "HEAD (no branch)" ? "detached" : m[1] || "?", files: files.length, untracked: files.filter((f) => f.startsWith("??")).length, added: 0, removed: 0 };
-    info.ahead = Number(/ahead (\d+)/.exec(m[2] || "")?.[1]) || 0;
-    info.behind = Number(/behind (\d+)/.exec(m[2] || "")?.[1]) || 0;
-    const stat = info.files ? await git(cwd, ["diff", "HEAD", "--shortstat"]) : "";
-    info.added = Number(/(\d+) insertion/.exec(stat || "")?.[1]) || 0;
-    info.removed = Number(/(\d+) deletion/.exec(stat || "")?.[1]) || 0;
-    return info;
-  })().then((info) => { c.info = info; }, () => { c.info = null; }).finally(() => { c.busy = false; c.at = Date.now(); });
-}
-const gitOf = (t) => { if (t.alive && t.mode !== "axa") refreshGit(t.cwd); return gitCache.get(t.cwd)?.info || null; };
-
-// The session's uncommitted changes against its last commit, cleaned like any other session output.
-// Each file's diff is redacted on its own (and very large ones are left out) so nothing is cut blind.
+// What each session changed (git, see gitinfo.mjs): the uncommitted changes against its last commit,
+// cleaned like any other session output. Each file's diff is redacted on its own (and very large
+// ones are left out) so nothing is cut blind.
 const DIFF_FILE_MAX = 60 * 1024, DIFF_MAX = 400 * 1024;
 export async function diffTerm(id) {
   const t = terms.get(id);
   if (!t) return null;
-  const base = (await git(t.cwd, ["rev-parse", "--verify", "-q", "HEAD"])) ? ["diff", "HEAD"] : ["diff", "--cached"];
-  const raw = await git(t.cwd, [...base, "--no-color", "--no-ext-diff", ...NO_SECRETS], 8 << 20);
+  const raw = await rawDiff(t.cwd);
   if (raw == null) return { ...summary(t), diff: "", untracked: [], error: "Couldn't read the changes: not a git repository, or the diff is too large to show here." };
   let diff = "", truncated = false;
   for (const file of raw.split(/(?=^diff --git )/m)) {
     if (diff.length > DIFF_MAX) { truncated = true; break; }
     diff += file.length > DIFF_FILE_MAX ? `${file.split("\n")[0]}\n(large change left out: ${Math.round(file.length / 1024)} KB, open the terminal to see it)\n` : safe(file);
   }
-  const untracked = ((await git(t.cwd, ["ls-files", "--others", "--exclude-standard", ...NO_SECRETS])) || "").split("\n").filter(Boolean);
+  const untracked = await untrackedFiles(t.cwd);
   return { ...summary(t), diff, truncated, untracked: untracked.slice(0, 200).map(safe), untracked_total: untracked.length };
 }
 
-// ---------- usage: the tokens each session's chat has used (from Claude Code's own transcript) ----------
-// Read incrementally in the background (one refresh per chat every USAGE_MS); helper agents' transcripts
-// (<chat>/subagents/*.jsonl) count too. Each API response is counted once (by message and request id).
-const USAGE_MS = 15_000;
-const usageCache = new Map(); // chat id -> { at, busy, dir, files: Map(path -> { offset, partial }), seen: Set, tot }
-function findChatDir(chat) {
-  const root = join(homedir(), ".claude", "projects");
-  try { for (const d of readdirSync(root)) if (existsSync(join(root, d, `${chat}.jsonl`))) return join(root, d); } catch {}
-  return null;
-}
-function refreshUsage(chat) {
-  const c = usageCache.get(chat) || { files: new Map(), seen: new Map(), tot: { input: 0, cached: 0, output: 0 } };
-  usageCache.set(chat, c);
-  if (c.busy || (c.at && Date.now() - c.at < USAGE_MS)) return;
-  c.busy = true;
-  try {
-    c.dir ||= findChatDir(chat);
-    if (!c.dir) return;
-    const sub = join(c.dir, chat, "subagents");
-    const paths = [join(c.dir, `${chat}.jsonl`)];
-    try { for (const f of readdirSync(sub)) if (f.endsWith(".jsonl")) paths.push(join(sub, f)); } catch {}
-    for (const p of paths) {
-      const f = c.files.get(p) || { offset: 0, partial: "" };
-      c.files.set(p, f);
-      const size = statSync(p).size;
-      if (size < f.offset) Object.assign(f, { offset: 0, partial: "" });
-      // at most 8MB per refresh, so a huge first read is spread out
-      const end = Math.min(size, f.offset + 8 * 1024 * 1024);
-      if (end <= f.offset) continue;
-      const fd = openSync(p, "r"), buf = Buffer.alloc(end - f.offset);
-      readSync(fd, buf, 0, buf.length, f.offset); closeSync(fd);
-      f.offset = end;
-      const lines = (f.partial + buf.toString("utf8")).split("\n");
-      f.partial = lines.pop();
-      for (const line of lines) {
-        if (!line.includes('"usage"')) continue;
-        let o; try { o = JSON.parse(line); } catch { continue; }
-        const u = o.type === "assistant" && o.message?.usage;
-        if (!u) continue;
-        const key = `${o.message.id}:${o.requestId}`;
-        // a streamed response repeats its line as it grows: count the largest numbers once
-        const now = { input: (u.input_tokens || 0) + (u.cache_creation_input_tokens || 0), cached: u.cache_read_input_tokens || 0, output: u.output_tokens || 0 };
-        const was = c.seen.get(key) || { input: 0, cached: 0, output: 0 };
-        for (const k of ["input", "cached", "output"]) if (now[k] > was[k]) { c.tot[k] += now[k] - was[k]; was[k] = now[k]; }
-        c.seen.set(key, was);
-      }
-    }
-  } catch {} finally { c.busy = false; c.at = Date.now(); }
-}
-// Per-project token budget from ~/.axa/policy.json: { "default": { "budget": { "tokens": 5000000 } }, "projects": { "x": { ... } } }
-function budgetFor(cwd) {
-  try {
-    const file = JSON.parse(readFileSync(join(home, "policy.json"), "utf8"));
-    const match = Object.entries(file.projects || {}).find(([k]) => (k.startsWith("/") || k.startsWith("~") ? expand(k) === cwd || cwd.startsWith(expand(k) + "/") : k === basename(cwd) || cwd.includes(`/${k}/.claude/worktrees/`)));
-    return Number(match?.[1]?.budget?.tokens ?? file.default?.budget?.tokens) || 0;
-  } catch { return 0; }
-}
-function usageOf(t) {
-  const chat = meta.get(t.id)?.claudeSession;
-  if (!chat || t.mode === "shell") return null;
-  if (t.alive) refreshUsage(chat);
-  const tot = usageCache.get(chat)?.tot;
-  if (!tot) return null;
-  // tokens = new input + output (what a budget limits); cache re-reads are cheap and reported apart
-  const tokens = tot.input + tot.output, budget = budgetFor(t.cwd);
-  return { tokens, input: tot.input, cached: tot.cached, output: tot.output, budget: budget || undefined, over_budget: budget > 0 && tokens > budget };
-}
-
-// ---------- the dialog on screen: its question and numbered options ----------
-// So the user can answer a permission/trust prompt from the sessions list (on their phone) with one tap.
-// Only the user, from the console page, can answer (see answerTerm and the server's /answer route).
-// Claude Code's menus (numbered or not) are a block of lines just above "Enter to confirm", one marked
-// with the ❯ cursor; option labels line up with the cursor line's label (deeper lines are descriptions).
-const BOX = /[│┃╭╮╰╯─━╌╍┄┅┈┉═║]/g;
-const paneWidth = (t) => {
-  if (!t.tmux) return t.screen?.cols || 100;
-  if (!(t.width && Date.now() - t.width.at < 2000)) t.width = { at: Date.now(), n: Number(tmux("display-message", "-p", "-t", paneTarget(t.id), "#{pane_width}").stdout) || 100 };
-  return t.width.n;
-};
-function choicesOf(t) {
-  const lines = screenLines(t, 40).map((l) => l.replace(BOX, " ").trimEnd());
-  let end = lines.length;
-  for (let i = lines.length - 1; i >= 0; i--) if (/Enter to (?:confirm|select)|Esc to (?:cancel|exit)/i.test(lines[i])) { end = i; break; }
-  let i = end - 1;
-  while (i >= 0 && !lines[i].trim()) i--;
-  const block = [];
-  for (; i >= 0 && lines[i].trim(); i--) block.unshift({ text: lines[i], at: i });
-  const cur = block.find((b) => /^\s*❯/.test(b.text));
-  if (!cur) return null;
-  const col = cur.text.search(/❯/) + 1 + (cur.text.slice(cur.text.search(/❯/) + 1).search(/\S/));
-  const numbered = /^\d\.\s/.test(cur.text.slice(col));
-  const width = paneWidth(t);
-  const options = [];
-  let cursor = -1, last = "";
-  for (const b of block) {
-    const isCur = b === cur;
-    const start = isCur ? col : b.text.search(/\S/);
-    if (start !== col) continue; // a description line under an option, or the question above
-    const text = b.text.slice(col).trim();
-    // A long label wraps onto the next line at the same indent: in a numbered menu every option has
-    // its number; otherwise a line continues the previous one if its first word wouldn't have fit there
-    // (or it starts lowercase right after a nearly full line)
-    const wraps = options.length && !isCur && (numbered ? !/^\d\.\s/.test(text) : col + last.length + 1 + text.split(" ")[0].length > width - 4 || (/^[a-z]/.test(text) && col + last.length > (width - 4) * 0.75));
-    if (wraps) { options[options.length - 1] += " " + text; last = text; continue; }
-    if (isCur) cursor = options.length;
-    options.push(text.replace(/^\d\.\s+/, ""));
-    last = text;
+// ---------- the screen, read in the background ----------
+// Whether a session shows a permission/trust prompt, its options and the pane width come from one
+// background refresher (async tmux calls, one at a time, sessions spread over the interval) whose
+// results are cached per session: the session list only reads the cache, so polling it never waits
+// on tmux. Acting on a prompt (answerTerm, sendToTerm) always captures the screen afresh first.
+const SCREEN_MS = 1000;
+const SCREEN_LINES = 40; // enough for the dialog and the question above it (prompt.mjs)
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// The headless terminal's lines (PTY backend), with lines the terminal wrapped rejoined, so a long
+// secret split across two rows is still recognized
+function ptyLines(t) {
+  const b = t.screen.buffer.active, out = [];
+  for (let i = 0; i < b.length; i++) {
+    const line = b.getLine(i);
+    const text = line?.translateToString(true) ?? "";
+    if (line?.isWrapped && out.length) out[out.length - 1] += text;
+    else out.push(text);
   }
-  if (!options.length || options.length > 9 || cursor < 0) return null;
-  const firstAt = block.find((b) => (b === cur ? col : b.text.search(/\S/)) === col)?.at ?? cur.at;
-  const above = lines.slice(Math.max(0, firstAt - 12), firstAt).map((l) => l.trim()).filter(Boolean);
-  return { question: safe(above.slice(-5).join("\n")), options: options.map((label, k) => ({ n: k + 1, label: safe(label) })), cursor };
+  return out;
 }
+// A fresh look at the screen: { lines (the last n), width }, or null when tmux can't read it.
+// -J rejoins lines the terminal wrapped (as above); the width comes in the same tmux call.
+async function capture(t, n = SCREEN_LINES) {
+  n = Math.max(1, Math.min(n, 400));
+  if (!t.tmux) return { lines: screenTail(ptyLines(t), n), width: t.screen?.cols || 100 };
+  const r = await tmux("display-message", "-p", "-t", paneTarget(t.id), "#{pane_width}", ";", "capture-pane", "-p", "-J", "-t", paneTarget(t.id), "-S", `-${n}`);
+  if (r.status !== 0) return null;
+  const lines = r.stdout.split("\n");
+  const width = Number(lines.shift()) || 100;
+  return { lines: screenTail(lines, n), width };
+}
+// t.view = { at, asking, choices }: what the refresher last saw. `gen` drops a capture that was
+// already under way when the screen was changed from here (typing, answering).
+async function refreshScreen(t) {
+  const gen = t.viewGen || 0;
+  const c = await capture(t).catch(() => null);
+  if (!c || gen !== (t.viewGen || 0)) return;
+  const asking = awaitingPermission(c.lines), ch = choicesOf(c.lines, c.width);
+  t.view = { at: Date.now(), asking, choices: ch && { question: safe(ch.question), options: ch.options.map((o) => ({ n: o.n, label: safe(o.label) })), cursor: ch.cursor } };
+}
+// The screen is about to change: forget what was seen (forget) and look again shortly
+function screenChanged(t, { forget = true } = {}) {
+  t.viewGen = (t.viewGen || 0) + 1;
+  if (forget) t.view = null;
+  clearTimeout(t.viewKick);
+  t.viewKick = setTimeout(() => { if (t.alive && terms.get(t.id) === t) refreshScreen(t); }, 150);
+}
+let screensBusy = false;
+async function refreshScreens() {
+  if (screensBusy) return;
+  screensBusy = true;
+  try {
+    const list = [...terms.values()].filter((t) => t.alive);
+    const gap = Math.min(100, SCREEN_MS / (list.length + 1));
+    for (const t of list) {
+      if (t.alive && terms.get(t.id) === t) await refreshScreen(t);
+      await sleep(gap);
+    }
+  } finally { screensBusy = false; }
+}
+setInterval(refreshScreens, SCREEN_MS).unref();
+
 // The user picked option n (and saw `label`): move the menu's cursor to it and press Enter, but only if
-// the same menu is still on screen, so a tap never lands on a different prompt.
-export function answerTerm(id, n, label) {
+// the same menu is on screen right now (a fresh capture, not the cache), so a tap never lands on a
+// different prompt. Only the user, from the console page, can answer (see the server's /answer route).
+export async function answerTerm(id, n, label) {
   const t = terms.get(id);
   if (!t || !t.alive) return { ok: false, error: "That session isn't running." };
-  t.capture = null;
-  const c = awaitingPermission(t) && choicesOf(t);
+  const s = await capture(t);
+  const c = s && awaitingPermission(s.lines) && choicesOf(s.lines, s.width);
   if (!c) return { ok: false, error: "That prompt is no longer on screen." };
-  const o = c.options.find((x) => x.n === Number(n));
+  const o = c.options.map((x) => ({ n: x.n, label: safe(x.label) })).find((x) => x.n === Number(n));
   if (!o || o.label !== label) return { ok: false, error: "The prompt changed. Look again before answering." };
-  const moves = o.n - 1 - c.cursor, key = moves > 0 ? "Down" : "Up";
-  if (t.tmux) tmux("send-keys", "-t", paneTarget(t.id), ...Array(Math.abs(moves)).fill(key), "Enter");
+  const { moves, keys } = answerKeys(c.cursor, o.n);
+  screenChanged(t);
+  if (t.tmux) await tmux("send-keys", "-t", paneTarget(t.id), ...keys);
   else t.proc.write((moves > 0 ? "\x1b[B" : "\x1b[A").repeat(Math.abs(moves)) + "\r");
-  t.capture = null;
-  return { ok: true, option: o, question: c.question };
+  return { ok: true, option: o, question: safe(c.question) };
 }
 
 const summary = (t) => {
   const traced = statusOf(t.id);
+  const v = t.alive ? t.view : null;
   // While AXA's approver is deciding, the prompt is already drawn on screen: not the user's turn yet
-  const waiting = t.alive && (traced?.status === "waiting" || (!traced?.asking && awaitingPermission(t)));
+  const waiting = t.alive && (traced?.status === "waiting" || (!traced?.asking && !!v?.asking));
   return {
     id: t.id, name: t.name, cwd: t.cwd, mode: t.mode, alive: t.alive, created: t.created,
-    // "waiting" wins over "stuck": a prompt on screen is the more specific reason
-    status: !t.alive ? "exited" : waiting ? "waiting" : traced?.status || "starting",
+    // "waiting" wins over "stuck": a prompt on screen is the more specific reason. Plain shells have
+    // no traced events, so they show as "shell" (not "starting" forever)
+    status: !t.alive ? "exited" : waiting ? "waiting" : t.mode === "shell" ? "shell" : traced?.status || "starting",
     stuck_minutes: traced?.stuck_minutes,
     doing: safe(traced?.doing), tool: traced?.tool, summary: safe(traced?.summary), skill: traced?.skill,
     last_report: safe(traced?.report), error: safe(traced?.error), last_event_at: traced?.at,
@@ -366,9 +294,9 @@ const summary = (t) => {
     // uncommitted work in its folder: { branch, files, untracked, added, removed, ahead, behind }
     git: gitOf(t),
     // tokens its chat has used: { tokens, input, cached, output, budget?, over_budget }
-    usage: usageOf(t),
+    usage: usageOf(t, meta.get(t.id)?.claudeSession),
     // the prompt on screen, when it's waiting: { question, options: [{ n, label }] }
-    choices: waiting ? choicesOf(t) : undefined,
+    choices: waiting ? (v?.choices ? { question: v.choices.question, options: v.choices.options } : null) : undefined,
     // its own git worktree (open_session with worktree): { repo, path, branch }
     worktree: meta.get(t.id)?.worktree || undefined,
     // relaunched (resuming its chat) after the machine restarted
@@ -377,58 +305,26 @@ const summary = (t) => {
 };
 
 // ---------- reading and typing into terminals (used by AXA's terminal tools) ----------
-function screenLines(t, lines = 60) {
-  const n = Math.max(1, Math.min(lines, 400));
-  let out;
-  if (t.tmux) {
-    // -J rejoins lines the terminal wrapped, so a long secret split across two rows is still recognized.
-    // Briefly cached: the session list checks every screen for permission prompts.
-    const c = t.capture;
-    if (!(c && Date.now() - c.at < 500 && c.n >= n) && t.alive) {
-      const r = tmux("capture-pane", "-p", "-J", "-t", paneTarget(t.id), "-S", `-${n}`);
-      if (r.status === 0) t.capture = { at: Date.now(), n, lines: r.stdout.split("\n").map((l) => l.trimEnd()) };
-    }
-    out = [...(t.capture?.lines || [])];
-  } else {
-    const b = t.screen.buffer.active;
-    out = [];
-    // Rejoin lines the terminal wrapped, so a long secret split across two rows is still recognized
-    for (let i = 0; i < b.length; i++) {
-      const line = b.getLine(i);
-      const text = line?.translateToString(true) ?? "";
-      if (line?.isWrapped && out.length) out[out.length - 1] += text;
-      else out.push(text);
-    }
-  }
-  while (out.length && !out[out.length - 1].trim()) out.pop();
-  return out.slice(-n);
-}
-// Claude Code's permission dialogs: AXA must never answer these on the user's behalf. The traced
-// PermissionRequest/Notification events are the main signal; this screen check is a backup.
-// Any of Claude Code's choice dialogs counts (permission, folder trust, new MCP server...): they all
-// end with "Enter to confirm · Esc to cancel/exit" and number their options.
-const PERMISSION_RE = /Do you want to (proceed|make this edit|create|allow)|Do you trust the files|trust this folder|Yes, and don't ask again|❯\s*1\.\s*Yes|MCP servers? found|Enter to confirm · Esc to (cancel|exit)/i;
-function awaitingPermission(t) { return PERMISSION_RE.test(screenLines(t, 25).join("\n")); }
-
-export function readTerm(id, lines = 60) {
+export async function readTerm(id, lines = 60) {
   const t = terms.get(id);
   if (!t) return null;
-  return { ...summary(t), screen: safe(screenLines(t, lines).join("\n")) };
+  const s = await capture(t, lines).catch(() => null);
+  return { ...summary(t), screen: safe((s?.lines || []).join("\n")) };
 }
 
-const typeText = (t, text) => {
+const typeText = async (t, text) => {
+  screenChanged(t, { forget: false });
   if (!t.tmux) return t.proc.write(text);
   // tmux reads a lone ";" (or a trailing "\;") as a command separator: send those as hex bytes
   if (text) {
-    if (text === ";" || text.endsWith("\\;")) tmux("send-keys", "-t", paneTarget(t.id), "-H", ...[...Buffer.from(text)].map((b) => b.toString(16)));
-    else tmux("send-keys", "-t", paneTarget(t.id), "-l", "--", text);
+    if (text === ";" || text.endsWith("\\;")) await tmux("send-keys", "-t", paneTarget(t.id), "-H", ...[...Buffer.from(text)].map((b) => b.toString(16)));
+    else await tmux("send-keys", "-t", paneTarget(t.id), "-l", "--", text);
   }
-  t.capture = null;
 };
-const pressEnter = (t) => {
+const pressEnter = async (t) => {
+  screenChanged(t, { forget: false });
   if (!t.tmux) return t.proc.write("\r");
-  tmux("send-keys", "-t", paneTarget(t.id), "Enter");
-  t.capture = null;
+  await tmux("send-keys", "-t", paneTarget(t.id), "Enter");
 };
 
 // confirmed: the user explicitly approved this exact command (needed for dangerous shell commands)
@@ -440,10 +336,12 @@ export async function sendToTerm(id, text, { enter = true, confirmed = false } =
   // Claude sessions are covered by Claude Code's own permission checks instead.
   const danger = t.mode === "shell" && dangerousShell(text);
   if (danger && !confirmed) return { ok: false, error: `Not sent: this looks dangerous (${danger}). Ask the user to approve this exact command first, then resend with confirmed_by_user: true.` };
-  if (awaitingPermission(t) || statusOf(t.id)?.status === "waiting") return { ok: false, error: "This session is waiting on a permission/trust prompt. Only the user may answer it — tell them which session needs attention." };
-  typeText(t, text);
+  // a fresh look, not the cache: typing into an open prompt could answer it
+  const s = await capture(t);
+  if ((s && awaitingPermission(s.lines)) || statusOf(t.id)?.status === "waiting") return { ok: false, error: "This session is waiting on a permission/trust prompt. Only the user may answer it — tell them which session needs attention." };
+  await typeText(t, text);
   // submit separately so TUIs treat it as Enter, not part of a paste
-  if (enter) { await new Promise((r) => setTimeout(r, 60)); pressEnter(t); }
+  if (enter) { await sleep(60); await pressEnter(t); }
   return { ok: true };
 }
 export const listTerms = () => [...terms.values()].map(summary);
@@ -455,24 +353,23 @@ const isDir = (p) => { try { return statSync(p).isDirectory(); } catch { return 
 // ---------- worktrees: a session on its own branch and folder, so parallel work can't collide ----------
 // <repo>/.claude/worktrees/<name> on branch axa/<name> (the folder Claude Code itself uses), hidden from
 // the main checkout through .git/info/exclude. Inside the repo, so the folder trust you gave the repo applies.
-const gitSync = (cwd, ...args) => spawnSync("git", args, { cwd, encoding: "utf8", env: gitEnv(), timeout: 15_000 });
-function makeWorktree(dir, want) {
+async function makeWorktree(dir, want) {
   const name = (typeof want === "string" && want.trim() ? want : `goal-${new Date().toISOString().slice(5, 16).replace(/[-T:]/g, "")}`)
     .toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40);
   if (!name) throw new Error("worktree name must have letters or digits");
-  const top = gitSync(dir, "rev-parse", "--show-toplevel");
+  const top = await gitRun(dir, ["rev-parse", "--show-toplevel"]);
   if (top.status !== 0) throw new Error(`${dir} isn't a git repository, so it can't have a worktree`);
   const repo = top.stdout.trim();
   if (!inHome(repo)) throw new Error("the repository must be in your home folder");
   const path = join(repo, ".claude", "worktrees", name), branch = `axa/${name}`;
   if (!isDir(path)) {
-    const hasBranch = gitSync(repo, "rev-parse", "--verify", "-q", `refs/heads/${branch}`).status === 0;
-    const r = hasBranch ? gitSync(repo, "worktree", "add", path, branch) : gitSync(repo, "worktree", "add", "-b", branch, path, "HEAD");
+    const hasBranch = (await gitRun(repo, ["rev-parse", "--verify", "-q", `refs/heads/${branch}`])).status === 0;
+    const r = await gitRun(repo, hasBranch ? ["worktree", "add", path, branch] : ["worktree", "add", "-b", branch, path, "HEAD"]);
     if (r.status !== 0) throw new Error(`couldn't create the worktree: ${(r.stderr || "").trim()}`);
   }
   // keep the worktree folder out of the main checkout's git status (local only, nothing committed)
   try {
-    const common = gitSync(repo, "rev-parse", "--path-format=absolute", "--git-common-dir").stdout.trim();
+    const common = (await gitRun(repo, ["rev-parse", "--path-format=absolute", "--git-common-dir"])).stdout.trim();
     const exclude = join(common, "info", "exclude");
     const cur = existsSync(exclude) ? readFileSync(exclude, "utf8") : "";
     if (!cur.split("\n").includes("/.claude/worktrees/")) { mkdirSync(dirname(exclude), { recursive: true }); writeFileSync(exclude, cur + (cur && !cur.endsWith("\n") ? "\n" : "") + "/.claude/worktrees/\n"); }
@@ -482,17 +379,17 @@ function makeWorktree(dir, want) {
 
 // resume: continue a previous chat (an id from listChats) instead of starting a new one
 // worktree: true or a name: run the session in its own git worktree of that repo (see makeWorktree)
-export function createTerm({ cwd, mode = "claude", cols = 100, rows = 30, resume, worktree }) {
+export async function createTerm({ cwd, mode = "claude", cols = 100, rows = 30, resume, worktree }) {
   if (resume !== undefined && !CHAT_ID.test(String(resume))) throw new Error("not a chat id");
   let dir = expand(cwd || homedir());
   if (!inHome(dir) || !isDir(dir)) throw new Error("cwd must be an existing folder in your home folder");
   let wt = null;
-  if (worktree && mode !== "axa") { wt = makeWorktree(dir, worktree); dir = wt.path; }
+  if (worktree && mode !== "axa") { wt = await makeWorktree(dir, worktree); dir = wt.path; }
   const id = randomUUID().slice(0, 8);
-  return summary(launch({ id, cwd: dir, mode, cols, rows, resume, created: Date.now(), name: wt?.name, worktree: wt ? { repo: wt.repo, path: wt.path, branch: wt.branch } : undefined }));
+  return summary(await launch({ id, cwd: dir, mode, cols, rows, resume, created: Date.now(), name: wt?.name, worktree: wt ? { repo: wt.repo, path: wt.path, branch: wt.branch } : undefined }));
 }
 
-function launch({ id, cwd, mode, cols, rows, resume, created, recovered = false, name, worktree }) {
+async function launch({ id, cwd, mode, cols, rows, resume, created, recovered = false, name, worktree }) {
   const resumeArg = resume ? ` --resume ${resume}` : "";
   const shell = process.env.SHELL || "/bin/bash";
   // claude/axa: run Claude Code (traced), and drop to a normal shell if it exits
@@ -509,8 +406,8 @@ function launch({ id, cwd, mode, cols, rows, resume, created, recovered = false,
     // AXA's tmux (and type into other sessions' prompts) through it
     const cmd = "exec " + ["env", "-u", "TMUX", "-u", "TMUX_PANE", ...(withEnv ? [] : Object.entries(tag).map(([k, v]) => `${k}=${v}`)), shell, ...args].map(shq).join(" ");
     const envArgs = withEnv ? Object.entries(tag).flatMap(([k, v]) => ["-e", `${k}=${v}`]) : [];
-    const r = tmux("new-session", "-d", "-s", tmuxName(id), "-c", cwd, "-x", String(cols), "-y", String(rows), ...envArgs, cmd);
-    if (r.status !== 0) throw new Error(`couldn't start the session in tmux: ${(r.stderr || r.error?.message || "").trim()}`);
+    const r = await tmux("new-session", "-d", "-s", tmuxName(id), "-c", cwd, "-x", String(cols), "-y", String(rows), ...envArgs, cmd);
+    if (r.status !== 0) throw new Error(`couldn't start the session in tmux: ${(r.stderr || "").trim()}`);
     meta.set(id, { ...meta.get(id), id, name: t.name, cwd, mode, created, resume: resume || null, recovered, ...(worktree ? { worktree } : {}) });
     saveMeta();
     attach(t, cols, rows);
@@ -530,6 +427,7 @@ function launch({ id, cwd, mode, cols, rows, resume, created, recovered = false,
     });
   }
   terms.set(id, t);
+  refreshScreen(t);
   return t;
 }
 
@@ -538,28 +436,28 @@ function launch({ id, cwd, mode, cols, rows, resume, created, recovered = false,
 // (tmux redraws the whole screen on attach).
 function attach(t, cols, rows) {
   const proc = pty.spawn("tmux", ["-L", SOCKET, "-f", TMUX_CONF, "attach-session", "-t", `=${tmuxName(t.id)}`],
-    { name: "xterm-256color", cols, rows, cwd: homedir(), env: tmuxEnv() });
+    { name: "xterm-256color", cols, rows, cwd: homedir(), env: TMUX_ENV });
   t.proc = proc;
   proc.onData((d) => {
     t.buf = (t.buf + d).slice(-SCROLLBACK);
     t.lastOutput = Date.now();
     for (const ws of t.sockets) ws.send(d);
   });
-  proc.onExit(({ exitCode }) => {
+  proc.onExit(async ({ exitCode }) => {
     if (t.closing) return; // the console is stopping or the session was closed
     t.alive = false;
-    // Its program exited and the tmux session is gone: forget it, so a restart doesn't bring it back
-    if (!tmuxHas(t.id)) { meta.delete(t.id); saveMeta(); }
     for (const ws of t.sockets) ws.send(`\r\n\x1b[2m[process exited ${exitCode}]\x1b[0m\r\n`);
+    // Its program exited and the tmux session is gone: forget it, so a restart doesn't bring it back
+    if (!(await tmuxHas(t.id))) { meta.delete(t.id); saveMeta(); }
   });
 }
 
 // On console start: show the tmux sessions still running (same id, name and mode). If the tmux server
 // itself is gone (the machine restarted), Claude sessions are relaunched resuming their chat; shells
 // are dropped. tmux sessions on AXA's socket with no record are adopted as shells.
-export function restoreTerms() {
+export async function restoreTerms() {
   if (backend !== "tmux") return [];
-  const r = tmux("list-sessions", "-F", "#{session_name}\t#{session_path}\t#{window_width}\t#{window_height}\t#{session_created}");
+  const r = await tmux("list-sessions", "-F", "#{session_name}\t#{session_path}\t#{window_width}\t#{window_height}\t#{session_created}");
   const serverUp = r.status === 0; // tmux.conf keeps the server up with no sessions, so "no server" means it was stopped
   const live = new Map();
   if (serverUp) {
@@ -586,7 +484,7 @@ export function restoreTerms() {
     const chat = [m.claudeSession, m.resume].find((c) => CHAT_ID.test(String(c)));
     if (!serverUp && (m.mode === "claude" || m.mode === "axa") && chat && inHome(m.cwd) && isDir(m.cwd)) {
       try {
-        launch({ id: m.id, cwd: m.cwd, mode: m.mode, cols: 100, rows: 30, resume: chat, created: m.created || Date.now(), recovered: true });
+        await launch({ id: m.id, cwd: m.cwd, mode: m.mode, cols: 100, rows: 30, resume: chat, created: m.created || Date.now(), recovered: true });
         restored.push(m.id);
         continue;
       } catch {}
@@ -599,18 +497,24 @@ export function restoreTerms() {
 
 // removeWorktree: also remove the session's worktree folder, only if it has nothing uncommitted (git
 // refuses otherwise). Its branch is always kept, so committed work is never lost.
-export function killTerm(id, { removeWorktree = false } = {}) {
+export async function killTerm(id, { removeWorktree = false } = {}) {
   const t = terms.get(id);
   if (!t) return false;
-  const wt = meta.get(id)?.worktree;
+  const m = meta.get(id), wt = m?.worktree;
   t.closing = true;
-  if (t.tmux) { tmux("kill-session", "-t", `=${tmuxName(id)}`); meta.delete(id); saveMeta(); }
+  const killed = t.tmux ? tmux("kill-session", "-t", `=${tmuxName(id)}`) : null;
+  if (t.tmux) { meta.delete(id); saveMeta(); }
   try { t.proc?.kill(); } catch {}
   try { t.screen?.dispose(); } catch {}
+  clearTimeout(t.viewKick);
   for (const ws of t.sockets) ws.close();
   terms.delete(id);
+  // its caches go with it (another open session in the same folder keeps the git one)
+  forgetUsage(m?.claudeSession);
+  if (![...terms.values()].some((o) => o.cwd === t.cwd)) forgetGit(t.cwd);
+  await killed;
   if (!removeWorktree || !wt) return { closed: true };
-  const r = gitSync(wt.repo, "worktree", "remove", wt.path);
+  const r = await gitRun(wt.repo, ["worktree", "remove", wt.path]);
   return { closed: true, worktree_removed: r.status === 0, branch_kept: wt.branch, ...(r.status !== 0 ? { worktree_error: (r.stderr || "").trim() } : {}) };
 }
 
@@ -625,7 +529,7 @@ export function killAll() {
   }
 }
 // End every session, tmux ones included
-export function closeAll() { for (const id of [...terms.keys()]) killTerm(id); }
+export const closeAll = () => Promise.all([...terms.keys()].map((id) => killTerm(id)));
 
 // WebSocket endpoint: /pty/<id>. `authorize(req)` decides whether the upgrade is allowed.
 export function attachWebSocket(server, authorize) {
@@ -643,11 +547,12 @@ export function attachWebSocket(server, authorize) {
         if (msg.t === "i" && typeof msg.d === "string") { t.proc.write(msg.d); t.lastInput = Date.now(); }
         if (msg.t === "r" && msg.c > 0 && msg.r > 0) {
           const c = Math.min(msg.c, 500), r = Math.min(msg.r, 300);
-          t.proc.resize(c, r); t.screen?.resize(c, r); t.capture = null;
+          t.proc.resize(c, r); t.screen?.resize(c, r);
           // The window follows whichever screen you're using right now. tmux's own rule ("the latest
           // client") lags until you type, and left a dotted, mis-sized terminal after the phone or
           // `axa attach` had been used: so set the size explicitly (the page re-sends it on focus)
-          if (t.tmux) tmux("resize-window", "-t", `=${tmuxName(t.id)}:`, "-x", String(c), "-y", String(r));
+          if (t.tmux) tmux("resize-window", "-t", `=${tmuxName(t.id)}:`, "-x", String(c), "-y", String(r)).then(() => screenChanged(t, { forget: false }));
+          else screenChanged(t, { forget: false });
         }
       });
       ws.on("close", () => t.sockets.delete(ws));

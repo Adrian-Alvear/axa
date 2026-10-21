@@ -1,0 +1,9 @@
+⏺ Done. The tests pass (42 passed, 0 failed) and the README lists the new
+  --json flag.
+
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ > Try "write a test for server.mjs"                                          │
+╰──────────────────────────────────────────────────────────────────────────────╯
+  ? for shortcuts                                        ⧉ In server.mjs
+
+
