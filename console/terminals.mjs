@@ -261,19 +261,28 @@ setInterval(refreshScreens, SCREEN_MS).unref();
 // The user picked option n (and saw `label`): move the menu's cursor to it and press Enter, but only if
 // the same menu is on screen right now (a fresh capture, not the cache), so a tap never lands on a
 // different prompt. Only the user, from the console page, can answer (see the server's /answer route).
-export async function answerTerm(id, n, label) {
+// `question` is the prompt's text as the user saw it: a different prompt with the same options (another
+// "Do you want to proceed?") is refused too. One answer at a time per session, so a double tap can't
+// press keys into whatever the first answer led to.
+export async function answerTerm(id, n, label, question) {
   const t = terms.get(id);
   if (!t || !t.alive) return { ok: false, error: "That session isn't running." };
-  const s = await capture(t);
-  const c = s && awaitingPermission(s.lines) && choicesOf(s.lines, s.width);
-  if (!c) return { ok: false, error: "That prompt is no longer on screen." };
-  const o = c.options.map((x) => ({ n: x.n, label: safe(x.label) })).find((x) => x.n === Number(n));
-  if (!o || o.label !== label) return { ok: false, error: "The prompt changed. Look again before answering." };
-  const { moves, keys } = answerKeys(c.cursor, o.n);
-  screenChanged(t);
-  if (t.tmux) await tmux("send-keys", "-t", paneTarget(t.id), ...keys);
-  else t.proc.write((moves > 0 ? "\x1b[B" : "\x1b[A").repeat(Math.abs(moves)) + "\r");
-  return { ok: true, option: o, question: safe(c.question) };
+  if (t.answering) return { ok: false, error: "Already answering that prompt." };
+  t.answering = true;
+  try {
+    const s = await capture(t);
+    const c = s && awaitingPermission(s.lines) && choicesOf(s.lines, s.width);
+    if (!c) return { ok: false, error: "That prompt is no longer on screen." };
+    const o = c.options.map((x) => ({ n: x.n, label: safe(x.label) })).find((x) => x.n === Number(n));
+    if (!o || o.label !== label || safe(c.question) !== question) return { ok: false, error: "The prompt changed. Look again before answering." };
+    const { moves, keys } = answerKeys(c.cursor, o.n);
+    screenChanged(t);
+    if (t.tmux) await tmux("send-keys", "-t", paneTarget(t.id), ...keys);
+    else t.proc.write((moves > 0 ? "\x1b[B" : "\x1b[A").repeat(Math.abs(moves)) + "\r");
+    // let the screen move on before the next answer is checked against it
+    await sleep(300);
+    return { ok: true, option: o, question: safe(c.question) };
+  } finally { t.answering = false; }
 }
 
 const summary = (t) => {

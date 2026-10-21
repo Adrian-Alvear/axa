@@ -59,7 +59,9 @@ commander tells you which session and why. The commander never answers prompts i
 sends the commander session an automatic update: it checks the work, verifies the claims, gives the
 next step if it's within what you asked, and reports back, without you having to ask. It only types
 when the commander is idle and you haven't typed in its tab for 30 seconds, and at most
-`AXA_WAKES_PER_HOUR` (default 30) times an hour. `AXA_SUPERVISOR=0` turns it off.
+`AXA_WAKES_PER_HOUR` (default 30) times an hour. When that limit holds updates back, the web console
+and the terminal app say so ("AXA wake limit reached (30/h) · 3 updates waiting · resumes 14:05").
+`AXA_SUPERVISOR=0` turns it off.
 
 **"Done" means checked.** If a project session edits code and then tries to finish without running any
 check after its last edit, AXA's verify gate (`hooks/verify-gate.mjs`) sends it back once to run the
@@ -180,7 +182,7 @@ the same thing.
 ### From the terminal
 
 ```
-axa status            # every session, what needs you first: ⚠ needs you, ◷ stuck, ● working, ✓ done
+axa status            # every session, what needs you first: ⚠ needs you, ◷ stuck, ● working, ✓ done, ○ shell
 axa status --watch    # live: rings the bell when a session starts needing you; 1-9 attach, c console, q quit
 axa status --json     # the same list for scripts
 axa attach launches   # take over a session in this terminal (name, id or a unique prefix); Ctrl-] detaches
@@ -303,6 +305,13 @@ Project sessions that AXA starts check every tool call against a policy before r
   - **The rest is decided by AXA:** a quick, tool-less Claude call (~3 seconds) weighs the request
     against the session's goal and approves it, declines it with a reason the session sees (it then
     finds another way), or passes it to you if unsure. Each decision shows in the console feed.
+  - **No model call when none is needed:** reading and searching inside the project (or its scratch
+    folder) is approved at once, and an approval or refusal for the same command in the same project
+    and session is reused (logged with `cached: true`). One-way doors and anything AXA passed to
+    you are never remembered.
+- **Claude Code's own settings are off limits:** sessions can't edit `.claude/settings*.json` (that
+  could switch AXA's checks off), and commands that write files (`sort -o`, `tee`, `cp`…) are never
+  auto-approved.
 
 It only applies to project sessions AXA starts, never to the commander or your own Claude sessions.
 Every decision is logged. To tune it, create `~/.axa/policy.json`:
@@ -322,6 +331,15 @@ every leftover prompt to you, `"approver": { "model": "haiku" }` picks its model
 always asks you for matching requests.
 
 Some of these patterns are adapted from ECC (MIT); see [CREDITS.md](CREDITS.md).
+
+## Development
+
+Zero dependencies outside the console's terminal packages. `npm test` (or `node --test`) runs the
+tests in `test/`: the safety patterns, the permission policy and approver, the session status state
+machine, prompt parsing against captured screens, the server's access checks, and the terminal app's
+event replay. They start throwaway consoles on private ports and homes, never your own.
+`node scripts/perf.mjs` measures the console's event-loop delay and the terminal app's idle output
+with 8 shell sessions (numbers in `docs/perf/baseline.md`).
 
 ## Privacy
 

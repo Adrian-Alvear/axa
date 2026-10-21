@@ -141,7 +141,7 @@ export function overlays(c) {
   }
 
   async function answerSession(s, o) {
-    try { await c.api(`/api/terms/${s.id}/answer`, { method: "POST", body: { n: o.n, label: o.label }, headers: { "x-axa-client": "tui" } }); await c.poll(); }
+    try { await c.api(`/api/terms/${s.id}/answer`, { method: "POST", body: { n: o.n, label: o.label, question: s.choices?.question }, headers: { "x-axa-client": "tui" } }); await c.poll(); }
     catch (e) { flash("Couldn't answer", [e.message]); }
   }
   async function answerAlert(which) {

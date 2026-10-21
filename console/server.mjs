@@ -240,7 +240,7 @@ const server = createServer(async (req, res) => {
       const fromPage = req.headers["sec-fetch-site"] === "same-origin" && req.headers.origin, fromTui = req.headers["x-axa-client"] === "tui";
       if (!fromPage && !fromTui) return json(res, 403, { error: "Only you can answer a prompt, from the console or the axa terminal UI." });
       const b = await readBody(req);
-      const r = await T.answerTerm(am[1], b.n, String(b.label ?? ""));
+      const r = await T.answerTerm(am[1], b.n, String(b.label ?? ""), String(b.question ?? ""));
       if (r.ok) {
         logEvent({ ts: Date.now(), event: "UserAnswer", terminal: am[1], session: sessions.get(am[1])?.session, role: "console", answer: r.option.label.slice(0, 120), summary: r.question.slice(-200) });
       }

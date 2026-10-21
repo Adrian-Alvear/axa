@@ -72,7 +72,7 @@ export function createSupervisor({ T, home, logEvent, enabled = true, wakesPerHo
   // carries no untrusted text. It's only typed when the commander is idle and the user hasn't typed
   // into it for a while; updates queue up meanwhile. AXA_SUPERVISOR=0 turns this off.
   const lastSeen = new Map(), pending = new Map(), wakes = [], budgetTold = new Set();
-  let primed = false, limitToldAt = 0;
+  let primed = false, limitToldAt = 0; // limitToldAt: when the last limit notice expires
   function supervise() {
     if (!T) return;
     const list = T.listTerms();
@@ -103,9 +103,10 @@ export function createSupervisor({ T, home, logEvent, enabled = true, wakesPerHo
     while (wakes.length && t - wakes[0] > HOUR) wakes.shift();
     if (wakes.length >= wakesPerHour) {
       // A runaway loop: updates wait (the needs-you badge still shows them). Say so once an hour, so
-      // the console can show why AXA went quiet.
-      if (!limitToldAt || t - limitToldAt >= HOUR) {
-        limitToldAt = t;
+      // the console can show why AXA went quiet (again once the last notice's reset time has passed,
+      // so the banner never disappears while updates are still held back)
+      if (t >= limitToldAt) {
+        limitToldAt = wakes[0] + HOUR;
         logEvent({ ts: t, event: "SupervisorLimit", role: "console", terminal: cmd.id, limit: wakesPerHour, pending: ready.map(([, p]) => p.name), resets_at: wakes[0] + HOUR });
       }
       return;

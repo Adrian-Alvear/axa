@@ -84,7 +84,7 @@ async function answer(p, b) {
   }
   clearTimeout(b._t); b.disabled = true;
   const opt = p.choices?.options.find((o) => o.n === Number(b.dataset.n));
-  const r = await fetch(`/api/terms/${p.id}/answer`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ n: opt?.n, label: opt?.label }) });
+  const r = await fetch(`/api/terms/${p.id}/answer`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ n: opt?.n, label: opt?.label, question: p.choices?.question }) });
   const body = await r.json().catch(() => ({}));
   b.disabled = false; b.classList.remove("armed"); b.textContent = b.dataset.label;
   if (!r.ok) alert(body.error || "Couldn't answer it");

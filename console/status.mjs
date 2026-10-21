@@ -83,9 +83,16 @@ export function createStatus({ stuckMs = STUCK_MS, approverMs = APPROVER_MS, run
   // ---------- runs: each instruction a session got, from the prompt to its result ----------
   // For the run history and the "since you left" briefing. Rebuilt from the event log on start.
   const runs = [], openRuns = new Map(); // terminal -> its current run
+  const closedRuns = new Map(); // terminal -> { run, at }: its run that a Stop just ended
   function trackRun(e, s) {
-    const r = openRuns.get(e.terminal);
+    let r = openRuns.get(e.terminal);
+    // A Stop logged just before its VerifyGate closed the run too early: the gate bounce reopens it
+    const shut = closedRuns.get(e.terminal);
+    if (!r && e.event === "VerifyGate" && shut && e.ts - shut.at < GATE_MS) {
+      r = shut.run; r.status = "running"; r.end = r.report = undefined; openRuns.set(e.terminal, r); closedRuns.delete(e.terminal);
+    }
     if (e.event === "UserPromptSubmit") {
+      closedRuns.delete(e.terminal);
       if (/^\s*<task-notification>/.test(e.prompt || "")) return;
       if (r) { r.status = "replaced"; r.end = e.ts; }
       const run = { id: `${e.terminal}-${e.ts}`, terminal: e.terminal, cwd: e.cwd, role: e.role, prompt: clipText(e.prompt, 400), start: e.ts, steps: 0, helpers: 0, approvals: 0, declined: 0, escalated: 0, refused: 0, gate: 0, failures: 0, answers: [], status: "running" };
@@ -102,7 +109,7 @@ export function createStatus({ stuckMs = STUCK_MS, approverMs = APPROVER_MS, run
       case "VerifyGate": r.gate++; break;
       case "UserAnswer": r.answers.push(clipText(e.answer, 80)); break;
       // a verify-gate bounce isn't the end of the run (track() keeps it "working")
-      case "Stop": if (s.status === "done") { r.status = "done"; r.end = e.ts; r.report = clipText(e.message, 600); openRuns.delete(e.terminal); } break;
+      case "Stop": if (s.status === "done") { r.status = "done"; r.end = e.ts; r.report = clipText(e.message, 600); openRuns.delete(e.terminal); closedRuns.set(e.terminal, { run: r, at: e.ts }); } break;
     }
   }
   // termList: the open sessions (listTerms()), to name each run and mark runs whose session is gone

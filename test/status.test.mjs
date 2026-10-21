@@ -160,7 +160,6 @@ test("runs: steps, helpers, approvals, gate count, done on the real Stop", () =>
   ev("PolicyDecision", { decision: "deny" });
   ev("PostToolUseFailure", { tool: "Bash", error: "exit 1" });
   ev("UserAnswer", { answer: "Yes" });
-  // (gate logged first: with Stop first, today's trackRun closes the run at that Stop)
   tick(1000); ev("VerifyGate");
   tick(100); ev("Stop");
   let [run] = st.runs;
@@ -178,6 +177,19 @@ test("runs: steps, helpers, approvals, gate count, done on the real Stop", () =>
   assert.deepEqual(open.map((r) => [r.name, r.status]), [["shop", "running"], ["shop", "done"]]);
   const closed = st.runsSince(0, 10, []);
   assert.deepEqual(closed.map((r) => [r.name, r.status]), [["shop", "unfinished"], ["shop", "done"]]);
+});
+
+test("runs: a Stop logged before its VerifyGate doesn't end the run", () => {
+  const { st, ev, tick } = setup();
+  ev("UserPromptSubmit", { prompt: "build it" });
+  tick(1000); ev("Stop", { message: "early" });
+  tick(100); ev("VerifyGate");
+  let [run] = st.runs;
+  assert.equal(run.status, "running");
+  assert.equal(run.gate, 1);
+  tick(5000); ev("Stop", { message: "Checked and done." });
+  [run] = st.runs;
+  assert.deepEqual([st.runs.length, run.status, run.report, run.gate], [1, "done", "Checked and done.", 1]);
 });
 
 test("runs: a new prompt replaces the open run; task notifications don't start one; capped", () => {
