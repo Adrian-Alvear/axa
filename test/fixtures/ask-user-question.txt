@@ -1,0 +1,17 @@
+⏺ Before I set up the service I need one decision from you.
+
+────────────────────────────────────────────────────────────────────────────────
+ ☐ Database 
+
+Which database should the new orders service use?
+
+❯ PostgreSQL
+    Relational, strong consistency; what the rest of the stack already uses
+  SQLite
+    A single file and no server to run; fine for a prototype
+  A managed document store from the cloud provider we already pay for, with
+  automatic backups
+    Less to operate, but ties us to one vendor
+  Type something else
+
+Enter to confirm · Esc to cancel
