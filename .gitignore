@@ -1,3 +1,4 @@
 .test-home/
 node_modules/
 .DS_Store
+/.claude/worktrees/
