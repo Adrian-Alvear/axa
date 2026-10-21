@@ -1,0 +1,8 @@
+{
+  "name": "axa",
+  "private": true,
+  "description": "AXA: orchestrator, console and terminal app for Claude Code",
+  "scripts": {
+    "test": "node --test"
+  }
+}
