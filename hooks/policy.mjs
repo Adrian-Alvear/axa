@@ -76,6 +76,9 @@ const inside = (p, dir) => { if (!dir) return false; const r = relative(dir, p);
 const inGit = (p, ctx) => relative(ctx.root, p).split(sep)[0] === ".git";
 const SECRET = /^(?:\.env(?:rc|\.(?!example$|sample$|template$)[\w.-]+)?|.*\.(?:pem|p12|pfx|key)|id_(?:rsa|ed25519|ecdsa|dsa)(?:\.pub)?|credentials(?:\.json)?|\.netrc|\.npmrc|\.pypirc)$/i;
 const isSecret = (p) => SECRET.test(basename(p)) || /\/\.ssh\/|\/\.aws\/|\/\.gnupg\//.test(p);
+// Claude Code's own settings: a session that edits them could switch AXA's checks off (env AXA_ROLE,
+// disableAllHooks, permissions.allow), so they're never auto-approved
+const isClaudeSettings = (p) => /(?:^|\/)\.claude\/settings(?:\.local)?\.json$/.test(p);
 
 // ---------- the decision ----------
 const allow = (reason) => ({ decision: "allow", reason });
@@ -103,6 +106,7 @@ function decide(tool, input, ctx) {
     case "Edit": case "Write": case "MultiEdit": case "NotebookEdit": {
       const p = pathOf(input.file_path || input.notebook_path || "", ctx);
       if (isSecret(p)) return deny(`editing a secret file (${basename(p)}) isn't allowed; ask the user`);
+      if (isClaudeSettings(p)) return deny("editing Claude Code's settings (.claude/settings*.json) isn't allowed: it could switch off AXA's checks; ask the user");
       if (inside(p, ctx.scratch)) return ok("writing to the session's scratch folder");
       if (!inside(p, ctx.root)) return deny(`${p} is outside this project (${ctx.root}); edit only inside the project`);
       if (inGit(p, ctx)) return deny("editing .git internals isn't allowed; use git commands");
@@ -183,7 +187,7 @@ function safeSegment(words, ctx) {
     if (target === "&1" || target === "&2" || target === "/dev/null") continue;
     if (!target) return false;
     const p = pathOf(target, ctx);
-    if (!inside(p, ctx.root) || inGit(p, ctx) || isSecret(p)) return false;
+    if (!inside(p, ctx.root) || inGit(p, ctx) || isSecret(p) || isClaudeSettings(p)) return false;
   }
   if (!args.length) return false;
   const [cmd, ...rest] = args;
