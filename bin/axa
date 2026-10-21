@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // `axa`: your commander from any terminal.
-//   axa            mission control in this terminal: AXA and every session, live (console/tui.mjs)
+//   axa            mission control in this terminal: AXA and every session, live (console/tui/)
 //   axa chat       the commander as a plain Claude Code session here
 //   (both start the console in the background if needed)
 //   axa console    start the console if needed and open it in your browser
@@ -39,9 +39,9 @@ const paint = (code, s) => (color ? `\x1b[${code}m${s}\x1b[0m` : s);
 // status: [glyph, ascii glyph, word, ANSI color] (the 16 basic colors, so your terminal theme applies)
 const LOOK = {
   waiting: ["⚠", "!", "needs you", "1;33"], stuck: ["◷", "~", "stuck", "31"], working: ["●", "*", "working", "36"],
-  done: ["✓", "+", "done", "32"], ready: ["○", "o", "ready", "0"], starting: ["◌", ".", "starting", "2"], exited: ["–", "-", "exited", "2"],
+  done: ["✓", "+", "done", "32"], ready: ["○", "o", "ready", "0"], shell: ["○", "$", "shell", "2"], starting: ["◌", ".", "starting", "2"], exited: ["–", "-", "exited", "2"],
 };
-const URGENCY = ["waiting", "stuck", "working", "done", "ready", "starting", "exited"];
+const URGENCY = ["waiting", "stuck", "working", "done", "ready", "shell", "starting", "exited"];
 const byUrgency = (list) => list.slice().sort((a, b) => URGENCY.indexOf(a.status) - URGENCY.indexOf(b.status) || (b.last_event_at || b.created) - (a.last_event_at || a.created));
 // control characters (escape codes in a folder name, say) never reach your terminal
 const oneLine = (s) => String(s || "").replace(/[\u0000-\u001f\u007f-\u009f]+/g, " ").replace(/\s+/g, " ").trim();
@@ -199,10 +199,10 @@ if (cmd === "console") {
     console.log("All sessions ended.");
   } else console.log("Sessions keep running; `axa console` shows them again. `axa stop --all` ends them too.");
 } else if (!cmd || cmd === "ui") {
-  // Mission control in this terminal: AXA and every session, live (console/tui.mjs)
+  // Mission control in this terminal: AXA and every session, live (console/tui/)
   if (!process.stdin.isTTY || !out.isTTY) { console.error("`axa` opens a full-screen UI and needs a terminal. In scripts use: axa status --json"); process.exit(1); }
   if (!(await ensureConsole())) { console.error(`Couldn't start the console; see ${join(home, "console.log")}`); process.exit(1); }
-  const { runTui } = await import(join(root, "console", "tui.mjs"));
+  const { runTui } = await import(join(root, "console", "tui", "index.mjs"));
   await runTui({ port, readToken, openUrl, root, home });
 } else if (cmd === "chat" || cmd.startsWith("-")) {
   // The commander as a plain Claude Code session in this terminal (what `axa` used to open)
