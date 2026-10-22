@@ -4,10 +4,13 @@ const tabs = new Map(); // id -> { info, term, fit, ws, el, tab, search }
 let fontPx = 12.5;
 try { fontPx = Number(localStorage.getItem("axa.fontSize")) || (matchMedia("(max-width: 860px)").matches ? 14 : 12.5); } catch {}
 let activeTab = null;
-const XT_THEME = { background: "#03060a", foreground: "#cfe9f3", cursor: "#4fd8ff", cursorAccent: "#03060a", selectionBackground: "rgba(79,216,255,.3)",
-  black: "#0b1620", brightBlack: "#4f6b7a", blue: "#4fa8ff", brightBlue: "#8fc8ff", cyan: "#4fd8ff", brightCyan: "#9fe9ff",
-  green: "#5ef2c2", brightGreen: "#8ff7d6", magenta: "#c3a6ff", brightMagenta: "#dcc8ff", red: "#ff5468", brightRed: "#ff8a98",
-  white: "#cfe9f3", brightWhite: "#ffffff", yellow: "#ffd38a", brightYellow: "#ffe2ad" };
+// the terminals' colors come from the theme (theme.mjs), and xterm.js lifts any text that would fall
+// under 4.5:1 on its background; a new theme repaints every open terminal
+const MONO = getComputedStyle(document.documentElement).getPropertyValue("--font-mono").trim() || "monospace";
+onTheme(() => {
+  for (const t of tabs.values()) { t.term.options.theme = TH.xtermTheme(C.id); t.term.options.minimumContrastRatio = TH.XTERM_OPTIONS.minimumContrastRatio; }
+  requestAnimationFrame(() => fitTab(tabs.get(activeTab)));
+});
 
 function setTermsOpen(open) {
   document.body.classList.toggle("with-terms", open);
@@ -32,7 +35,7 @@ new ResizeObserver(() => fitTab(tabs.get(activeTab))).observe($("termhost"));
 function openTab(info) {
   if (tabs.has(info.id)) return tabs.get(info.id);
   const el = document.createElement("div"); el.className = "xt"; $("termhost").appendChild(el);
-  const term = new Terminal({ fontFamily: 'ui-monospace, "SF Mono", Menlo, monospace', fontSize: fontPx, lineHeight: 1.15, cursorBlink: true, theme: XT_THEME, allowProposedApi: true, scrollback: 5000 });
+  const term = new Terminal({ fontFamily: MONO, fontSize: fontPx, lineHeight: 1.15, cursorBlink: true, theme: TH.xtermTheme(C.id), ...TH.XTERM_OPTIONS, allowProposedApi: true, scrollback: 5000 });
   const fit = new FitAddon.FitAddon(); term.loadAddon(fit); term.open(el);
   // Optional add-ons (an older install may not have them yet): clickable links, search, GPU drawing
   let search = null;
@@ -48,7 +51,7 @@ function openTab(info) {
     return true;
   });
   const tab = document.createElement("div"); tab.className = "tab";
-  tab.innerHTML = `<span class="dot"></span><span>${esc(info.name)}</span><span class="mode">${{ claude: "claude", axa: "commander", shell: "sh" }[info.mode] || "sh"}</span><span class="x" title="Close">✕</span>`;
+  tab.innerHTML = `<span class="stx tg"></span><span>${esc(info.name)}</span><span class="mode">${{ claude: "claude", axa: "commander", shell: "sh" }[info.mode] || "sh"}</span><span class="x" title="Close">✕</span>`;
   if (info.mode === "axa") { tab.classList.add("axa"); $("tablist").prepend(tab); }
   tab.onclick = (ev) => { if (ev.target.classList.contains("x")) closeTab(info.id); else activate(info.id); };
   if (info.mode !== "axa") $("tablist").appendChild(tab);
@@ -67,7 +70,7 @@ function openTab(info) {
       replay = false; t.muted = true;
       term.write(m.data, () => { t.muted = false; });
     };
-    ws.onclose = () => { if (tabs.has(info.id)) tab.classList.add("dead"); };
+    ws.onclose = () => { if (tabs.has(info.id)) { tab.classList.add("dead"); tabStatus(t); } };
   };
   const REPLY = /^(?:\x1b\[[?>]?[\d;]*[cRn]|\x1b\][\d;]*rgb:[^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[IO])+$/;
   term.onData((d) => {
@@ -76,7 +79,16 @@ function openTab(info) {
     sendInput(t, d);
   });
   connectWs();
+  tabStatus(t);
   return t;
+}
+
+// a tab's status: glyph + word (in its tooltip) + color, from look.mjs; a closed one is "exited"
+function tabStatus(t) {
+  const st = t.tab.classList.contains("dead") || t.info.alive === false ? "exited" : LK.statusOf(t.info) || "starting", l = LK.lookOf(st);
+  const g = t.tab.querySelector(".tg");
+  g.textContent = l.glyph; g.style.setProperty("--c", roleVar(l.role));
+  t.tab.dataset.state = st; t.tab.title = `${t.info.name} · ${l.word}`;
 }
 
 function activate(id) {
@@ -103,14 +115,15 @@ function setFont(px) {
 $("fontdown").onclick = () => setFont(fontPx - 1);
 $("fontup").onclick = () => setFont(fontPx + 1);
 
-const FIND_LOOK = { matchBackground: "#5a4413", activeMatchBackground: "#0e6a85", matchOverviewRuler: "#ffb547", activeMatchColorOverviewRuler: "#4fd8ff" };
+// search highlights in the theme's own colors (xterm.js wants #rrggbb)
+const findLook = () => ({ matchBackground: TH.mix(C.bg, C.warn, 0.35), activeMatchBackground: TH.mix(C.bg, C.accent, 0.45), matchOverviewRuler: C.warn, activeMatchColorOverviewRuler: C.accent });
 function openFind() { if (!tabs.get(activeTab)?.search) return; $("findbar").hidden = false; $("findq").focus(); $("findq").select(); }
 function closeFind() { $("findbar").hidden = true; $("findn").textContent = ""; const t = tabs.get(activeTab); t?.search?.clearDecorations(); t?.term.focus(); }
 function find(back, incremental = false) {
   const t = tabs.get(activeTab), q = $("findq").value;
   if (!t?.search) return;
   if (!q) { t.search.clearDecorations(); $("findn").textContent = ""; return; }
-  const found = back ? t.search.findPrevious(q, { decorations: FIND_LOOK }) : t.search.findNext(q, { decorations: FIND_LOOK, incremental });
+  const found = back ? t.search.findPrevious(q, { decorations: findLook() }) : t.search.findNext(q, { decorations: findLook(), incremental });
   if (!found) $("findn").textContent = "no match";
 }
 const showFindCount = (r) => { $("findn").textContent = r.resultCount ? `${r.resultIndex + 1}/${r.resultCount}` : "no match"; };

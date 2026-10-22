@@ -2,10 +2,13 @@
 
 const $ = (id) => document.getElementById(id);
 
-// ---------- palette: one cool family, amber = needs you, red = failed ----------
-const ACCENT = "#4fd8ff"; window.ACCENT_BASE = ACCENT; const AMBER = "#ffb547", RED = "#ff5468", BG = "#04070b";
-const ROLE_COLORS = { scout: "#4fd8ff", researcher: "#9db8ff", builder: "#5ef2c2", reviewer: "#c3a6ff", planner: "#ffd38a", generalist: "#8fe3ff" };
-const PALETTE = ["#4fd8ff", "#9db8ff", "#5ef2c2", "#c3a6ff", "#8fe3ff", "#7fc8ff"];
+// ---------- palette: from the theme (design.js keeps C current); warn = needs you, bad = failed ----------
+// helpers' roles get a family of colors made from the theme's own roles, so every theme stays legible
+const roleColors = () => {
+  const m = TH.mix;
+  return { scout: C.accent, researcher: m(C.accent, C.text, 0.45), builder: C.ok, reviewer: m(C.accent, C.bad, 0.5), planner: m(C.warn, C.text, 0.35), generalist: m(C.accent, C.text, 0.25) };
+};
+const paletteOf = () => { const r = roleColors(), m = TH.mix; return [r.scout, r.researcher, r.builder, r.reviewer, m(C.ok, C.text, 0.4), m(C.accent, C.ok, 0.5)]; };
 const hash = (s) => [...String(s)].reduce((h, c) => (h * 31 + c.charCodeAt(0)) >>> 0, 7);
 
 // ---------- plain English for what a session is doing ----------
@@ -49,7 +52,7 @@ function roleFor(subagentType) {
 function roleMeta(role) {
   const r = roster.find((x) => x.role === role);
   const clean = (v) => (v && !/^[—–-]+$/.test(v) ? v : undefined);
-  return { color: ROLE_COLORS[role] || PALETTE[hash(role) % PALETTE.length], model: clean(r?.model), use: clean(r?.use), type: clean(r?.subagent_type) };
+  return { color: roleColors()[role] || paletteOf()[hash(role) % 6], model: clean(r?.model), use: clean(r?.use), type: clean(r?.subagent_type) };
 }
 
 // ---------- graph per session: nodes appear only when they are called ----------
@@ -59,7 +62,7 @@ const COLLAPSE_MS = 7000; // a finished job folds its tool leaves away after thi
 
 function newGraph(id, cwd) {
   const g = { id, cwd, last: 0, calls: 0, events: [], nodes: new Map(), links: [], pending: [] };
-  addNode(g, { id: "axa", kind: "axa", label: "AXA", color: ACCENT, x: 0, y: 0, fixed: true, status: "idle" });
+  addNode(g, { id: "axa", kind: "axa", label: "AXA", color: C.accent, x: 0, y: 0, fixed: true, status: "idle" });
   return g;
 }
 function addNode(g, n, parentId) {
@@ -171,3 +174,4 @@ function ingest(e) {
   if (g.events.length > 3000) g.events.splice(0, g.events.length - 3000);
   dirty = true;
 }
+

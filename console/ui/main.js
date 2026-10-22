@@ -10,7 +10,7 @@ async function refreshTerms() {
     if (r.ok) {
       terms = await r.json();
       for (const t of terms) if (!tabs.has(t.id) && typeof Terminal !== "undefined") openTab(t); // sessions AXA opened show up as tabs too
-      for (const [id, t] of tabs) { const info = terms.find((x) => x.id === id); if (info) { t.info = info; t.tab.classList.toggle("dead", !info.alive); t.tab.classList.toggle("waiting", info.status === "waiting"); } }
+      for (const [id, t] of tabs) { const info = terms.find((x) => x.id === id); if (info) { t.info = info; t.tab.classList.toggle("dead", !info.alive); tabStatus(t); } }
       renderPlanets(); renderInbox(); dirty = true;
     }
   } catch {}
@@ -73,6 +73,7 @@ function connect() {
   es.onopen = () => { $("live").classList.add("on"); $("live").textContent = "online"; };
   es.onerror = () => { $("live").classList.remove("on"); $("live").textContent = "offline"; };
 }
-loadRoster().then(() => {
+// start once the design system (theme + status vocabulary) is in: everything draws with it
+designReady.then(loadRoster).then(() => {
   if (locked) { $("empty").innerHTML = "Console locked<br><br>Open it with /axa:console — or the unlock link the server prints"; $("live").textContent = "locked"; requestAnimationFrame(frame); return; }
   setView(mission); termsBusy = true; initTerms().catch(() => {}).then(() => { termsBusy = termsAgain = false; pollTerms(); }); connect(); requestAnimationFrame(frame); if (new URLSearchParams(location.search).has("demo")) demo(); });

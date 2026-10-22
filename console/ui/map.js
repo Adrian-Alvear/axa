@@ -70,11 +70,11 @@ function fit(g, instant) {
 function rgba(hex, a) { const n = parseInt(hex.slice(1), 16); return `rgba(${n >> 16},${(n >> 8) & 255},${n & 255},${a})`; }
 const trunc = (s, n) => (s && s.length > n ? s.slice(0, n - 1) + "…" : s || "");
 const ease = (x) => 1 - Math.pow(1 - Math.min(1, Math.max(0, x)), 3);
-function text(str, x, y, { size = 10, color = "#cfe9f3", weight = 400, spacing = 0, align = "center", alpha = 1 } = {}) {
-  ctx.font = `${weight} ${size}px ui-monospace, "SF Mono", Menlo, monospace`;
+function text(str, x, y, { size = 10, color = C.text, weight = 400, spacing = 0, align = "center", alpha = 1 } = {}) {
+  ctx.font = `${weight} ${size}px ${FONT_UI}`;
   if ("letterSpacing" in ctx) ctx.letterSpacing = spacing + "px";
   ctx.textAlign = align; ctx.globalAlpha = alpha;
-  ctx.lineJoin = "round"; ctx.lineWidth = 4; ctx.strokeStyle = BG; ctx.strokeText(str, x, y);
+  ctx.lineJoin = "round"; ctx.lineWidth = 4; ctx.strokeStyle = C.bg; ctx.strokeText(str, x, y);
   ctx.fillStyle = color; ctx.fillText(str, x, y);
   ctx.globalAlpha = 1; if ("letterSpacing" in ctx) ctx.letterSpacing = "0px";
 }
@@ -89,38 +89,42 @@ const active = (n, now) => n.status === "running" || n.hotUntil > now;
 function drawBackdrop(now) {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   const grd = ctx.createRadialGradient(Wd / 2, Ht / 2, 0, Wd / 2, Ht / 2, Math.max(Wd, Ht) * 0.7);
-  grd.addColorStop(0, "#081521"); grd.addColorStop(1, BG);
+  grd.addColorStop(0, TH.mix(C.bg, C.accent, C.light ? 0.05 : 0.06)); grd.addColorStop(1, C.bg);
   ctx.fillStyle = grd; ctx.fillRect(0, 0, Wd, Ht);
   // HUD corner brackets
-  ctx.strokeStyle = "rgba(79,216,255,.35)"; ctx.lineWidth = 1;
+  ctx.strokeStyle = rgba(C.accent, 0.35); ctx.lineWidth = 1;
   const m = 14, L = 22;
   for (const [x, y, sx, sy] of [[m, m, 1, 1], [Wd - m, m, -1, 1], [m, Ht - m, 1, -1], [Wd - m, Ht - m, -1, -1]]) {
     ctx.beginPath(); ctx.moveTo(x, y + sy * L); ctx.lineTo(x, y); ctx.lineTo(x + sx * L, y); ctx.stroke();
   }
-  text(new Date().toLocaleTimeString([], { hour12: false }), Wd - 22, Ht - 22, { size: 9, color: "#3b5666", spacing: 2, align: "right" });
+  text(new Date().toLocaleTimeString([], { hour12: false }), Wd - 22, Ht - 22, { size: 9, color: C.dim, spacing: 2, align: "right", alpha: 0.8 });
 }
 
 function drawRange(now) {
   // range rings + bearing ticks around AXA
   for (const r of [210, 330, 450]) {
-    ctx.setLineDash([2, 8]); arc(0, 0, r, 0, Math.PI * 2, ACCENT, 1 / cam.k, 0.12); ctx.setLineDash([]);
+    ctx.setLineDash([2, 8]); arc(0, 0, r, 0, Math.PI * 2, C.accent, 1 / cam.k, C.light ? 0.25 : 0.12); ctx.setLineDash([]);
   }
-  ctx.strokeStyle = "rgba(79,216,255,.18)"; ctx.lineWidth = 1 / cam.k;
+  ctx.strokeStyle = rgba(C.accent, C.light ? 0.3 : 0.18); ctx.lineWidth = 1 / cam.k;
   for (let i = 0; i < 72; i++) {
     const a = (i / 72) * Math.PI * 2, r0 = 450, r1 = i % 6 ? 456 : 464;
     ctx.beginPath(); ctx.moveTo(Math.cos(a) * r0, Math.sin(a) * r0); ctx.lineTo(Math.cos(a) * r1, Math.sin(a) * r1); ctx.stroke();
   }
 }
 
+// AXA's own state in the shared vocabulary: waiting on you, working, done (your turn), ready
+const axaStatus = (n) => (n.perm ? "waiting" : n.status === "running" ? "working" : n.yourTurn ? "done" : "ready");
+// the page's text font, for labels drawn on the canvas
+const FONT_UI = getComputedStyle(document.documentElement).getPropertyValue("--font-ui").trim() || "system-ui, sans-serif";
 function drawAxa(n, now) {
   const t = now / 1000, on = n.status === "running", pulse = 0.5 + 0.5 * Math.sin(t * 3);
-  const ACCENT = n.perm ? AMBER : n.yourTurn ? "#5ef2c2" : window.ACCENT_BASE;
+  const st = axaStatus(n), ACCENT = statusColor(st) === C.text ? C.accent : statusColor(st);
   ctx.save(); ctx.translate(n.x, n.y);
   // core glow
   const glow = ctx.createRadialGradient(0, 0, 0, 0, 0, 60);
   glow.addColorStop(0, rgba(ACCENT, on ? 0.45 + pulse * 0.2 : 0.25)); glow.addColorStop(1, rgba(ACCENT, 0));
   ctx.fillStyle = glow; ctx.beginPath(); ctx.arc(0, 0, 60, 0, 7); ctx.fill();
-  ctx.fillStyle = "#e9fbff"; ctx.shadowColor = ACCENT; ctx.shadowBlur = 20;
+  ctx.fillStyle = C.core; ctx.shadowColor = ACCENT; ctx.shadowBlur = 20;
   ctx.beginPath(); ctx.arc(0, 0, 9 + (on ? pulse * 2 : 0), 0, 7); ctx.fill(); ctx.shadowBlur = 0;
   arc(0, 0, 17, 0, 7, ACCENT, 1.5, 0.9);
   // segmented reactor ring
@@ -137,18 +141,20 @@ function drawAxa(n, now) {
   }
   ctx.restore();
   text("AXA", n.x, n.y + 78, { size: 13, weight: 500, color: ACCENT, spacing: 7 });
-  const state = n.perm ? "⚠ NEEDS YOUR APPROVAL" : on ? "● WORKING" : n.yourTurn ? "◆ YOUR TURN" : "READY";
-  text(state, n.x, n.y + 93, { size: 9, weight: 500, color: n.perm ? AMBER : on ? "#9fe9ff" : n.yourTurn ? "#5ef2c2" : "#5d7a89", spacing: 2.5 });
+  const state = LK.label(st) + (st === "done" ? " · your turn" : "");
+  text(state.toUpperCase(), n.x, n.y + 93, { size: 9, weight: 600, color: st === "ready" ? C.dim : statusColor(st), spacing: 2.5 });
 }
 
 // A tag on a branch off AXA saying, in words, what state it's in: waiting on you, or what it's doing
 function drawAxaCallout(n, g, now) {
   calloutBox = null;
   let label, c, urgent = false;
-  if (n.perm) { label = "⚠ WAITING ON YOU · approve it in the AXA tab"; c = AMBER; urgent = true; }
-  else if (n.status === "running") { label = "● " + trunc(g.doing || "Thinking", 52); c = window.ACCENT_BASE; }
-  else if (n.yourTurn) { label = "◆ WAITING ON YOU · your turn to reply"; c = "#5ef2c2"; urgent = true; }
+  const st = axaStatus(n), l = LK.lookOf(st);
+  if (st === "waiting") { label = `${LK.label(st)} · approve it in the AXA tab`; urgent = true; }
+  else if (st === "working") label = `${l.glyph} ` + trunc(g.doing || "Thinking", 52);
+  else if (st === "done") { label = `${LK.label(st)} · your turn to reply`; urgent = true; }
   else return;
+  c = statusColor(st);
   const pulse = urgent ? 0.5 + 0.5 * Math.sin(now / 260) : 1;
   // The tag sits where you put it (drag it; default up and to the right). The branch leaves the
   // ring toward it, then runs a short horizontal step into the tag's nearest side.
@@ -158,14 +164,14 @@ function drawAxaCallout(n, g, now) {
   ctx.strokeStyle = rgba(c, 0.75); ctx.lineWidth = 1.2 / Math.max(cam.k, 0.6);
   ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(ax - side * 14, ay); ctx.lineTo(ax, ay); ctx.stroke();
   ctx.fillStyle = c; ctx.beginPath(); ctx.arc(x0, y0, 2.5, 0, 7); ctx.fill();
-  ctx.font = `500 11px ui-monospace, "SF Mono", Menlo, monospace`;
+  ctx.font = `500 11px ${FONT_UI}`;
   const w = ctx.measureText(label).width + 20, h = 24, bx = right ? ax : ax - w, by = ay - h / 2;
   calloutBox = { x: bx, y: by, w, h, ax, ay };
   ctx.shadowColor = c; ctx.shadowBlur = urgent ? 6 + pulse * 12 : 4;
-  ctx.fillStyle = "rgba(4,10,16,.94)"; ctx.fillRect(bx, by, w, h);
+  ctx.fillStyle = rgba(C.panel, 0.94); ctx.fillRect(bx, by, w, h);
   ctx.strokeStyle = c; ctx.lineWidth = 1; ctx.strokeRect(bx, by, w, h); ctx.shadowBlur = 0;
   ctx.fillStyle = c; ctx.fillRect(bx, by, 3, h);
-  text(label, bx + 12, by + 16, { size: 11, weight: 500, color: urgent ? c : "#e3f6fc", align: "left", alpha: urgent ? 0.75 + 0.25 * pulse : 1 });
+  text(label, bx + 12, by + 16, { size: 11, weight: 500, color: urgent ? c : C.text, align: "left", alpha: urgent ? 0.75 + 0.25 * pulse : 1 });
 }
 
 function drawRole(g, n, now) {
@@ -173,7 +179,7 @@ function drawRole(g, n, now) {
   const appear = ease((now - n.born) / 600), r = 15 * appear;
   const jobs = [...g.nodes.values()].filter((x) => x.parent === n.id && x.status === "running").length;
   if (on || hot) { const gl = ctx.createRadialGradient(n.x, n.y, 0, n.x, n.y, 40); gl.addColorStop(0, rgba(c, 0.28)); gl.addColorStop(1, rgba(c, 0)); ctx.fillStyle = gl; ctx.beginPath(); ctx.arc(n.x, n.y, 40, 0, 7); ctx.fill(); }
-  ctx.fillStyle = BG; ctx.beginPath(); ctx.arc(n.x, n.y, r, 0, 7); ctx.fill();
+  ctx.fillStyle = C.bg; ctx.beginPath(); ctx.arc(n.x, n.y, r, 0, 7); ctx.fill();
   arc(n.x, n.y, r, 0, 7, c, 1.5, on ? 1 : 0.6);
   ctx.fillStyle = c; ctx.globalAlpha = on ? 1 : 0.55; ctx.beginPath(); ctx.arc(n.x, n.y, 4, 0, 7); ctx.fill(); ctx.globalAlpha = 1;
   if (on) for (let i = 0; i < 2; i++) { const a = t * 1.6 + i * Math.PI; arc(n.x, n.y, r + 7, a, a + 1.4, c, 1.5, 0.9); }
@@ -181,30 +187,30 @@ function drawRole(g, n, now) {
   const label = typed(n.role.toUpperCase(), n, now);
   text(label, n.x, n.y + 36, { size: 11, weight: 500, color: c, spacing: 3, alpha: on ? 1 : 0.75 });
   const m = roleMeta(n.role);
-  text([m.model, jobs ? `${jobs} ACTIVE` : `${n.calls} CALL${n.calls === 1 ? "" : "S"}`].filter(Boolean).join("  ·  ").toUpperCase(), n.x, n.y + 50, { size: 8, color: "#4f6b7a", spacing: 2, alpha: appear });
+  text([m.model, jobs ? `${jobs} ACTIVE` : `${n.calls} CALL${n.calls === 1 ? "" : "S"}`].filter(Boolean).join("  ·  ").toUpperCase(), n.x, n.y + 50, { size: 8, color: C.dim, spacing: 2, alpha: appear });
 }
 
 function drawInst(n, now) {
-  const on = n.status === "running", c = n.fail ? RED : n.color, appear = ease((now - n.born) / 500);
+  const on = n.status === "running", c = n.fail ? C.bad : n.color, appear = ease((now - n.born) / 500);
   const pulse = 0.5 + 0.5 * Math.sin(now / 250 + hash(n.id));
   if (on) { ctx.shadowColor = c; ctx.shadowBlur = 10 + pulse * 8; }
-  ctx.fillStyle = on ? c : BG; ctx.beginPath(); ctx.arc(n.x, n.y, 6 * appear, 0, 7); ctx.fill(); ctx.shadowBlur = 0;
+  ctx.fillStyle = on ? c : C.bg; ctx.beginPath(); ctx.arc(n.x, n.y, 6 * appear, 0, 7); ctx.fill(); ctx.shadowBlur = 0;
   arc(n.x, n.y, 6 * appear, 0, 7, c, 1.2, on ? 1 : 0.5);
   if (on) arc(n.x, n.y, 11, now / 300, now / 300 + 1.6, c, 1, 0.7);
-  text(trunc(typed(n.label, n, now), 34), n.x, n.y - 15, { size: 10, color: on ? "#e3f6fc" : "#5d7a89" });
+  text(trunc(typed(n.label, n, now), 34), n.x, n.y - 15, { size: 10, color: on ? C.text : C.dim });
 }
 
 function drawLeaf(n, now) {
-  const hot = n.hotUntil > now, c = n.fail ? RED : hot ? "#ffffff" : n.color, appear = ease((now - n.born) / 400);
+  const hot = n.hotUntil > now, c = n.fail ? C.bad : hot ? C.text : n.color, appear = ease((now - n.born) / 400);
   const s = Math.min(2.5 + Math.sqrt(n.count) * 1.1, 6) * appear;
-  if (hot || n.fail) { ctx.shadowColor = n.fail ? RED : n.color; ctx.shadowBlur = 14; }
+  if (hot || n.fail) { ctx.shadowColor = n.fail ? C.bad : n.color; ctx.shadowBlur = 14; }
   ctx.fillStyle = c; ctx.globalAlpha = hot || n.fail ? 1 : 0.7;
   if (n.leafKind === "skill") { ctx.beginPath(); ctx.moveTo(n.x, n.y - s - 1.5); ctx.lineTo(n.x + s + 1.5, n.y); ctx.lineTo(n.x, n.y + s + 1.5); ctx.lineTo(n.x - s - 1.5, n.y); ctx.closePath(); ctx.fill(); }
   else { ctx.beginPath(); ctx.arc(n.x, n.y, s, 0, 7); ctx.fill(); }
   ctx.globalAlpha = 1; ctx.shadowBlur = 0;
   if (cam.k > 0.7 || hot) {
     const lbl = (n.leafKind === "skill" ? "◆ " : "") + n.label + (n.count > 1 ? `  ${n.count}` : "");
-    text(typed(lbl, n, now), n.x, n.y + s + 12, { size: 9, color: n.fail ? RED : hot ? "#ffffff" : n.leafKind === "skill" ? n.color : "#6c8796" });
+    text(typed(lbl, n, now), n.x, n.y + s + 12, { size: 9, color: n.fail ? C.bad : hot ? C.text : n.leafKind === "skill" ? n.color : C.dim });
   }
 }
 
@@ -218,7 +224,7 @@ function draw(g, now) {
 
   // links: draw outward from the parent as the node appears, then carry data packets while active
   if (mission) drawPlanetLinks(now);
-  if (mission) text("click to talk", 0, 108, { size: 8, color: "#3f5b6a", spacing: 2 });
+  if (mission) text("click to talk", 0, 108, { size: 8, color: C.dim, spacing: 2, alpha: 0.8 });
   for (const l of g.links) {
     let a = g.nodes.get(l.a);
     const b = g.nodes.get(l.b);
@@ -226,12 +232,12 @@ function draw(g, now) {
     if (a.hide) a = g.nodes.get("axa");
     const grow = ease((now - b.born) / 500), on = active(b, now);
     const ex = a.x + (b.x - a.x) * grow, ey = a.y + (b.y - a.y) * grow;
-    ctx.strokeStyle = rgba(b.fail ? RED : b.color, on ? 0.6 : b.kind === "leaf" ? 0.16 : 0.26);
+    ctx.strokeStyle = rgba(b.fail ? C.bad : b.color, on ? 0.6 : b.kind === "leaf" ? 0.16 : 0.26);
     ctx.lineWidth = (on ? 1.4 : 1) / Math.max(cam.k, 0.6);
     ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(ex, ey); ctx.stroke();
     if (on && b.kind !== "leaf" && grow >= 1) {
       const len = Math.hypot(b.x - a.x, b.y - a.y), ux = (b.x - a.x) / len, uy = (b.y - a.y) / len;
-      ctx.strokeStyle = "#eaffff"; ctx.lineWidth = 2 / Math.max(cam.k, 0.6); ctx.shadowColor = b.color; ctx.shadowBlur = 8;
+      ctx.strokeStyle = C.core; ctx.lineWidth = 2 / Math.max(cam.k, 0.6); ctx.shadowColor = b.color; ctx.shadowBlur = 8;
       for (let i = 0; i < 3; i++) {
         const p = ((now / 1000) * 0.7 + i / 3) % 1, px = a.x + (b.x - a.x) * p, py = a.y + (b.y - a.y) * p;
         ctx.beginPath(); ctx.moveTo(px, py); ctx.lineTo(px + ux * 9, py + uy * 9); ctx.stroke();
@@ -248,15 +254,15 @@ function draw(g, now) {
     else drawLeaf(n, now);
     if (n.id === selectedId && n.kind !== "axa") {
       const r = n.kind === "role" ? 30 : n.kind === "inst" ? 14 : 9;
-      ctx.strokeStyle = "rgba(255,255,255,.8)"; ctx.lineWidth = 1 / cam.k;
+      ctx.strokeStyle = rgba(C.text, 0.8); ctx.lineWidth = 1 / cam.k;
       for (let i = 0; i < 4; i++) { const a = i * Math.PI / 2 + Math.PI / 4; ctx.beginPath(); ctx.arc(n.x, n.y, r, a - 0.3, a + 0.3); ctx.stroke(); }
     }
     if (n.perm) {
       const by = n.y - (n.kind === "inst" ? 34 : n.kind === "role" ? 44 : 24);
       const pulse = 0.5 + 0.5 * Math.sin(now / 180);
-      ctx.strokeStyle = AMBER; ctx.lineWidth = 1; ctx.shadowColor = AMBER; ctx.shadowBlur = 6 + pulse * 8;
-      ctx.fillStyle = "rgba(40,26,4,.9)"; ctx.beginPath(); ctx.rect(n.x - 52, by - 9, 104, 16); ctx.fill(); ctx.stroke(); ctx.shadowBlur = 0;
-      text("AWAITING APPROVAL", n.x, by + 3, { size: 8, weight: 500, color: AMBER, spacing: 1.5 });
+      ctx.strokeStyle = C.warn; ctx.lineWidth = 1; ctx.shadowColor = C.warn; ctx.shadowBlur = 6 + pulse * 8;
+      ctx.fillStyle = rgba(C.warnSoft, 0.94); ctx.beginPath(); ctx.rect(n.x - 52, by - 9, 104, 16); ctx.fill(); ctx.stroke(); ctx.shadowBlur = 0;
+      text(LK.label("waiting").toUpperCase(), n.x, by + 3, { size: 8, weight: 600, color: C.warn, spacing: 1.5 });
     }
   }
   ctx.restore();

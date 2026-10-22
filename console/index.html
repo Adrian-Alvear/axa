@@ -5,6 +5,17 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#04070b">
 <title>AXA Console</title>
+<script>
+// Before the first paint: the theme and density this browser chose (ui/design.js keeps these up to date)
+try {
+  var d = document.documentElement, ls = localStorage, light = ls.getItem("axa.themeFollow") === "1" && matchMedia("(prefers-color-scheme: light)").matches;
+  d.dataset.theme = light ? "paper" : ls.getItem("axa.themeNow") || "hud";
+  d.dataset.kind = light ? "light" : ls.getItem("axa.themeKind") || "dark";
+  d.dataset.density = ls.getItem("axa.density") === "compact" ? "compact" : "comfortable";
+  var css = ls.getItem("axa.themeCss");
+  if (css) { var st = document.createElement("style"); st.id = "themecss"; st.textContent = css; document.head.appendChild(st); }
+} catch (e) {}
+</script>
 <link rel="stylesheet" href="/vendor/xterm.css">
 <script src="/vendor/xterm.js"></script>
 <script src="/vendor/addon-fit.js"></script>
@@ -20,7 +31,7 @@
   <div class="stat"><small>sessions</small><b id="s-agents">0</b></div>
   <div class="stat"><small>working</small><b id="s-running">0</b></div>
   <div class="stat"><small>done</small><b id="s-calls">0</b></div>
-  <button id="needs" title="A session is waiting for your approval: open it">⚠ <span id="needsn">0</span> needs you</button>
+  <button id="needs" title="A session is waiting for your approval: open it"><span id="needsg">⚠</span> <span id="needsn">0</span> <span id="needsw">needs you</span></button>
   <span class="spacer"></span>
   <button id="tbtn" title="Show terminals">Terminals</button>
   <button id="ibtn" class="on" title="Show the intel panel">Intel</button>
@@ -28,6 +39,8 @@
   <button id="demo" title="Play a simulated orchestration">Demo</button>
   <button id="fit" title="Fit the view · double-click: put moved cards back">Center</button>
   <select id="session" title="session"></select>
+  <select id="themesel" title="Theme" aria-label="Theme"></select>
+  <button id="setbtn" title="Settings: theme, density, sync with the terminal app">Settings</button>
 </header>
 <div id="limitnote" role="status" hidden></div>
 <section id="terms">
@@ -47,7 +60,7 @@
   <canvas id="cv"></canvas>
   <div id="planets"></div>
   <div id="now"><span class="k">Now</span><span class="txt" id="nowtxt">Ready</span>
-    <span class="legend"><i class="lw">●</i> working <i class="ld">✓</i> done <i class="ln">⚠</i> needs you <i class="ls">⏳</i> stuck <i class="lt">◆</i> your turn</span>
+    <span class="legend" id="legend"></span>
     <button id="bell" title="Desktop notification when something needs you or AXA finishes">🔔</button></div>
   <div id="dock"><div class="mission"><span>Mission</span><span class="bar"><i id="mbar"></i></span><span id="mtext"></span></div><div id="cards"></div></div>
   <div id="empty">Standing by<br><br>Start a Claude Code session with AXA enabled — or run the demo</div>
@@ -61,6 +74,21 @@
   <div id="diffhead"><b id="diffname"></b><span class="meta" id="diffmeta"></span><button id="diffterm">Open terminal</button><button id="diffclose" title="Close (Esc)">✕</button></div>
   <pre id="diffbody"></pre>
 </div></div>
+<div id="settings" hidden><div id="setbox" role="dialog" aria-modal="true" aria-labelledby="settitle">
+  <div id="sethead"><b id="settitle">Settings</b><span class="grow"></span><button id="setclose" title="Close (Esc)">✕</button></div>
+  <div id="setbody">
+    <fieldset><legend>Theme</legend><div id="setthemes"></div>
+      <label class="check"><input type="checkbox" id="setfollow"> Follow system light/dark <small>light: Paper · dark: your theme (AXA HUD if you picked a light one)</small></label>
+      <small id="setnow"></small>
+      <label class="check"><input type="checkbox" id="setsync"> Sync with the terminal app <small>one theme for this page and <code>axa</code>, kept in AXA's <code>ui.json</code></small></label>
+    </fieldset>
+    <fieldset><legend>Density</legend>
+      <label class="check"><input type="radio" name="density" value="comfortable"> Comfortable</label>
+      <label class="check"><input type="radio" name="density" value="compact"> Compact</label>
+    </fieldset>
+    <small class="note">Theme and density are saved in this browser.</small>
+  </div>
+</div></div>
 <nav id="mnav" aria-label="Sections">
   <button data-go="inbox" class="on"><i>☰</i>Sessions<span class="badge" id="mbadge"></span></button>
   <button data-go="terms"><i>›_</i>Terminal</button>
@@ -68,6 +96,7 @@
   <button data-go="feedwrap"><i>≡</i>Activity</button>
 </nav>
 
+<script src="/ui/design.js"></script>
 <script src="/ui/state.js"></script>
 <script src="/ui/map.js"></script>
 <script src="/ui/panel.js"></script>
