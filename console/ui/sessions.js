@@ -7,7 +7,6 @@ const PLANET_R = 300;
 let terms = []; // latest /api/terms
 const projectSessions = () => terms.filter((t) => t.mode !== "axa");
 const planetEls = new Map();
-const STATUS_TEXT = { starting: "starting", ready: "ready", shell: "$ shell", working: "working", done: "✓ done", waiting: "⚠ needs you", stuck: "⏳ stuck", exited: "exited" };
 const ago = (ms) => { const s = Math.round(ms / 1000); return s < 60 ? `${s}s` : s < 3600 ? `${Math.round(s / 60)}m` : `${Math.round(s / 3600)}h`; };
 function planetPos(i, n, p) {
   if (p && mapLayout.planets[p.name]) return mapLayout.planets[p.name];
@@ -15,6 +14,7 @@ function planetPos(i, n, p) {
   return [Math.cos(a) * PLANET_R, Math.sin(a) * PLANET_R * 0.78];
 }
 function planetDetail(p) {
+  if (LK.statusOf(p) === "failed") return p.error ? `Stopped: ${p.error}` : "Stopped by a failure";
   if (p.status === "waiting") return humanAction(p.tool, p.summary) ? `Wants to: ${humanAction(p.tool, p.summary)}` : "Waiting for your approval in its terminal";
   if (p.status === "working") return humanAction(p.tool, p.summary, p.skill) || "Thinking";
   if (p.status === "stuck") return `No activity for a while · running ${p.stuck_minutes ?? "?"}m: ${humanAction(p.tool, p.summary, p.skill) || "a step"}`;
@@ -50,11 +50,13 @@ function renderPlanets() {
       };
       host.appendChild(el); planetEls.set(p.id, el);
     }
-    el.className = `planet ${p.status}`;
+    const st = LK.statusOf(p);
+    el.className = `planet ${st}${LK.needsYou(p) ? " hot" : ""}`;
+    el.style.setProperty("--c", roleVar(LK.lookOf(st).role));
     el.querySelector(".name").textContent = p.name;
     el.querySelector(".mode").textContent = p.mode === "shell" ? "sh" : "";
-    const since = p.status === "working" ? "" : ` · ${ago(p.idle_seconds * 1000)}`;
-    el.querySelector(".ps").textContent = (STATUS_TEXT[p.status] || p.status) + since;
+    const since = st === "working" ? "" : ` · ${ago(p.idle_seconds * 1000)}`;
+    el.querySelector(".ps").textContent = LK.label(p) + since;
     el.querySelector(".pd").textContent = planetDetail(p);
     el.querySelector(".pe").textContent = p.error && p.status !== "done" ? `last error: ${p.error}` : "";
     el.querySelector(".pg").innerHTML = [gitHtml(p.git), usageHtml(p.usage)].filter(Boolean).join(" · ");
@@ -91,8 +93,7 @@ async function answer(p, b) {
   pollNow();
 }
 
-// ---------- sessions list: urgency first (needs you, stuck, working, done, idle, ended) ----------
-const URGENCY = { waiting: 0, stuck: 1, working: 2, done: 3, ready: 4, shell: 4, starting: 5, exited: 6 };
+// ---------- sessions list: urgency first (needs you, stuck, working, done, idle, ended; look.mjs) ----------
 const inboxEls = new Map();
 const isPhone = () => matchMedia("(max-width: 860px)").matches;
 function openSession(p) {
@@ -100,7 +101,7 @@ function openSession(p) {
   if (isPhone()) requestAnimationFrame(() => $("terms").scrollIntoView({ behavior: "smooth" }));
 }
 function renderInbox() {
-  const list = projectSessions().slice().sort((a, b) => (URGENCY[a.status] ?? 9) - (URGENCY[b.status] ?? 9) || (b.last_event_at || b.created) - (a.last_event_at || a.created));
+  const list = projectSessions().slice().sort(LK.byUrgency);
   const host = $("sesslist");
   const keep = new Set(list.map((p) => p.id));
   for (const [id, el] of inboxEls) if (!keep.has(id)) { el.remove(); inboxEls.delete(id); }
@@ -119,10 +120,13 @@ function renderInbox() {
       inboxEls.set(p.id, el);
     }
     host.appendChild(el); // keeps the sorted order
-    el.dataset.state = p.status;
-    el.querySelector(".chip").textContent = STATUS_TEXT[p.status] === "working" ? "● working" : STATUS_TEXT[p.status] || p.status;
-    el.querySelector(".nm").textContent = p.name + (p.mode === "shell" ? " · sh" : "");
-    el.querySelector(".ago").textContent = p.status === "working" ? "" : ago(p.idle_seconds * 1000);
+    const st = LK.statusOf(p);
+    el.dataset.state = st;
+    el.classList.toggle("hot", LK.needsYou(p));
+    el.style.setProperty("--c", roleVar(LK.lookOf(st).role));
+    el.querySelector(".chip").textContent = LK.label(p);
+    el.querySelector(".nm").textContent = p.name;
+    el.querySelector(".ago").textContent = st === "working" ? "" : ago(p.idle_seconds * 1000);
     el.querySelector(".sd").textContent = planetDetail(p) + (p.error && p.status !== "done" ? ` · last error: ${p.error}` : "");
     el.querySelector(".sg").innerHTML = [gitHtml(p.git), usageHtml(p.usage)].filter(Boolean).join(" · ");
     // The prompt it's waiting on, answerable here: a tap arms an option, a second tap sends it
@@ -133,15 +137,15 @@ function renderInbox() {
       el.querySelector(".sc").innerHTML = c ? c.options.map((o) => `<button data-n="${o.n}" title="${esc(o.label)}">${o.n}. ${esc(o.label)}</button>`).join("") : "";
     }
     el.querySelector("[data-a=open]").textContent = p.status === "waiting" ? (c ? "Terminal" : "Answer it") : p.status === "stuck" ? "Look" : "Open";
-    el.querySelector("[data-a=open]").classList.toggle("hot", p.status === "waiting" || p.status === "stuck");
+    el.querySelector("[data-a=open]").classList.toggle("hot", LK.needsYou(p));
     el.querySelector("[data-a=diff]").hidden = !p.git?.files;
     el.title = `${p.name} · ${p.cwd}`;
   }
   let none = host.querySelector(".none");
   if (!list.length && !none) { none = document.createElement("div"); none.className = "none"; none.textContent = "No project sessions yet. Ask AXA, or open one with Terminals → +"; host.appendChild(none); }
   if (list.length && none) none.remove();
-  const count = (s) => list.filter((p) => p.status === s).length;
-  const needs = count("waiting") + count("stuck");
-  $("inboxsum").innerHTML = [needs && `<span class="w">⚠ ${needs} need${needs > 1 ? "" : "s"} you</span>`, count("working") && `${count("working")} working`, count("done") && `${count("done")} done`].filter(Boolean).join(" · ");
+  const count = (s) => list.filter((p) => LK.statusOf(p) === s).length, G = (s) => LK.lookOf(s).glyph;
+  const needs = list.filter(LK.needsYou).length;
+  $("inboxsum").innerHTML = [needs && `<span class="stx" style="--c:var(--warn)">${G("waiting")} ${needs} ${LK.lookOf("waiting").word}</span>`, count("working") && `<span class="stx" style="--c:var(--accent)">${G("working")} ${count("working")} working</span>`, count("done") && `<span class="stx" style="--c:var(--ok)">${G("done")} ${count("done")} done</span>`].filter(Boolean).join(" · ");
   $("mbadge").textContent = needs || "";
 }

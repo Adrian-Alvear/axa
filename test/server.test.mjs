@@ -3,7 +3,7 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -91,6 +91,57 @@ test("/ui/ serves only allow-listed files from console/ui", async () => {
     assert.equal(r.headers["cache-control"], "no-cache");
     assert.match(r.headers["content-type"], /css|javascript|svg|json|manifest/);
   }
+});
+
+test("/shared/ serves exactly the design system's two modules", async () => {
+  for (const name of ["theme.mjs", "look.mjs"]) {
+    const r = await req(`/shared/${name}`, { cookie: false });
+    assert.equal(r.status, 200, name);
+    assert.match(r.headers["content-type"], /^text\/javascript/);
+    assert.equal(r.headers["cache-control"], "no-cache");
+    assert.equal(r.body, readFileSync(join(root, "console", name), "utf8"));
+  }
+  for (const p of ["/shared/server.mjs", "/shared/status.mjs", "/shared/", "/shared/..%2Fserver.mjs", "/shared/theme.mjs.bak"]) {
+    assert.notEqual((await req(p, { cookie: false })).status, 200, p);
+  }
+});
+
+test("/api/ui-settings: theme and themeSync only, merged into ui.json", async () => {
+  const file = join(home, "ui.json"), page = { "sec-fetch-site": "same-origin", origin: `http://localhost:${PORT}` };
+  const post = (body, headers = page) => req("/api/ui-settings", { method: "POST", body, headers });
+  assert.equal((await req("/api/ui-settings", { cookie: false })).status, 401);
+  assert.equal((await req("/api/ui-settings", { method: "POST", body: { theme: "paper" }, cookie: false, headers: page })).status, 401);
+  assert.deepEqual((await req("/api/ui-settings")).json, { theme: null, themeSync: false }); // no file yet
+
+  // the terminal app's own settings are kept
+  writeFileSync(file, JSON.stringify({ theme: "terminal", prefix: "C-a", labels: { x: "y" } }), { mode: 0o600 });
+  assert.deepEqual((await req("/api/ui-settings")).json, { theme: "terminal", themeSync: false });
+
+  // writing needs the page (or the terminal app), like /answer
+  assert.equal((await post({ theme: "paper" }, {})).status, 403);
+  assert.equal((await post({ theme: "paper" }, { "sec-fetch-site": "same-origin" })).status, 403);
+  assert.equal((await post({ theme: "paper" }, { origin: `http://localhost:${PORT}` })).status, 403);
+  assert.equal((await post({ theme: "paper" }, { "sec-fetch-site": "same-origin", origin: "http://evil.example" })).status, 401);
+
+  const ok = await post({ theme: "paper", themeSync: true, prefix: "C-z", evil: 1 });
+  assert.equal(ok.status, 200);
+  assert.deepEqual(ok.json, { theme: "paper", themeSync: true });
+  assert.deepEqual(JSON.parse(readFileSync(file, "utf8")), { theme: "paper", prefix: "C-a", labels: { x: "y" }, themeSync: true });
+  assert.equal(statSync(file).mode & 0o777, 0o600);
+  assert.ok(!readdirSync(home).some((f) => f.endsWith(".tmp")));
+
+  assert.equal((await post({ theme: "terminal" }, { "x-axa-client": "tui" })).json.theme, "terminal");
+  assert.equal((await post({ theme: "mono" }, { "x-axa-client": "tui" })).json.theme, "mono");
+  assert.equal((await req("/api/ui-settings")).json.theme, "mono");
+  assert.equal((await post({ theme: "high-contrast" })).json.theme, "contrast"); // an older name
+  for (const bad of [{ theme: "neon" }, { theme: 3 }, { themeSync: "yes" }, {}, { prefix: "C-z" }]) assert.equal((await post(bad)).status, 400, JSON.stringify(bad));
+  assert.equal(JSON.parse(readFileSync(file, "utf8")).theme, "contrast");
+
+  // a file it can't read is left alone
+  writeFileSync(file, "{ not json", { mode: 0o600 });
+  assert.equal((await post({ theme: "paper" })).status, 500);
+  assert.equal(readFileSync(file, "utf8"), "{ not json");
+  rmSync(file);
 });
 
 test("/events replays the history from memory", async () => {

@@ -13,6 +13,7 @@ import { openUrl } from "./ensure.mjs";
 import { createStatus } from "./status.mjs";
 import { createSupervisor } from "./supervisor.mjs";
 import { randomBytes, timingSafeEqual } from "node:crypto";
+import { themeId, DEFAULT_THEME } from "./theme.mjs";
 
 const port = Number(process.env.AXA_PORT || 4747);
 const home = process.env.AXA_HOME || join(homedir(), ".axa");
@@ -150,6 +151,32 @@ const uiDir = join(here, "ui");
 let uiFiles = new Set();
 try { uiFiles = new Set(readdirSync(uiDir, { withFileTypes: true }).filter((d) => d.isFile() && UI_NAME.test(d.name)).map((d) => d.name)); } catch {}
 
+// The design system's shared modules, for the page to import (pure ES modules, nothing secret)
+const SHARED = { "/shared/theme.mjs": "theme.mjs", "/shared/look.mjs": "look.mjs" };
+
+// Settings shared with the terminal app ($AXA_HOME/ui.json): the page reads and writes only these
+// keys; everything else in the file (the terminal app's own settings) is kept as it is.
+const uiPath = join(home, "ui.json");
+function readUi() {
+  try { const v = JSON.parse(readFileSync(uiPath, "utf8")); return v && typeof v === "object" && !Array.isArray(v) ? v : null; }
+  catch (e) { return e.code === "ENOENT" ? {} : null; } // null: there but unreadable, don't overwrite it
+}
+// the terminal app's own "terminal" and "mono" pass through as they are (the page shows both as AXA HUD)
+const TUI_ONLY = new Set(["terminal", "mono"]);
+const uiTheme = (t) => (typeof t !== "string" ? null : TUI_ONLY.has(t) ? t : themeId(t));
+const uiView = (cfg) => ({ theme: uiTheme(cfg.theme), themeSync: cfg.themeSync === true });
+function writeUi(patch) {
+  const cfg = readUi();
+  if (!cfg) return [500, { error: `${uiPath} isn't valid JSON: not overwriting it` }];
+  const next = { ...cfg, ...patch }, tmp = `${uiPath}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
+  try { writeFileSync(tmp, JSON.stringify(next, null, 2) + "\n", { mode: 0o600 }); chmodSync(tmp, 0o600); renameSync(tmp, uiPath); }
+  catch (e) { try { unlinkSync(tmp); } catch {} return [500, { error: `couldn't save ${uiPath}: ${e.message}` }]; }
+  return [200, uiView(next)];
+}
+// The user's own clicks only: the console page (browsers stamp Sec-Fetch-Site, which page scripts
+// can't set) or the axa terminal app (x-axa-client: tui). See /answer below.
+const fromUser = (req) => (req.headers["sec-fetch-site"] === "same-origin" && !!req.headers.origin) || req.headers["x-axa-client"] === "tui";
+
 const server = createServer(async (req, res) => {
   if (!hostOk(req)) return res.writeHead(403).end("forbidden host");
   const u = new URL(req.url, url);
@@ -183,6 +210,13 @@ const server = createServer(async (req, res) => {
     return res.end(body);
   }
 
+  if (SHARED[path]) {
+    let body;
+    try { body = readFileSync(join(here, SHARED[path])); } catch { return res.writeHead(404).end(); }
+    res.writeHead(200, { "content-type": "text/javascript; charset=utf-8", "cache-control": "no-cache" });
+    return res.end(body);
+  }
+
   // everything below needs the token cookie
   if (!authed(req)) return json(res, 401, { error: "locked", hint: "Open the console with /axa:console or the unlock link it prints." });
 
@@ -196,6 +230,26 @@ const server = createServer(async (req, res) => {
     const ping = setInterval(() => res.write(": ping\n\n"), 15000);
     req.on("close", () => { clients.delete(res); clearInterval(ping); });
     return;
+  }
+
+  if (path === "/api/ui-settings" && req.method === "GET") {
+    const cfg = readUi();
+    return json(res, 200, uiView(cfg || {}));
+  }
+  if (path === "/api/ui-settings" && req.method === "POST") {
+    if (!fromUser(req)) return json(res, 403, { error: "Only you can change settings, from the console or the axa terminal UI." });
+    const b = await readBody(req), patch = {};
+    if ("theme" in b) {
+      // a theme name (or an older alias); "terminal" and "mono" are the terminal app's own
+      if (typeof b.theme !== "string" || (themeId(b.theme) === DEFAULT_THEME && b.theme !== DEFAULT_THEME && !TUI_ONLY.has(b.theme))) return json(res, 400, { error: "unknown theme" });
+      patch.theme = uiTheme(b.theme);
+    }
+    if ("themeSync" in b) {
+      if (typeof b.themeSync !== "boolean") return json(res, 400, { error: "themeSync must be true or false" });
+      patch.themeSync = b.themeSync;
+    }
+    if (!Object.keys(patch).length) return json(res, 400, { error: "nothing to change (theme, themeSync)" });
+    return json(res, ...writeUi(patch));
   }
 
   // terminals
@@ -237,8 +291,7 @@ const server = createServer(async (req, res) => {
     // (policy) or AXA's tmux (no $TMUX in sessions).
     const am = path.match(/^\/api\/terms\/([\w-]+)\/answer$/);
     if (am && req.method === "POST") {
-      const fromPage = req.headers["sec-fetch-site"] === "same-origin" && req.headers.origin, fromTui = req.headers["x-axa-client"] === "tui";
-      if (!fromPage && !fromTui) return json(res, 403, { error: "Only you can answer a prompt, from the console or the axa terminal UI." });
+      if (!fromUser(req)) return json(res, 403, { error: "Only you can answer a prompt, from the console or the axa terminal UI." });
       const b = await readBody(req);
       const r = await T.answerTerm(am[1], b.n, String(b.label ?? ""), String(b.question ?? ""));
       if (r.ok) {

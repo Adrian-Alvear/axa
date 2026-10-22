@@ -15,17 +15,17 @@ function renderDetail(g) {
   let html = "";
   if (n.kind === "axa") {
     html = head("AXA") + kv([
-      ["status", n.status === "running" ? "processing" : "standing by"],
+      ["status", statusHtml(axaStatus(n))],
       ["agents", kids.filter((k) => k.kind === "role").map((k) => `${esc(k.role)} ×${k.calls}`).join(" · ") || "none called yet"],
       ["own calls", kids.filter((k) => k.kind === "leaf").map((k) => `${esc(k.label)} ×${k.count}`).join(" · ")],
     ]) + (n.prompt ? `<span class="k">directive</span><pre>${esc(n.prompt)}</pre>` : "") + (n.message ? `<span class="k">last report</span><pre>${esc(n.message)}</pre>` : "");
   } else if (n.kind === "role") {
     const m = roleMeta(n.role);
     html = head(esc(n.role)) + kv([["agent", esc(m.type || n.role)], ["model", esc(m.model)], ["use for", esc(m.use)], ["called", String(n.calls)]]) +
-      `<span class="k">jobs</span><ul>${kids.map((k) => `<li>${k.status === "running" ? `<span style="color:${n.color}">●</span>` : "<span class='k'>✓</span>"} ${esc(k.desc || short(k.id))}</li>`).join("")}</ul>`;
+      `<span class="k">jobs</span><ul>${kids.map((k) => `<li>${statusHtml(k.status === "running" ? "working" : "done")} ${esc(k.desc || short(k.id))}</li>`).join("")}</ul>`;
   } else if (n.kind === "inst") {
     html = head(esc(n.role)) + kv([
-      ["task", esc(n.desc)], ["status", n.status === "running" ? "active" : "complete"],
+      ["task", esc(n.desc)], ["status", statusHtml(n.status === "running" ? (n.perm ? "waiting" : n.fail ? "failed" : "working") : "done")],
       ["elapsed", dur((n.end || Date.now()) - (n.start || Date.now()))],
       ["calls", kids.map((k) => `${esc(k.label)} ×${k.count}`).join(" · ")],
     ]) + (n.prompt ? `<span class="k">assigned by axa</span><pre>${esc(n.prompt)}</pre>` : "") + (n.message ? `<span class="k">report</span><pre>${esc(n.message)}</pre>` : "");
@@ -73,7 +73,7 @@ function renderFeed(g) {
     const row = document.createElement("div");
     row.className = "row " + d[0];
     const who = e.agent_id ? roleFor(e.agent_type) : "axa";
-    const color = e.agent_id ? roleMeta(who).color : ACCENT;
+    const color = e.agent_id ? roleMeta(who).color : C.accent;
     row.innerHTML = `<span class="t">${new Date(e.ts).toLocaleTimeString([], { hour12: false })}</span><span class="who" style="color:${color}">${esc(who)}</span><span class="what">${d[1]}</span>`;
     row.title = row.textContent;
     if (e.agent_id) row.onclick = () => { selectedId = e.agent_id; dirty = true; };
@@ -109,7 +109,8 @@ function renderDock(g) {
       wrap.appendChild(el); cardEls.set(j.id, el);
     }
     wrap.appendChild(el);
-    const state = j.status === "done" ? "done" : j.perm ? "perm" : j.fail ? "fail" : "run";
+    // a helper's state in the shared vocabulary (a failed step: it's retrying)
+    const state = j.status === "done" ? "done" : j.perm ? "waiting" : j.fail ? "failed" : "working";
     el.className = `card ${state}${!mission && j.status === "done" && Date.now() - j.end > DOCK_KEEP_MS / 2 ? " fading" : ""}`;
     el.style.setProperty("--c", j.color);
     el.querySelector(".role").textContent = j.role;
@@ -117,7 +118,7 @@ function renderDock(g) {
     el.querySelector(".task").textContent = j.desc || "working…";
     el.querySelector(".task").title = j.desc || "";
     el.querySelector(".now span").innerHTML = j.status === "done" ? (j.message ? esc(j.message.replace(/\s+/g, " ").slice(0, 140)) : `<b>${j.steps || 0}</b> steps`) : j.perm ? `needs ok: <b>${esc(j.perm === true ? "tool" : j.perm)}</b>` : `<b>${esc(j.now || "starting")}</b>`;
-    el.querySelector(".st").textContent = { done: "✓ done", perm: "⚠ needs you", fail: "retrying", run: `● ${j.steps || 0} steps` }[state];
+    el.querySelector(".st").innerHTML = statusHtml(state, state === "failed" ? " · retrying" : state === "working" ? ` · ${j.steps || 0} steps` : "");
     el.title = j.status === "done" ? "Click to read its full report" : "";
   }
 }
@@ -128,13 +129,14 @@ function renderChrome(g) {
   if (!g && !locked) $("empty").innerHTML = focusCwd ? `Standing by<br><br>No activity in ${esc(focusCwd.split("/").pop())} yet` : "Standing by<br><br>Start a Claude Code session with AXA enabled — or run the demo";
   const projects = projectSessions();
   $("s-agents").textContent = projects.length;
-  $("s-running").textContent = projects.filter((p) => p.status === "working").length;
-  $("s-calls").textContent = projects.filter((p) => p.status === "done").length;
-  // "Needs you": waiting on an approval, or stuck long enough to need a look
-  const waiting = projects.filter((p) => p.status === "waiting" || p.status === "stuck");
+  $("s-running").textContent = projects.filter((p) => LK.statusOf(p) === "working").length;
+  $("s-calls").textContent = projects.filter((p) => LK.statusOf(p) === "done").length;
+  // "Needs you": waiting on an approval, stuck long enough to need a look, or stopped by a failure
+  const waiting = projects.filter(LK.needsYou).sort(LK.byUrgency);
   $("needs").classList.toggle("on", waiting.length > 0);
+  $("needsg").textContent = LK.lookOf("waiting").glyph; $("needsw").textContent = LK.lookOf("waiting").word;
   $("needsn").textContent = waiting.length;
-  $("needs").title = waiting.length ? waiting.map((p) => `${p.name}: ${p.status === "stuck" ? "stuck" : "waiting for your approval"}`).join(" · ") : "";
+  $("needs").title = waiting.length ? waiting.map((p) => `${p.name}: ${LK.label(p)}`).join(" · ") : "";
   renderNow(g, waiting);
   const sel = $("session");
   const list = [...sessions.values()].sort((a, b) => b.last - a.last).slice(0, 30);
@@ -174,6 +176,11 @@ function follow() {
 // ---------- loop ----------
 let dirty = true, lastPanel = 0;
 const idle = newGraph("idle", "");
+// a new theme: every node takes its role's color in it, and the feed is drawn again in it
+onTheme(() => {
+  for (const g of [...sessions.values(), idle]) for (const n of g.nodes.values()) if (n.kind === "axa") n.color = C.accent; else if (n.role) n.color = roleMeta(n.role).color;
+  feedFor = null; dirty = true;
+});
 function frame(now) {
   follow();
   const g = sessions.get(current) || (mission ? idle : undefined);
