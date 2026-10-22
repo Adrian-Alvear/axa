@@ -18,7 +18,7 @@ export const schemeTheme = (id) => { const t = themeId(id); return THEMES[t] && 
 
 // The fragment (pure). commandline: what the profile runs (from WSL: wsl.exe -d <distro> ... axa)
 export function fragment({ theme, commandline, startingDirectory } = {}) {
-  const id = schemeTheme(theme), t = tokens(id), a = ansi16(id), name = `AXA ${THEMES[id].label}`;
+  const id = schemeTheme(theme), t = tokens(id), a = ansi16(id), name = THEMES[id].label.startsWith("AXA") ? THEMES[id].label : `AXA ${THEMES[id].label}`;
   const scheme = {
     name, background: t.bg, foreground: t.text, cursorColor: t.accent, selectionBackground: t.sel,
     black: a.black, red: a.red, green: a.green, yellow: a.yellow, blue: a.blue, purple: a.purple, cyan: a.cyan, white: a.white,

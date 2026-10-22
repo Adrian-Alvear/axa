@@ -185,6 +185,7 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
       const cur = existsSync(ex) ? readFileSync(ex, "utf8") : "";
       if (!cur.split("\n").includes("/.claude/axa-pastes/")) writeFileSync(ex, cur + (cur && !cur.endsWith("\n") ? "\n" : "") + "/.claude/axa-pastes/\n");
     } catch {}
+    if (!writable(v)) return; // (the pane was closed while the clipboard was read)
     v.proc.write(`${file} `); // Claude Code reads image files by path
     c.notice = { text: "image pasted", until: Date.now() + 3000, hint: ` ${file.replace(homedir(), "~")}` }; schedule();
   }
@@ -227,6 +228,8 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
       });
     });
   }
+  // a pane can be closed (switched away from) while a clipboard read is awaited
+  const writable = (v) => !!v?.proc && !v.dead && !v.closed;
   let pasting = null; // the Ctrl+V in progress; input typed meanwhile waits for it
   const held = [];
   function ctrlV() {
@@ -238,18 +241,19 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
     pasting = readClipboard(t.file).then(async (r) => {
       c.notice = null;
       if (r?.image) await pasteImage(t);
-      else if (r?.text) { if (!v.dead) v.proc.write(`${ESC}[200~${r.text.replace(/\x1b\[20[01]~/g, "")}${ESC}[201~`); }
+      else if (r?.text) { if (writable(v)) v.proc.write(`${ESC}[200~${r.text.replace(/\x1b\[20[01]~/g, "")}${ESC}[201~`); }
       else c.flash("Nothing to paste", ["The clipboard is empty, or no clipboard tool was found."]);
       schedule();
     }).finally(() => {
       pasting = null;
       const rest = held.splice(0).join("");
-      if (rest && !v.dead) send(v, rest);
+      if (rest && writable(v)) send(v, rest);
     });
   }
   // Text for the focused session; Ctrl+V (0x16) is handled above instead of being passed on
   function send(v, chunk) {
     if (pasting) return held.push(chunk);
+    if (!writable(v)) return;
     const k = chunk.indexOf("\x16");
     if (k < 0) return v.proc.write(chunk);
     if (k) v.proc.write(chunk.slice(0, k));

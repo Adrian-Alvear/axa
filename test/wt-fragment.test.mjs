@@ -30,7 +30,7 @@ test("the fragment: an AXA profile and the theme as a 16-color scheme", () => {
   assert.equal(schemeTheme("terminal"), "hud");
   assert.equal(schemeTheme("mono"), "hud");
   assert.equal(schemeTheme("light"), "paper");
-  assert.equal(fragment({ theme: "terminal" }).schemes[0].name, `AXA ${THEMES.hud.label}`);
+  assert.equal(fragment({ theme: "terminal" }).schemes[0].name, "AXA HUD");
 });
 
 test("the profile runs AXA by absolute paths inside the distro", () => {
@@ -57,7 +57,7 @@ test("written as UTF-8 JSON without a BOM, replacing the previous one", () => {
   assert.equal(file, join(dir, "axa.json"));
   const bytes = readFileSync(file);
   assert.notDeepEqual([...bytes.subarray(0, 3)], [0xef, 0xbb, 0xbf]);
-  assert.equal(JSON.parse(bytes.toString("utf8")).schemes[0].name, "AXA AXA HUD");
+  assert.equal(JSON.parse(bytes.toString("utf8")).schemes[0].name, "AXA HUD");
   writeFragment(dir, fragment({ theme: "paper" }));
   assert.equal(JSON.parse(readFileSync(file, "utf8")).schemes[0].name, "AXA Paper");
 });

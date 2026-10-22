@@ -241,10 +241,11 @@ export function views(c) {
     if (m === "PALETTE") return "type to filter · ↑/↓ choose · Enter run · Esc close";
     if (c.overlay) return "Esc close";
     if (m === "MAP") return "↑/↓ move · Enter open · Space details · y/x answer · d diff · m back";
-    const bits = [`${k} : palette`];
+    // (most useful first: a narrow window cuts from the right)
+    const bits = [`${k} ? keys`, `${k} : palette`];
     if (L?.alert) bits.push(`${k} y/x answer`);
     if (V.length > 1) bits.push(`${k} Tab pane`);
-    bits.push(m === "ZOOM" ? `${k} z sidebar` : `${k} s browse`, `${k} m map`, `${k} ? keys`);
+    bits.push(m === "ZOOM" ? `${k} z sidebar` : `${k} s browse`, `${k} m map`);
     return bits.join(" · ");
   }
   const clock = () => new Date().toLocaleTimeString([], { hour12: false, hour: "2-digit", minute: "2-digit" });
@@ -256,11 +257,12 @@ export function views(c) {
     const others = c.list.filter((s) => s.mode !== "axa"), needs = others.filter(needsYou).length, busy = others.filter((s) => s.status === "working").length;
     const state = needs ? ` ${STATUS.waiting.glyph} ${needs} need${needs > 1 ? "" : "s"} you ` : ` ${STATUS.done.glyph} all clear `;
     const work = busy ? `${SPINNER[(c.tickN || 0) % SPINNER.length]} ${busy} working ` : "";
-    // right side, dropped from the left when the window is too narrow: branch, theme, clock
+    // right side, dropped when the window is too narrow (theme first, then branch) so the keys keep
+    // room: branch, theme, clock
     const s = sel(), branch = s?.git?.branch ? ` ${icon("branch")} ${cut(s.git.branch, 24)} ` : "";
     const right = [[branch, "accent"], [` ${themeLabel(cfg.theme)} `, "dim"], [` ${clock()} `, "dim"]];
     const fixed = width(chip) + width(state) + width(work) + 1;
-    while (right.length > 1 && fixed + right.reduce((n, [t]) => n + width(t), 0) + 12 > W) right.shift();
+    for (const drop of [1, 0]) if (fixed + right.reduce((n, [t]) => n + width(t), 0) + 34 > W) right[drop][0] = "";
     const rw = right.reduce((n, [t]) => n + width(t), 0);
     const limit = m === "NORMAL" ? wakeLimitText(c.ev) : null;
     const room = Math.max(0, W - fixed - rw);
