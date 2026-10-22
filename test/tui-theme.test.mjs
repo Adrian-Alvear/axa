@@ -78,11 +78,23 @@ test("theme by color depth: exact on truecolor, quantized on 256 and 16, none on
   assert.ok(!/38;/.test(Object.values(rolesFor("mono", "truecolor")).join(" ")));
   // the app's sgr follows the live setting
   const c = { cfg: { ...DEFAULTS, theme: "hud" }, depth: "truecolor" }, t = theme(c);
-  assert.equal(t.sgr("accent", "x"), `\x1b[38;2;${rgb(hud.accent).join(";")}mx\x1b[0m`);
+  // (a named theme resets to its own ground: background + text color, so Paper reads on a dark terminal)
+  const ground = (id) => `48;2;${rgb(THEMES[id].bg).join(";")};38;2;${rgb(THEMES[id].text).join(";")}`;
+  assert.equal(t.sgr("accent", "x"), `\x1b[38;2;${rgb(hud.accent).join(";")}mx\x1b[0;${ground("hud")}m`);
+  assert.equal(t.base(), ground("hud"));
   c.cfg.theme = "terminal";
   assert.equal(t.sgr("accent", "x"), "\x1b[36mx\x1b[0m");
+  assert.equal(t.base(), "");
+  assert.equal(t.ansiMap(), null);
   c.cfg.theme = "light";
-  assert.equal(t.sgr("accent", "x"), `\x1b[38;2;${rgb(THEMES.paper.accent).join(";")}mx\x1b[0m`);
+  assert.equal(t.sgr("accent", "x"), `\x1b[38;2;${rgb(THEMES.paper.accent).join(";")}mx\x1b[0;${ground("paper")}m`);
+  // inside sessions the 16 basic colors follow the theme (truecolor and 256), not on 16 or mono
+  assert.equal(t.ansiMap()[1][0], `38;2;${rgb(THEMES.paper.bad).join(";")}`);
+  c.depth = "16";
+  assert.equal(t.ansiMap(), null);
+  assert.equal(t.base(), `${to16(THEMES.paper.bg) + 10};${to16(THEMES.paper.text)}`);
+  c.depth = "mono";
+  assert.equal(t.base(), "");
 });
 
 // the web console writes theme/themeSync into ui.json (through the server); bump the mtime so a

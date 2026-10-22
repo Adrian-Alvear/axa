@@ -18,7 +18,7 @@ live console shows you every agent, skill and tool call as it happens.
 | `skills/axa` | The orchestrator playbook: decompose → assign from your roster → run in parallel → verify → short report. Triggers on `/axa`, "split this up", "use agents", etc. |
 | `skills/verify` | Runs the project's own checks (typecheck, lint, tests, build, syntax checks) as one PASS/FAIL table, plus screenshots for UI changes. |
 | `agents/` | `axa:builder`, `axa:reviewer` (read-only), `axa:researcher` (web). |
-| `bin/axa` | AXA from any terminal: `axa` opens mission control (AXA and every session, live), `axa chat` the plain commander, `axa console` opens the dashboard, `axa status` lists sessions (`--watch` for a live dashboard), `axa attach <name>` takes one over, `axa stop` stops the console (sessions keep running), `axa stop --all` ends them too. |
+| `bin/axa` | AXA from any terminal: `axa` opens mission control (AXA and every session, live), `axa chat` the plain commander, `axa console` opens the dashboard, `axa status` lists sessions (`--watch` for a live dashboard), `axa attach <name>` takes one over, `axa stop` stops the console (sessions keep running), `axa stop --all` ends them too, `axa setup terminal` adds a Windows Terminal profile. |
 | `mcp/` | The commander's session tools: open a session per project, give it a goal, check its status and last report, read its screen and its changes (git diff), close it. |
 | `scripts/shot.mjs` | Desktop and phone screenshots of the console (or any page) for a look-then-fix review loop. |
 | `hooks/` | Logs every prompt, tool, skill and subagent event to `~/.axa/events.jsonl` (async, never slows Claude down). For project sessions only: the permission policy, the approver, and the verify gate. |
@@ -163,7 +163,8 @@ built in:
     both; turned off on either side, it's off for both, and each keeps its own theme.
   - **Prefix key:** Ctrl-b, Ctrl-a, Ctrl-g or Ctrl-\.
   - **Sidebar:** left or right, and its width.
-  - **Bell** on or off, and whether new sessions start as Claude or a shell.
+  - **Bell** on or off, the Windows notification, icons (unicode or Nerd Font), and whether new
+    sessions start as Claude or a shell.
 - **Mouse:** click a session to select it; scrolling inside a session goes to it.
 - **Copy on select:** drag across any text in a session and it's copied when you let go (a ✓ copied
   notice confirms it). Double-click copies a word.
@@ -177,10 +178,40 @@ built in:
   and types its path into the session, where Claude Code can read it.
 - **Updates:** if AXA's code changes while mission control is open, the status bar says so. Press
   `Ctrl-b q`, then run `axa` again; your sessions keep running.
-- It rings the bell and puts ⚠ in the window title when something starts needing you.
+- **Which-key:** press the prefix (`Ctrl-b`) and wait a moment: a popup lists every key that can
+  follow, grouped (Sessions, Panes, Views, Act, App). Esc cancels.
+- **Status bar:** a mode chip (`NORMAL`, `PREFIX`, `PALETTE`, `ZOOM`, `MAP`), `⚠ N need you` (or
+  `✓ all clear`), the keys for the view you're in, the focused session's branch, the theme and a
+  clock.
+- **Focus:** with two panes, the one you type into has a heavy accent border and a ▶ in its title;
+  the other's border is dim. Working sessions show a braille spinner (only while they work).
+- **Cost, PR and CI:** when the console knows them, the sidebar and the briefing show a session's
+  cost and context use, its pull request and latest CI run (links to GitHub), and why it's stuck or
+  failed.
+- **Links:** URLs and file paths in AXA's own panels (briefing, history, diffs, reports, PRs) are
+  clickable OSC 8 hyperlinks in terminals that support them (Windows Terminal, iTerm2, kitty,
+  WezTerm…). `AXA_NO_OSC8=1` turns them off.
+- **Flicker-free and quiet:** frames are drawn inside synchronized output (DEC mode 2026) when the
+  terminal supports it (AXA asks at start; others are unaffected). Only what changed is written, at
+  most 60 frames a second, and a pane is redrawn only when its session printed something. An idle
+  window sends next to nothing (the clock shows hours and minutes).
+- **Named themes paint their own background,** so `paper` stays readable on a dark terminal, and
+  the 16 basic colors inside sessions follow the theme (truecolor and 256-color terminals).
+- **Nerd Font icons (optional):** Settings → Icons → `nerd` (or `"icons": "nerd"` in `ui.json`).
+  Never detected automatically: pick it only if your font has the glyphs.
+- **Notifications:** when something starts needing you and the window isn't focused (AXA turns on
+  focus reporting), the bell rings and ⚠ goes in the window title. Settings → "Windows notification
+  too" adds a Windows toast through `powershell.exe` (WSL or Windows; off by default).
 
 It shares one backend with the web console, so the terminal, the browser and your phone always show
 the same thing.
+
+**Windows Terminal profile:** `axa setup terminal` writes a JSON fragment with an "AXA" profile
+(it runs `axa` in your WSL distro) and your current theme as a color scheme to
+`%LOCALAPPDATA%\Microsoft\Windows Terminal\Fragments\AXA\axa.json`. Your own `settings.json` isn't
+touched; restart Windows Terminal and AXA is in the new-tab menu. Delete that folder to remove it.
+`--print` shows the JSON without writing, `--theme=<id>` picks another theme, and
+`AXA_WT_FRAGMENTS=<folder>` writes somewhere else.
 
 ### From the terminal
 

@@ -23,7 +23,9 @@ import { homedir } from "node:os";
 import { dirname, join, relative, isAbsolute } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { fileURLToPath } from "node:url";
-import { ESC, DEFAULTS, theme, needsYou } from "./theme.mjs";
+import { ESC, DEFAULTS, theme, needsYou, question, reasonOf } from "./theme.mjs";
+import { createFrames, takeReplies, PROBE, FOCUS_ON, FOCUS_OFF, SYNC_END } from "./output.mjs";
+import { createNotifier } from "./notify.mjs";
 import { colorDepth } from "../theme.mjs";
 import { settingsFile } from "./settings.mjs";
 import { createEvents, streamEvents } from "./events.mjs";
@@ -32,11 +34,14 @@ import { views } from "./views.mjs";
 import { map } from "./map.mjs";
 import { overlays } from "./overlays.mjs";
 import { palette } from "./palette.mjs";
+import { PARK_AFTER_MS } from "./views.mjs";
 
 const require = createRequire(import.meta.url);
 const out = process.stdout;
 // polling the session list: every second while anything happens, easing off to this when all is quiet
 const POLL_BUSY = 1000, POLL_IDLE = 5000, QUIET_AFTER = 10_000, KICK_DELAY = 150;
+// the shared tick: fast while something works (spinners, flowing links), else once a second (clock)
+const TICK_BUSY = 100, TICK_IDLE = 1000, WHICH_KEY_DELAY = 400, FPS = 60;
 
 export async function runTui({ port, readToken, openUrl, root, home }) {
   const env = { ...process.env, TERM: "xterm-256color" };
@@ -71,14 +76,19 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
     W: out.columns || 120, H: out.rows || 36,
     views: [], focus: 0, // live panes: { id, proc, term, cursorOn, cols, rows, dead, lastRows }; which one gets your typing
     seen: new Map(), // session id -> when it was last on screen
-    timer: null, lastTitle: "", fullRedraw: true, toastShown: false, toastTimer: null,
+    lastTitle: "", lastCursor: "", fullRedraw: true, clearScreen: true, toastTimer: null,
+    tickN: 0, // the shared animation tick (spinners, the map's flowing links)
+    sync: null, focused: null, // the terminal: supports synchronized output? is its window focused? (null: not known)
+    whichKey: false, whichTimer: null, // the which-key popup, shown a moment after the prefix
     tabHits: [], sideHits: [], // what each tab / sidebar row is, for clicks (rebuilt on every draw)
     selection: null, lastClick: { at: 0, x: -1, y: -1 }, notice: null, selClear: null,
   };
   Object.assign(c, theme(c));
   Object.assign(c, sidebar(c), views(c), map(c), overlays(c));
   Object.assign(c, palette(c));
+  c.frames = createFrames(() => c.draw(), { fps: FPS });
   const { schedule, show, layout } = c;
+  const notify = createNotifier({ out });
 
   // ---------- polling the session list ----------
   // Never two at once (a slow console doesn't pile up requests); every second while anything is
@@ -87,14 +97,18 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
   let prev = null, inflight = null, queued = null, lastSig = "", lastChange = Date.now(), pollTimer = null, kickTimer = null;
   async function pollOnce() {
     // a theme picked in the web console (with sync on): the file's mtime says whether to read it
-    if (settingsStore.sync()) { c.fullRedraw = true; schedule(); }
+    if (settingsStore.sync()) schedule();
     try { c.list = await api("/api/terms"); c.err = ""; } catch (e) { c.err = e.message; }
     try { c.chainsList = await api("/api/chains"); } catch {}
     const sig = JSON.stringify([c.list, c.chainsList, c.err], (k, v) => (k === "idle_seconds" ? undefined : v)); // (idle time ticks every poll)
     if (sig === lastSig) return; // nothing new: the clock's tick redraws anyway
     lastSig = sig; lastChange = Date.now();
     const now = new Map(c.list.map((s) => [s.id, s.status]));
-    if (cfg.bell && prev && c.list.some((s) => needsYou(s) && prev.get(s.id) !== s.status)) out.write("\x07");
+    // something started needing you: the bell (and a toast, if you opted in) when you aren't looking
+    if (prev) {
+      const started = c.list.filter((s) => needsYou(s) && prev.get(s.id) !== s.status).map((s) => ({ name: c.nameOf(s), why: reasonOf(s) || (s.choices ? question(s.choices) : "") }));
+      if (started.length) notify({ started, focused: c.focused, cfg });
+    }
     prev = now;
     c.views.forEach((v) => { const s = v && c.list.find((x) => x.id === v.id); if (v && !v.dead && (!s || !s.alive)) v.dead = "Session ended."; });
     schedule();
@@ -171,6 +185,7 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
       const cur = existsSync(ex) ? readFileSync(ex, "utf8") : "";
       if (!cur.split("\n").includes("/.claude/axa-pastes/")) writeFileSync(ex, cur + (cur && !cur.endsWith("\n") ? "\n" : "") + "/.claude/axa-pastes/\n");
     } catch {}
+    if (!writable(v)) return; // (the pane was closed while the clipboard was read)
     v.proc.write(`${file} `); // Claude Code reads image files by path
     c.notice = { text: "image pasted", until: Date.now() + 3000, hint: ` ${file.replace(homedir(), "~")}` }; schedule();
   }
@@ -213,6 +228,8 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
       });
     });
   }
+  // a pane can be closed (switched away from) while a clipboard read is awaited
+  const writable = (v) => !!v?.proc && !v.dead && !v.closed;
   let pasting = null; // the Ctrl+V in progress; input typed meanwhile waits for it
   const held = [];
   function ctrlV() {
@@ -224,18 +241,19 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
     pasting = readClipboard(t.file).then(async (r) => {
       c.notice = null;
       if (r?.image) await pasteImage(t);
-      else if (r?.text) { if (!v.dead) v.proc.write(`${ESC}[200~${r.text.replace(/\x1b\[20[01]~/g, "")}${ESC}[201~`); }
+      else if (r?.text) { if (writable(v)) v.proc.write(`${ESC}[200~${r.text.replace(/\x1b\[20[01]~/g, "")}${ESC}[201~`); }
       else c.flash("Nothing to paste", ["The clipboard is empty, or no clipboard tool was found."]);
       schedule();
     }).finally(() => {
       pasting = null;
       const rest = held.splice(0).join("");
-      if (rest && !v.dead) send(v, rest);
+      if (rest && writable(v)) send(v, rest);
     });
   }
   // Text for the focused session; Ctrl+V (0x16) is handled above instead of being passed on
   function send(v, chunk) {
     if (pasting) return held.push(chunk);
+    if (!writable(v)) return;
     const k = chunk.indexOf("\x16");
     if (k < 0) return v.proc.write(chunk);
     if (k) v.proc.write(chunk.slice(0, k));
@@ -271,12 +289,12 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
     if (y === 1 && !c.mapMode) { if (!up && b === 0) { const t = c.tabHits.find((h) => x >= h.x0 && x <= h.x1); if (t) show(c.list.find((s) => s.id === t.id)); } return; }
     if (L.alert && y > L.mainH && y <= L.mainH + 2) { if (!up && b === 0 && x > L.mainX + Math.floor(L.mainW * 0.6)) show(L.alert); return; }
     // a drag that started in a pane keeps selecting even if the pointer strays outside it
-    const i = c.selection?.active ? c.selection.pane : L.panes.findIndex((p) => x > p.x && x <= p.x + p.cols && y > p.y && y <= p.y + p.h);
+    const i = c.selection?.active ? c.selection.pane : L.panes.findIndex((p) => x > p.x && x <= p.x + p.w && y > p.y && y <= p.y + p.h);
     if (i < 0 || c.mapMode) return;
     const v = c.views[i], p = L.panes[i];
     const left = (b & 3) === 0 && !(b & 64), motion = (b & 32) !== 0;
     if (cfg.copyOnSelect && left && v?.term && !v.dead) {
-      const cx = Math.max(0, Math.min(p.cols - 1, x - p.x - 1)), cy = Math.max(0, Math.min(p.rows - 1, y - p.y - 1 - p.hdr));
+      const cx = Math.max(0, Math.min(p.cols - 1, x - p.x - 1 - p.ix)), cy = Math.max(0, Math.min(p.rows - 1, y - p.y - 1 - p.hdr));
       if (!up && !motion) { // press
         if (i !== c.focus) c.focus = i;
         const dbl = Date.now() - c.lastClick.at < 400 && c.lastClick.x === cx && c.lastClick.y === cy;
@@ -293,17 +311,18 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
     }
     if (i !== c.focus && !up && b === 0) { c.focus = i; schedule(); }
     // inside the session: forward when its program asked for the mouse (tmux does: scroll, click)
-    if (v?.term && !v.dead && y >= p.y + 1 + p.hdr && v.term.modes.mouseTrackingMode !== "none") v.proc.write(`\x1b[<${b};${x - p.x};${y - p.y - p.hdr}${up ? "m" : "M"}`);
+    if (v?.term && !v.dead && y >= p.y + 1 + p.hdr && v.term.modes.mouseTrackingMode !== "none") v.proc.write(`\x1b[<${b};${x - p.x - p.ix};${y - p.y - p.hdr}${up ? "m" : "M"}`);
   }
   process.stdin.on("data", (buf) => {
-    let d = decoder.write(buf);
+    // the terminal's own replies (synchronized-output probe, focus in/out) never reach keys or sessions
+    let d = takeReplies(decoder.write(buf), c);
     d = d.replace(MOUSE, (_, b, x, y, m) => { onMouse(Number(b), Number(x), Number(y), m === "m"); return ""; });
     if (!d) return;
     if (c.overlay) return keysOf(d).forEach((k) => c.overlay && c.overlayKey(k));
     const P = String.fromCharCode(c.PREFIX());
     while (d) {
       if (c.prefix) {
-        c.prefix = false;
+        c.prefix = false; c.whichKey = false; clearTimeout(c.whichTimer);
         const k = d.startsWith(ESC + "[") ? (d.match(/^\x1b\[[0-9;]*[A-Za-z~]/) || [d])[0] : [...d][0];
         d = d.slice(k.length);
         c.action(k); schedule();
@@ -318,18 +337,21 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
       else if (chunk && v?.proc && !v.dead) send(v, chunk);
       if (i < 0) break;
       c.prefix = true; d = d.slice(i + 1); schedule();
+      // still waiting for the key after a moment: show which keys can follow
+      clearTimeout(c.whichTimer); c.whichTimer = setTimeout(() => { if (c.prefix && !c.overlay) { c.whichKey = true; schedule(); } }, WHICH_KEY_DELAY);
     }
   });
 
   // ---------- start: AXA is always there ----------
   // mouse: clicks and wheel (1000), drags (1002, for copy-on-select), in SGR form (1006)
-  const enter = () => { out.write(`${ESC}[?1049h${ESC}[?1000h${ESC}[?1002h${ESC}[?1006h${ESC}[2J`); process.stdin.setRawMode(true); process.stdin.resume(); };
-  const leave = () => { out.write(`${ESC}[?1002l${ESC}[?1000l${ESC}[?1006l${ESC}[0m${ESC}[?25h${ESC}[?1049l`); try { process.stdin.setRawMode(false); } catch {} };
+  // focus reports (1004) say whether the window is in front; the probe asks about synchronized output
+  const enter = () => { out.write(`${ESC}[?1049h${ESC}[?1000h${ESC}[?1002h${ESC}[?1006h${FOCUS_ON}${ESC}[2J${PROBE}`); process.stdin.setRawMode(true); process.stdin.resume(); };
+  const leave = () => { out.write(`${SYNC_END}${FOCUS_OFF}${ESC}[?1002l${ESC}[?1000l${ESC}[?1006l${ESC}[0m${ESC}[?25h${ESC}[?1049l`); try { process.stdin.setRawMode(false); } catch {} };
   function quit() { c.quitting = true; cfg.lastSeenAt = Date.now(); saveCfg(); c.views.forEach(c.closeView); leave(); console.log("AXA keeps running: `axa` reopens this, `axa console` opens the web console."); process.exit(0); }
   c.quit = quit;
   process.on("SIGTERM", quit); process.on("SIGHUP", quit);
   process.on("uncaughtException", (e) => { c.quitting = true; try { c.views.forEach(c.closeView); } catch {} leave(); console.error(e); process.exit(1); });
-  out.on("resize", () => { c.fullRedraw = true; c.resizeViews(); schedule(); });
+  out.on("resize", () => { c.clearScreen = true; c.resizeViews(); schedule(); });
 
   await poll();
   if (c.err) throw new Error(`The console isn't answering: ${c.err}`);
@@ -347,10 +369,20 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
   if (cmdError) c.flash("Couldn't start the AXA commander", [cmdError, "", "Sessions still work; start it later from the web console (Ctrl-b o)."]);
   pollLoop();
   streamEvents({ port, readToken, st: c.ev, onChange: () => { kick(); schedule(); }, stopped: () => c.quitting });
-  // the map's and the diagram sidebar's flowing links (only while something is working)
-  setInterval(() => { if ((c.mapMode || cfg.sidebarStyle !== "list") && c.list.some((s) => s.status === "working")) schedule(); }, 250);
+  // One shared tick drives every animation (braille spinners, the map's and the sidebar's flowing
+  // links): every 100 ms while a session works, else once a second, when only the clock (HH:MM) can
+  // change. A frame that changes nothing writes nothing, so an idle window sends ~0 bytes.
+  const busyNow = () => c.list.some((s) => s.status === "working") || [...c.ev.helpers.values()].some((hs) => hs.some((h) => h.status === "running"));
+  (function tick() {
+    if (c.quitting) return;
+    const busy = busyNow();
+    if (busy) c.tickN++;
+    // panes hidden behind the map give their terminals back after a while
+    if (c.mapMode && Date.now() - (c.mapSince || 0) > PARK_AFTER_MS) c.park();
+    schedule();
+    setTimeout(tick, busy ? TICK_BUSY : TICK_IDLE);
+  })();
   // "since you left" counts from when mission control was last open
   setInterval(() => { cfg.lastSeenAt = Date.now(); saveCfg(); }, 60_000);
   if (!cmdError) setTimeout(() => { if (!c.overlay) c.briefing(true); }, 1500);
-  setInterval(schedule, 1000); // the clock
 }

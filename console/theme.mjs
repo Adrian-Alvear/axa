@@ -110,3 +110,18 @@ export function tuiRoles(id, depth = "truecolor") {
     add: f(t.ok), del: f(t.bad), hunk: f(t.accent), ok: f(t.ok), warn: f(t.warn), bad: f(t.bad), text: f(t.text), focus: `1;${f(t.accent)}`,
   };
 }
+// The ground every cell of a named theme is drawn on: its background and text color as SGR parameters,
+// so a light theme (Paper) stays readable on a dark terminal. "" for terminal and mono (your own colors).
+export function tuiBase(id, depth = "truecolor") {
+  if (depth === "mono" || themeId(id) === TERMINAL_THEME) return "";
+  const t = tokens(id);
+  return `${bgc(t.bg, depth)};${fg(t.text, depth)}`;
+}
+// Inside live sessions, the 16 basic colors follow the named theme (as in the web console's terminals):
+// index -> [foreground params, background params]. null for terminal and mono, and on 16 colors.
+const ANSI_ORDER = ["black", "red", "green", "yellow", "blue", "purple", "cyan", "white", "brightBlack", "brightRed", "brightGreen", "brightYellow", "brightBlue", "brightPurple", "brightCyan", "brightWhite"];
+export function tuiAnsi(id, depth = "truecolor") {
+  if (depth === "mono" || depth === "16" || themeId(id) === TERMINAL_THEME) return null;
+  const a = ansi16(id);
+  return ANSI_ORDER.map((k) => [fg(a[k], depth), bgc(a[k], depth)]);
+}

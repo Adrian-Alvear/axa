@@ -5,7 +5,7 @@ import { ESC, look, cut, width, question, yesOpt, noOpt, fmtTok, gitText, what, 
 export function map(c) {
   function mapRows(L) {
     const { renderSegs, nameOf } = c;
-    const W2 = L.mainW, H2 = L.mainH, frame = Math.floor(Date.now() / 250);
+    const W2 = L.mainW, H2 = L.mainH, frame = Math.floor((c.tickN || 0) / 2); // the shared tick (fast only while something works)
     const ss = c.sessions(), axa = c.list.find((s) => s.mode === "axa");
     const TX = 24; // the trunk's column
     const entries = []; // { kind, s, i, h, c }
@@ -18,7 +18,7 @@ export function map(c) {
     });
     const rows = Array.from({ length: H2 }, () => [["", ""]]);
     if (!ss.length) {
-      rows[Math.floor(H2 / 2)] = [["   ◆ AXA", "title"], ["   no sessions yet: Ctrl-b c starts one, or ask the commander", "dim"]];
+      rows[Math.floor(H2 / 2)] = [[`   ${c.icon("axa")} AXA`, "title"], ["   no sessions yet: Ctrl-b c starts one, or ask the commander", "dim"]];
       return rows.map((r) => renderSegs(r, W2));
     }
     // sessions and helper agents are the nodes you move between (↑/↓); keep the selected one in view
@@ -33,8 +33,8 @@ export function map(c) {
       const k = y + off, e = entries[k];
       // AXA's node, left of the trunk, level with the middle of the sessions
       const left = " ".repeat(TX - 1);
-      const [ag, aword, arole] = axa ? look(axa) : ["◆", "not running", "off"];
-      const node = k === mid - 1 ? [[" ◆ AXA", "title"]] : k === mid ? [[` ${ag} ${aword}`, arole]] : k === mid + 1 ? [[` ${cut(axa ? what(axa) : "Ctrl-b 0", TX - 3)}`, "dim"]] : null;
+      const [, aword, arole] = axa ? look(axa) : ["", "not running", "off"], ag = axa ? c.glyph(axa) : c.icon("axa");
+      const node = k === mid - 1 ? [[` ${c.icon("axa")} AXA`, "title"]] : k === mid ? [[` ${ag} ${aword}`, arole]] : k === mid + 1 ? [[` ${cut(axa ? what(axa) : "Ctrl-b 0", TX - 3)}`, "dim"]] : null;
       const segs = node ? [...node] : [[left, ""]];
       const used = node ? width(node.map(([t]) => t).join("")) : TX - 1;
       if (k === mid) segs.push(["─".repeat(Math.max(0, TX - 1 - used)), "rule"]); else segs.push([" ".repeat(Math.max(0, TX - 1 - used)), ""]);
@@ -48,7 +48,7 @@ export function map(c) {
       }
       segs.push([tc, "rule"]);
       if (!e || e.kind === "gap") { rows[y] = segs; continue; }
-      const s = e.s, [g, word, role] = look(s);
+      const s = e.s, [, word, role] = look(s), g = c.glyph(s);
       if (e.kind === "session") {
         // the branch: data flowing out to a working session
         let branch = "──────";
@@ -143,14 +143,14 @@ export function map(c) {
     else if (/^[1-9]$/.test(k)) { const i = c.mapNodes.findIndex((n) => n.kind === "session" && n.i === Number(k) - 1); if (i >= 0) c.mapSel = i; }
     // Enter: open a session / a helper's details; Space or →: details of either
     else if (k === "\r" && node?.kind === "helper") helperDetail(node.h, s);
-    else if (k === "\r" && s) { c.mapMode = false; c.fullRedraw = true; c.show(s); }
+    else if (k === "\r" && s) { c.show(s); c.setMap(false); }
     else if ((k === " " || k === "\x1b[C") && node) node.kind === "helper" ? helperDetail(node.h, s) : sessionDetail(s);
     else if ((k === "y" || k === "x") && s?.status === "waiting" && s.choices) c.answerSession(s, k === "y" ? yesOpt(s.choices) : noOpt(s.choices));
     else if (k === "d" && s) c.showDiff(s);
     else if (k === "g" && s) c.giveGoal(s);
     else if (k === "l" && s) c.linkFrom(s);
     else if (k === "v" && s) c.runVerify(s);
-    else if (k === ESC || k === "m" || k === "q") { c.mapMode = false; c.fullRedraw = true; }
+    else if (k === ESC || k === "m" || k === "q") c.setMap(false);
     c.schedule();
   }
   return { mapRows, helperDetail, sessionDetail, mapKey };

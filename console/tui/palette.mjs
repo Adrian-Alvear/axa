@@ -39,7 +39,7 @@ export function palette(c) {
     }
     // fuzzy: every typed character in order; earlier and tighter matches first
     const score = (label, q) => { if (!q) return 0; const l = label.toLowerCase(); let i = 0, s = 0, last = -1; for (const ch of q.toLowerCase()) { const j = l.indexOf(ch, i); if (j < 0) return -1; s += j - last - 1; last = j; i = j + 1; } return s + l.indexOf(q[0]?.toLowerCase()) * 0.1; };
-    const ov = { title: "Palette: type to search, Enter to run", input: "", prompt: ":", sel: 0, lines: [], hint: "↑/↓ choose · Enter run · Esc close" };
+    const ov = { kind: "palette", title: "Palette: type to search, Enter to run", input: "", prompt: ":", sel: 0, lines: [], hint: "↑/↓ choose · Enter run · Esc close" };
     let hits = acts;
     const render = () => {
       hits = acts.map((a) => ({ a, s: score(a.label, ov.input.trim()) })).filter((x) => x.s >= 0).sort((x, y) => x.s - y.s).map((x) => x.a);
@@ -52,7 +52,7 @@ export function palette(c) {
     ov.onKey = (k) => {
       if (k === "\x1b[B" || k === "\x0e") { ov.sel = Math.min(hits.length - 1, ov.sel + 1); render(); return true; }
       if (k === "\x1b[A" || k === "\x10") { ov.sel = Math.max(0, ov.sel - 1); render(); return true; }
-      if (k === "\r") { const a = hits[ov.sel]; c.overlay = null; c.fullRedraw = true; if (a) a.run(); c.schedule(); return true; }
+      if (k === "\r") { const a = hits[ov.sel]; c.overlay = null; if (a) a.run(); c.schedule(); return true; }
       return false;
     };
     render(); c.overlay = ov; c.schedule();
@@ -67,7 +67,9 @@ export function palette(c) {
       { key: "sidebarStyle", label: "Sidebar style", values: ["tree", "list"], about: "tree: the live diagram (AXA, sessions, helpers, links); list: compact" },
       { key: "sidebar", label: "Sidebar side", values: ["left", "right"] },
       { key: "sidebarWidth", label: "Sidebar width", values: [24, 26, 28, 30, 34, 38, 42, 48] },
-      { key: "bell", label: "Bell when something needs you", values: [true, false] },
+      { key: "bell", label: "Bell when something needs you", values: [true, false], about: "rings when the window isn't focused" },
+      { key: "toast", label: "Windows notification too", values: [false, true], about: "a toast through powershell.exe (WSL / Windows)" },
+      { key: "icons", label: "Icons", values: ["unicode", "nerd"], about: "nerd: Nerd Font glyphs (only if your font has them)" },
       { key: "newSession", label: "New sessions start as", values: ["claude", "shell"] },
       { key: "copyOnSelect", label: "Copy on select", values: [true, false], about: "drag across text to copy it (off: drags go to the session)" },
     ];
@@ -119,7 +121,7 @@ export function palette(c) {
     if (k === "\t" || k === "\x1b[Z") { if (V.length > 1) { c.focus = (c.focus + 1) % V.length; c.schedule(); } return; }
     if (k === "z") { c.zoom = !c.zoom; c.fullRedraw = true; return c.schedule(); }
     if (k === "/") return c.searchAll();
-    if (k === "m") { c.mapMode = !c.mapMode; if (c.mapMode) c.mapWant = selId(); c.fullRedraw = true; return c.schedule(); }
+    if (k === "m") return c.setMap(!c.mapMode);
     if (k === "a") return c.sessionDetail(sel());
     if (k === "b") return c.briefing(false);
     if (k === "h") return c.history();
