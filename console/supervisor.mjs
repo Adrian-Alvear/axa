@@ -9,13 +9,14 @@ export const DONE_MS = 6_000; // "done" must hold this long (a verify-gate bounc
 const WAIT_MS = 15_000; // how long a prompt must stay open before it counts as needing the user
 const QUIET_MS = 30_000; // don't type while the user is typing in the commander tab
 const HOUR = 3600_000, DAY = 24 * HOUR;
-const NOTABLE = { done: "finished its turn", waiting: "needs the user's approval", stuck: "looks stuck", exited: "exited", over_budget: "went over its token budget: don't give it more work; report its usage to the user" };
+const NOTABLE = { done: "finished its turn", waiting: "needs the user's approval", stuck: "looks stuck", failed: "stopped on an API error", exited: "exited", over_budget: "went over its token budget: don't give it more work; report its usage to the user" };
 // Sessions a link may type into: idle Claude sessions, and plain shells (they have no traced status)
 const IDLE = ["ready", "done", "shell"];
 const clipText = (v, n) => (v == null ? undefined : String(v).slice(0, n));
 
-// T: the terminals module; logEvent(ev): append an event to the log; enabled: AXA_SUPERVISOR != "0"
-export function createSupervisor({ T, home, logEvent, enabled = true, wakesPerHour = 30, now = Date.now }) {
+// T: the terminals module; logEvent(ev): append an event to the log; enabled: AXA_SUPERVISOR != "0";
+// push: phone notifications (notify.mjs createPush), on the same notable changes, off unless configured
+export function createSupervisor({ T, home, logEvent, enabled = true, wakesPerHour = 30, push = null, now = Date.now }) {
   // ---------- links: when one session finishes, AXA sends the next instruction to another ----------
   // Saved in $AXA_HOME/chains.json. A link fires once, on a "done" that comes after it was made and has
   // held DONE_MS (so a verify-gate bounce settles first), and only when the next session is idle.
@@ -73,12 +74,30 @@ export function createSupervisor({ T, home, logEvent, enabled = true, wakesPerHo
   // into it for a while; updates queue up meanwhile. AXA_SUPERVISOR=0 turns this off.
   const lastSeen = new Map(), pending = new Map(), wakes = [], budgetTold = new Set();
   let primed = false, limitToldAt = 0; // limitToldAt: when the last limit notice expires
+
+  // Phone pushes: a project session entering a notable state, once it has held (as for the wakes
+  // below: a prompt the approver is about to take, a "done" a verify gate may still bounce). Works
+  // with or without the supervisor; createPush dedupes and rate-limits.
+  const pushSeen = new Map(); // id -> { status, since, sent }
+  let pushPrimed = false;
+  function runPush(list, t) {
+    for (const s of list) {
+      if (s.mode !== "claude") continue;
+      let p = pushSeen.get(s.id);
+      if (!p || p.status !== s.status) pushSeen.set(s.id, (p = { status: s.status, since: t, sent: !pushPrimed || !p }));
+      const held = s.status === "waiting" ? WAIT_MS : s.status === "done" ? DONE_MS : 0;
+      if (!p.sent && t - p.since >= held) { p.sent = true; Promise.resolve(push.notify(s)).catch(() => {}); }
+    }
+    for (const id of pushSeen.keys()) if (!list.some((s) => s.id === id)) pushSeen.delete(id);
+    pushPrimed = true;
+  }
   function supervise() {
     if (!T) return;
     const list = T.listTerms();
     runChains(list);
-    if (!enabled) return;
     const t = now();
+    if (push) runPush(list, t);
+    if (!enabled) return;
     for (const s of list) {
       if (s.mode !== "claude") continue;
       const prev = lastSeen.get(s.id);
@@ -87,7 +106,7 @@ export function createSupervisor({ T, home, logEvent, enabled = true, wakesPerHo
       if (primed && s.usage?.over_budget && !budgetTold.has(s.id)) { budgetTold.add(s.id); pending.set(`${s.id}:budget`, { id: s.id, name: s.name, status: "over_budget", since: t }); }
       // the first pass only learns the current states; afterwards, report changes into a notable state
       if (!primed || prev === undefined || prev === s.status) continue;
-      if (NOTABLE[s.status]) pending.set(s.id, { name: s.name, status: s.status, since: t });
+      if (NOTABLE[s.status]) pending.set(s.id, { name: s.name, status: s.status, since: t, reason: s.status === "stuck" ? s.stuck_reason : s.status === "failed" ? s.failed_reason : undefined });
       else pending.delete(s.id); // back to work before AXA got to it
     }
     // A prompt can show on screen a moment before the approver picks it up: "needs the user" only
@@ -112,7 +131,8 @@ export function createSupervisor({ T, home, logEvent, enabled = true, wakesPerHo
       return;
     }
 
-    const items = ready.map(([id, p]) => `${p.name} (${p.id || id}) ${NOTABLE[p.status]}`);
+    // the reasons are AXA's own words (status.mjs), never session text
+    const items = ready.map(([id, p]) => `${p.name} (${p.id || id}) ${p.status === "stuck" && p.reason ? p.reason : p.status === "failed" && p.reason ? `${NOTABLE.failed} (${p.reason})` : NOTABLE[p.status]}`);
     const text = `[AXA supervisor: automatic update from the console, not typed by the user] ${items.join("; ")}. Handle this under your supervisor rules: check each one, verify any claims, take the next step if it is within what the user asked, and end with a short report for the user.`;
     T.sendToTerm(cmd.id, text).then((r) => {
       if (!r.ok) return;

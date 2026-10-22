@@ -52,6 +52,8 @@ process.stdin.on("end", () => {
       prompt: logText ? clip(e.prompt || (["Agent", "Task"].includes(e.tool_name) ? input.prompt : undefined), 8000) : undefined, // room for a whole /goal (4000) plus context
       message: logText ? clip(e.last_assistant_message ?? (e.hook_event_name === "Notification" ? e.message : undefined), 2000) : undefined,
       error: clip(e.error, 500),
+      // StopFailure: the API error's details (error is its code: rate_limit, billing_error...)
+      error_details: e.error_details == null ? undefined : clip(typeof e.error_details === "string" ? e.error_details : JSON.stringify(e.error_details), 300),
       duration_ms: e.duration_ms,
       source: e.source,
       notification_type: e.notification_type,

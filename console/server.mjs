@@ -12,6 +12,8 @@ import { fileURLToPath } from "node:url";
 import { openUrl } from "./ensure.mjs";
 import { createStatus, RUNS_MAX, GATE_MS } from "./status.mjs";
 import { createSupervisor } from "./supervisor.mjs";
+import { createPush } from "./notify.mjs";
+import { cleanText, redact } from "../lib/safety.mjs";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { themeId, DEFAULT_THEME } from "./theme.mjs";
 
@@ -146,7 +148,23 @@ setInterval(() => {
 }, 250);
 
 // ---------- supervisor (AXA wakes itself) and links between sessions: see supervisor.mjs ----------
-const sup = createSupervisor({ T, home, logEvent, enabled: process.env.AXA_SUPERVISOR !== "0", wakesPerHour: Number(process.env.AXA_WAKES_PER_HOUR) || 30 });
+// Phone pushes ride on the same notable changes; nothing is sent unless $AXA_HOME/notify.json enables it
+const sup = createSupervisor({ T, home, logEvent, enabled: process.env.AXA_SUPERVISOR !== "0", wakesPerHour: Number(process.env.AXA_WAKES_PER_HOUR) || 30, push: createPush({ home }) });
+
+// ---------- the commander's digest (digest_sessions): each session at a glance, plus what happened since ----------
+const safe = (v) => (v == null ? v : redact(cleanText(v)));
+function digest(since) {
+  return {
+    since, now: Date.now(),
+    sessions: T.listTerms().map((s) => ({
+      id: s.id, name: s.name, mode: s.mode, status: s.status, stuck_reason: s.stuck_reason, failed_reason: s.failed_reason,
+      doing: s.doing, last_report: s.last_report, error: s.error, last_event_at: s.last_event_at, idle_seconds: s.idle_seconds,
+      git: s.git, usage: s.usage, cost: s.cost, github: s.github, worktree: s.worktree,
+      // { approved, declined, escalated, refused, failures, gate, api_errors, last_failures: [text] }
+      since: (({ last_failures, ...d }) => ({ ...d, last_failures: last_failures.map(safe) }))(status.digestOf(s.id, since)),
+    })),
+  };
+}
 setInterval(sup.supervise, 3000);
 
 // ---------- http ----------
@@ -293,6 +311,8 @@ const server = createServer(async (req, res) => {
     if (path === "/api/projects") return json(res, 200, T.listProjects(rosterFile()));
     if (path === "/api/chats") return json(res, 200, T.listChats());
     if (path === "/api/terms" && req.method === "GET") return json(res, 200, T.listTerms());
+    if (path === "/api/digest" && req.method === "GET") return json(res, 200, digest(Math.max(0, Number(u.searchParams.get("since")) || 0)));
+    if (path === "/api/cost" && req.method === "GET") return json(res, 200, T.costTotals());
     if (path === "/api/terms" && req.method === "POST") {
       try {
         const body = await readBody(req);

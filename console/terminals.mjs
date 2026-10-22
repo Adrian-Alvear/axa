@@ -11,6 +11,8 @@ import { cleanText, dangerousShell, redact } from "../lib/safety.mjs";
 import { answerKeys, awaitingPermission, choicesOf, screenTail } from "./prompt.mjs";
 import { forgetGit, gitOf, gitRun, rawDiff, untrackedFiles } from "./gitinfo.mjs";
 import { forgetUsage, usageOf } from "./usage.mjs";
+import { createCostReader } from "./cost.mjs";
+import { createGithub } from "./github.mjs";
 
 const require = createRequire(import.meta.url);
 const pty = require("node-pty");
@@ -285,25 +287,37 @@ export async function answerTerm(id, n, label, question) {
   } finally { t.answering = false; }
 }
 
+// Cost and context % (from `axa statusline`, cost.mjs) and the PR and CI run of its branch (github.mjs):
+// both cached, read without waiting
+const cost = createCostReader(home), github = createGithub();
+export const costTotals = () => cost.totals();
 const summary = (t) => {
   const traced = statusOf(t.id);
+  const git = gitOf(t);
   const v = t.alive ? t.view : null;
   // While AXA's approver is deciding, the prompt is already drawn on screen: not the user's turn yet
   const waiting = t.alive && (traced?.status === "waiting" || (!traced?.asking && !!v?.asking));
+  // "waiting" wins over "stuck": a prompt on screen is the more specific reason. Plain shells have
+  // no traced events, so they show as "shell" (not "starting" forever)
+  const status = !t.alive ? "exited" : waiting ? "waiting" : t.mode === "shell" ? "shell" : traced?.status || "starting";
   return {
     id: t.id, name: t.name, cwd: t.cwd, mode: t.mode, alive: t.alive, created: t.created,
-    // "waiting" wins over "stuck": a prompt on screen is the more specific reason. Plain shells have
-    // no traced events, so they show as "shell" (not "starting" forever)
-    status: !t.alive ? "exited" : waiting ? "waiting" : t.mode === "shell" ? "shell" : traced?.status || "starting",
+    status,
     stuck_minutes: traced?.stuck_minutes,
+    // why it looks stuck ("looks stuck: ...") or failed ("rate limit", "billing"...), in AXA's own words
+    stuck_reason: status === "stuck" ? traced?.stuck_reason : undefined, failed_reason: status === "failed" ? traced?.failed_reason : undefined,
     doing: safe(traced?.doing), tool: traced?.tool, summary: safe(traced?.summary), skill: traced?.skill,
     last_report: safe(traced?.report), error: safe(traced?.error), last_event_at: traced?.at,
     idle_seconds: Math.round((Date.now() - t.lastOutput) / 1000),
     awaiting_permission: waiting,
     // uncommitted work in its folder: { branch, files, untracked, added, removed, ahead, behind }
-    git: gitOf(t),
+    git,
     // tokens its chat has used: { tokens, input, cached, output, budget?, over_budget }
     usage: usageOf(t, meta.get(t.id)?.claudeSession),
+    // what its chat has cost, from Claude Code's statusLine: { usd, context_pct, model, at }
+    cost: t.mode === "shell" ? null : cost.costOf(meta.get(t.id)?.claudeSession || traced?.session, t.id),
+    // read-only, via gh: { pr: { number, state, url, draft, review, checks }, ci: { status, conclusion, name, url } }
+    github: t.alive && t.mode !== "axa" ? github.githubOf(t.cwd, git?.branch) : null,
     // the prompt on screen, when it's waiting: { question, options: [{ n, label }] }
     choices: waiting ? (v?.choices ? { question: v.choices.question, options: v.choices.options } : null) : undefined,
     // its own git worktree (open_session with worktree): { repo, path, branch }
