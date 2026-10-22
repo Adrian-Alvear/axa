@@ -540,6 +540,9 @@ machine, prompt parsing against captured screens, the server's access checks, an
 event replay. They start throwaway consoles on private ports and homes, never your own.
 `node scripts/perf.mjs` measures the console's event-loop delay and the terminal app's idle output
 with 8 shell sessions (numbers in `docs/perf/baseline.md`).
+`node scripts/approver-eval.mjs` replays synthetic approval cases (`test/fixtures/approver-eval.jsonl`)
+against Haiku and Sonnet and prints agreement and latency, at most 30 model calls; `--dry-run` makes
+none. It only recommends (results in `docs/research/2026-10-v2-spikes.md`).
 
 ## Privacy
 
