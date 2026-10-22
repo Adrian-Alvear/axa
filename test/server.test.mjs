@@ -134,7 +134,8 @@ test("/api/ui-settings: theme and themeSync only, merged into ui.json", async ()
   assert.equal((await post({ theme: "mono" }, { "x-axa-client": "tui" })).json.theme, "mono");
   assert.equal((await req("/api/ui-settings")).json.theme, "mono");
   assert.equal((await post({ theme: "high-contrast" })).json.theme, "contrast"); // an older name
-  for (const bad of [{ theme: "neon" }, { theme: 3 }, { themeSync: "yes" }, {}, { prefix: "C-z" }]) assert.equal((await post(bad)).status, 400, JSON.stringify(bad));
+  // (a body that isn't an object, 1 or [], used to crash the server)
+  for (const bad of [{ theme: "neon" }, { theme: 3 }, { themeSync: "yes" }, {}, { prefix: "C-z" }, 1, []]) assert.equal((await post(bad)).status, 400, JSON.stringify(bad));
   assert.equal(JSON.parse(readFileSync(file, "utf8")).theme, "contrast");
 
   // a file it can't read is left alone

@@ -132,7 +132,7 @@ setInterval(sup.supervise, 3000);
 
 // ---------- http ----------
 const json = (res, code, body) => { res.writeHead(code, { "content-type": "application/json" }); res.end(JSON.stringify(body)); };
-const readBody = (req) => new Promise((ok) => { let b = ""; req.on("data", (c) => (b += c).length > 1e5 && req.destroy()); req.on("end", () => { try { ok(JSON.parse(b || "{}")); } catch { ok({}); } }); });
+const readBody = (req) => new Promise((ok) => { let b = ""; req.on("data", (c) => (b += c).length > 1e5 && req.destroy()); req.on("end", () => { try { const v = JSON.parse(b || "{}"); ok(v && typeof v === "object" && !Array.isArray(v) ? v : {}); } catch { ok({}); } }); }); // (a plain object only: null or 1 would crash a handler)
 const VENDOR = {
   "/vendor/xterm.js": ["@xterm/xterm/lib/xterm.js", "text/javascript"],
   "/vendor/xterm.css": ["@xterm/xterm/css/xterm.css", "text/css"],

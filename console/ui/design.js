@@ -61,7 +61,8 @@ async function uiSettings(body) {
 async function pullTheme() {
   const s = await uiSettings();
   if (!s) return;
-  if (prefs.sync === null) { prefs.sync = s.themeSync ? "1" : "0"; } // first visit: follow what the terminal app chose
+  // syncing is one shared switch: turned off in the terminal app, it's off here too
+  prefs.sync = s.themeSync ? "1" : "0"; lsSet("axa.themeSync", prefs.sync);
   if (syncOn() && s.theme && s.theme !== prefs.theme) { prefs.theme = s.theme; lsSet("axa.theme", s.theme); applyTheme(); }
   syncControls();
 }
@@ -131,6 +132,6 @@ const designReady = Promise.all([import("/shared/theme.mjs"), import("/shared/lo
   buildControls();
   applyTheme();
   mqLight.addEventListener("change", () => { if (prefs.follow) applyTheme(); });
-  document.addEventListener("visibilitychange", () => { if (!document.hidden && syncOn()) pullTheme(); });
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) pullTheme(); });
   pullTheme();
 });
