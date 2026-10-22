@@ -3,7 +3,7 @@
 // frame itself (only rows that changed are rewritten). Also copy-on-select inside a pane.
 import { spawn, spawnSync } from "node:child_process";
 import { homedir } from "node:os";
-import { ESC, look, cut, pad, width, question, yesOpt, noOpt, fmtTok, gitText } from "./theme.mjs";
+import { ESC, look, needsYou, STATUS, statusLabel, cut, pad, width, question, yesOpt, noOpt, fmtTok, gitText } from "./theme.mjs";
 import { wakeLimitText } from "./events.mjs";
 
 export function views(c) {
@@ -176,7 +176,7 @@ export function views(c) {
     const { sgr } = c;
     const a = L.alert, q = question(a.choices), yes = yesOpt(a.choices), no = noOpt(a.choices), k = c.keyName();
     return [
-      sgr("wait", pad(` ⚠ ${c.nameOf(a)} needs you: ${q}`, L.mainW)),
+      sgr("wait", pad(` ${statusLabel("waiting")} · ${c.nameOf(a)}: ${q}`, L.mainW)),
       sgr("waitSoft", pad(`   ${k} y  ${yes.label}    ${k} x  ${no.label}    ${k} !  go there`, L.mainW)),
     ];
   }
@@ -192,8 +192,8 @@ export function views(c) {
       : limit ? ` ⏸ ${limit}` : ` ${k} : palette · ${k} s browse · ${k} ? help · ${k} q leave`;
     const clock = new Date().toLocaleTimeString([], { hour12: false });
     // left: does anything need you; then the keys; the clock at the right end
-    const cnt = (st) => c.list.filter((s) => s.mode !== "axa" && s.status === st).length, needs = cnt("waiting") + cnt("stuck"), busy = cnt("working");
-    const state = ` ${needs ? `⚠ ${needs} need${needs > 1 ? "" : "s"} you` : "✓ nothing needs you"}${busy ? ` · ${busy} working` : ""} `;
+    const others = c.list.filter((s) => s.mode !== "axa"), needs = others.filter(needsYou).length, busy = others.filter((s) => s.status === "working").length;
+    const state = ` ${needs ? `${STATUS.waiting.glyph} ${needs} need${needs > 1 ? "" : "s"} you` : `${STATUS.done.glyph} nothing needs you`}${busy ? ` · ${busy} ${STATUS.working.word}` : ""} `;
     const room = Math.max(0, W - 11 - tag.length - width(state) - 1);
     return sgr(needs ? "wait" : "done", state) + sgr("rule", "│") + (tag ? sgr("tag", tag) : "") + sgr(limit ? "wait" : "dim", pad(keys, room)) + sgr("dim", pad(clock, 9) + " ");
   }
@@ -257,7 +257,7 @@ export function views(c) {
       o += `${ESC}[${p.y + b.cursorY + 1 + p.hdr};${p.x + b.cursorX + 1}H${ESC}[?25h`;
     } else if (c.overlay?.cursor) o += `${ESC}[${c.overlay.cursor[0]};${c.overlay.cursor[1]}H${ESC}[?25h`;
     // the window title says whether anything needs you
-    const title = c.list.some((s) => s.status === "waiting" || s.status === "stuck") ? "⚠ AXA" : "AXA";
+    const title = c.list.some(needsYou) ? `${STATUS.waiting.glyph} AXA` : "AXA";
     if (title !== c.lastTitle) { o += `${ESC}]0;${title}\x07`; c.lastTitle = title; }
     out.write(o);
   }

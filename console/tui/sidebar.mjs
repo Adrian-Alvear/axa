@@ -1,7 +1,7 @@
 // The sessions as the app sees them (names, workspaces, display order) and the sidebar that lists them:
 // a tree (AXA at the root, a project per branch) or a compact list.
 import { basename } from "node:path";
-import { look, byUrgency, clean, cut, pad, width, question, fmtTok, gitText, what } from "./theme.mjs";
+import { look, STATUS, needsYou, byUrgency, clean, cut, pad, width, question, fmtTok, gitText, what } from "./theme.mjs";
 import { spark, SPARK_BUCKETS } from "./events.mjs";
 
 // helper agents grouped by the work they do: "● builder ×2 · ✓ reviewer"
@@ -23,7 +23,7 @@ export function sidebar(c) {
   // Workspaces, like herdr's: one per project (a worktree session belongs to its repo). A workspace's
   // state rolls up from its sessions: needs you > working > done (not yet seen) > idle.
   const wsKey = (s) => s.worktree?.repo || s.cwd;
-  const rollup = (arr) => (arr.some((s) => s.status === "waiting" || s.status === "stuck") ? ["⚠", "needs you", "wait", 0] : arr.some((s) => s.status === "working") ? ["●", "working", "work", 1] : arr.some(unseenDone) ? ["✓", "done", "done", 2] : ["○", "idle", "off", 3]);
+  const rollup = (arr) => { const [st, rank] = arr.some(needsYou) ? ["waiting", 0] : arr.some((s) => s.status === "working") ? ["working", 1] : arr.some(unseenDone) ? ["done", 2] : [null, 3]; return st ? [STATUS[st].glyph, STATUS[st].word, STATUS[st].tui, rank] : [STATUS.ready.glyph, "idle", "off", rank]; };
   function workspaces() {
     const by = new Map();
     for (const s of c.list) if (s.mode !== "axa") { const k = wsKey(s); by.set(k, [...(by.get(k) || []), s]); }

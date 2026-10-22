@@ -1,6 +1,6 @@
 // Every AXA action: the prefix keys (action), the palette that searches them all (Ctrl-b :), and the
 // settings panel (Ctrl-b ,) that edits ui.json live.
-import { ESC, THEMES, PREFIXES, LOOK } from "./theme.mjs";
+import { ESC, pad, THEME_NAMES, PREFIXES, STATUS, URGENCY, themeLabel, DEPTH_TEXT } from "./theme.mjs";
 
 export function palette(c) {
   const { cfg, views: V } = c;
@@ -25,10 +25,11 @@ export function palette(c) {
     add("Rename this session (your own label)", () => action("r"), "r");
     add("Agents and work of this session", () => c.sessionDetail(c.sel()), "a");
     for (const ch of c.chainsList.filter((ch) => !ch.fired && !ch.failed)) add(`Remove link: ${ch.from_name} → ${ch.to_name}`, async () => { try { await c.api(`/api/chains/${ch.id}`, { method: "DELETE" }); c.chainsList = await c.api("/api/chains"); } catch (e) { flash("Couldn't remove it", [e.message]); } });
-    add("Settings: theme, prefix key, sidebar, bell", settings, ",");
+    add(`Settings: theme (${themeLabel(cfg.theme)}), prefix key, sidebar, bell`, settings, ",");
     add("Open the web console", () => action("o"), "o");
     add("Help: all keys", () => action("?"), "?");
-    for (const t of Object.keys(THEMES)) add(`Theme: ${t}`, () => { cfg.theme = t; c.saveCfg(); c.fullRedraw = true; c.schedule(); });
+    for (const t of THEME_NAMES) add(`Theme: ${themeLabel(t)} (${t})`, () => { cfg.theme = t; c.saveCfg(); c.fullRedraw = true; c.schedule(); });
+    add(cfg.themeSync ? "Stop syncing the theme with the web console" : "Sync the theme with the web console", () => { cfg.themeSync = !cfg.themeSync; c.saveCfg(); c.fullRedraw = true; c.schedule(); });
     for (const s of c.ordered()) {
       const n = nameOf(s);
       add(`Go to ${n}`, () => c.show(s));
@@ -60,7 +61,8 @@ export function palette(c) {
   // ---------- settings (saved to ui.json, applied live) ----------
   function settings() {
     const items = [
-      { key: "theme", label: "Theme", values: Object.keys(THEMES), about: "terminal = your terminal's own colors" },
+      { key: "theme", label: "Theme", values: THEME_NAMES, about: "terminal = your terminal's own colors" },
+      { key: "themeSync", label: "Theme sync (web console)", values: [false, true], about: "on: a theme picked in either one changes both" },
       { key: "prefix", label: "Prefix key", values: Object.keys(PREFIXES), about: "the key before every AXA action" },
       { key: "sidebarStyle", label: "Sidebar style", values: ["tree", "list"], about: "tree: the live diagram (AXA, sessions, helpers, links); list: compact" },
       { key: "sidebar", label: "Sidebar side", values: ["left", "right"] },
@@ -72,10 +74,16 @@ export function palette(c) {
     const ov = { title: "Settings · ↑/↓ choose · ←/→ or Enter change · saved as you go · Esc close", sel: 0, lines: [] };
     const fmt = (v) => (v === true ? "on" : v === false ? "off" : String(v));
     const render = () => {
-      ov.lines = items.map((it, i) => ({ text: `${i === ov.sel ? "›" : " "} ${it.label.padEnd(32)} ‹ ${fmt(cfg[it.key]).padEnd(9)} ›   ${it.about || ""}`, role: i === ov.sel ? "sel" : "" }));
-      ov.lines.push({ text: "" }, { text: `  ${c.noColor ? "NO_COLOR is set: colors are off whatever the theme." : `Saved to ${c.cfgPath}`}`, role: "dim" });
-      if (c.noColor) ov.lines.push({ text: "" });
-      ov.lines.push({ text: "" }, ...["  Status preview:", ...Object.keys(LOOK).map((st) => ` ${LOOK[st][0]} ${LOOK[st][1]}`)].map((t, i) => (i === 0 ? { text: t, role: "dim" } : { text: t, role: LOOK[Object.keys(LOOK)[i - 1]][2] })));
+      // a narrow panel shortens the labels so the values always show
+      const lw = Math.max(12, Math.min(32, (ov.cols || 76) - 17));
+      ov.lines = items.map((it, i) => ({ text: `${i === ov.sel ? "›" : " "} ${pad(it.label, lw)} ‹ ${fmt(cfg[it.key]).padEnd(9)} ›   ${it.about || ""}`, role: i === ov.sel ? "sel" : "" }));
+      ov.lines.push({ text: "" }, { text: `  Theme: ${themeLabel(cfg.theme)} · ${DEPTH_TEXT[c.depth]}${cfg.themeSync ? " · synced with the web console" : ""}`, role: "accent" });
+      ov.lines.push({ text: `  ${c.noColor ? "NO_COLOR is set: colors are off whatever the theme." : `Saved to ${c.cfgPath}`}`, role: "dim" });
+      // every status as the app shows it (glyph, word and color), wrapped to the panel
+      const cols = ov.cols || 76, rows = [[]];
+      let used = 2;
+      for (const st of URGENCY) { const t = `${STATUS[st].glyph} ${STATUS[st].word}`; const gap = rows.at(-1).length ? 3 : 0; if (used + gap + t.length > cols && gap) { rows.push([]); used = 2; } else if (gap) { rows.at(-1).push(["   ", ""]); used += gap; } rows.at(-1).push([t, STATUS[st].tui]); used += t.length; }
+      ov.lines.push({ text: "" }, { text: "  Status preview:", role: "dim" }, ...rows.map((segs) => ({ raw: c.renderSegs([["  ", ""], ...segs], cols) })));
     };
     ov.onKey = (k) => {
       const it = items[ov.sel];
@@ -88,6 +96,7 @@ export function palette(c) {
       } else if (k === "q" || k === ESC) { c.closeOverlay(); return true; }
       render(); return true;
     };
+    ov.render = (p) => { if (ov.cols !== p.cols) { ov.cols = p.cols; render(); } };
     render(); c.overlay = ov; c.schedule();
   }
 

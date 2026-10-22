@@ -1,26 +1,27 @@
 // The terminal app's look: themes (roles -> SGR codes), the status vocabulary, and the text helpers
 // that measure and cut strings by display width.
+import { THEMES as SHARED_THEMES, TERMINAL_THEME, themeId, tuiRoles, colorDepth } from "../theme.mjs";
+import { STATUS, URGENCY, statusOf, lookOf, byUrgency, needsYou, label } from "../look.mjs";
+
 export const ESC = "\x1b";
 
-// ---------- themes: roles -> SGR codes ----------
-// "terminal" uses the 16 basic colors, so your terminal's own theme applies (the default)
-export const THEMES = {
-  terminal: { title: "1;36", accent: "36", wait: "1;33", waitSoft: "33", stuck: "31", work: "36", done: "32", idle: "0", off: "90", dim: "90", sel: "7", rule: "90", tag: "1;7", add: "32", del: "31", hunk: "36" },
-  hud: { title: "1;38;2;79;216;255", accent: "38;2;79;216;255", wait: "1;38;2;255;181;71", waitSoft: "38;2;255;181;71", stuck: "38;2;255;138;92", work: "38;2;79;216;255", done: "38;2;94;242;194", idle: "38;2;143;179;196", off: "38;2;108;138;153", dim: "38;2;108;138;153", sel: "48;2;14;48;66;38;2;233;251;255", rule: "38;2;34;78;98", tag: "1;48;2;79;216;255;38;2;3;16;24", add: "38;2;94;242;194", del: "38;2;255;84;104", hunk: "38;2;79;216;255" },
-  light: { title: "1;38;5;25", accent: "38;5;25", wait: "1;38;5;130", waitSoft: "38;5;130", stuck: "38;5;160", work: "38;5;25", done: "38;5;28", idle: "0", off: "38;5;245", dim: "38;5;242", sel: "48;5;153;38;5;16", rule: "38;5;250", tag: "1;7", add: "38;5;28", del: "38;5;160", hunk: "38;5;25" },
-  contrast: { title: "1;97", accent: "1;96", wait: "1;93", waitSoft: "93", stuck: "1;91", work: "1;96", done: "1;92", idle: "97", off: "37", dim: "37", sel: "1;7", rule: "97", tag: "1;7", add: "1;92", del: "1;91", hunk: "1;96" },
-  mono: { title: "1", accent: "1", wait: "1;4", waitSoft: "1", stuck: "1", work: "0", done: "0", idle: "0", off: "2", dim: "2", sel: "7", rule: "2", tag: "7", add: "1", del: "2", hunk: "1" },
-};
+// ---------- themes: roles -> SGR codes (console/theme.mjs, shared with the web console) ----------
+// "terminal" uses the 16 basic colors, so your terminal's own theme applies (the default); the others
+// are AXA's named themes: exact colors on a truecolor terminal, quantized on 256, the basic named
+// colors on 16. "mono" is an explicit no-colors choice (NO_COLOR or TERM=dumb force it).
+export const THEME_NAMES = [TERMINAL_THEME, ...Object.keys(SHARED_THEMES), "mono"];
+// a saved name -> one the app offers: aliases (light -> paper) resolve, unknown -> terminal
+export const appTheme = (name) => (name === "mono" || name === TERMINAL_THEME ? name : SHARED_THEMES[themeId(name)] && (themeId(name) !== "hud" || name === "hud") ? themeId(name) : TERMINAL_THEME);
+export const themeLabel = (name) => { const n = appTheme(name); return n === TERMINAL_THEME ? "Terminal colors" : n === "mono" ? "Mono" : SHARED_THEMES[n].label; };
+export const DEPTH_TEXT = { truecolor: "truecolor", 256: "256 colors", 16: "16 colors", mono: "no colors" };
+// roles for a theme at a depth (the app's own picks: mono is mono at any depth)
+export const rolesFor = (name, depth) => tuiRoles(appTheme(name), appTheme(name) === "mono" ? "mono" : depth);
 export const PREFIXES = { "C-b": 0x02, "C-a": 0x01, "C-g": 0x07, "C-\\": 0x1c };
-export const DEFAULTS = { theme: "terminal", prefix: "C-b", sidebar: "left", sidebarWidth: 34, bell: true, newSession: "claude", copyOnSelect: true, sidebarStyle: "tree" };
+export const DEFAULTS = { theme: "terminal", themeSync: false, prefix: "C-b", sidebar: "left", sidebarWidth: 34, bell: true, newSession: "claude", copyOnSelect: true, sidebarStyle: "tree" };
 
-// ---------- status: [glyph, word, role] ----------
-export const LOOK = { waiting: ["⚠", "needs you", "wait"], stuck: ["◷", "stuck", "stuck"], working: ["●", "working", "work"], done: ["✓", "done", "done"], ready: ["○", "ready", "idle"], shell: ["○", "shell", "dim"], starting: ["◌", "starting", "off"], exited: ["–", "exited", "off"] };
-// plain shells report "shell" (older consoles said "starting"/"ready" for them forever)
-export const statusOf = (s) => (s.mode === "shell" && ["starting", "ready"].includes(s.status) ? "shell" : s.status);
-export const look = (s) => LOOK[statusOf(s)] || ["?", s.status, "idle"];
-export const URGENCY = ["waiting", "stuck", "working", "done", "ready", "shell", "starting", "exited"];
-export const byUrgency = (a, b) => URGENCY.indexOf(statusOf(a)) - URGENCY.indexOf(statusOf(b)) || (b.last_event_at || b.created) - (a.last_event_at || a.created);
+// ---------- status: [glyph, word, role] from the shared vocabulary (console/look.mjs) ----------
+export { STATUS, URGENCY, statusOf, byUrgency, needsYou, label as statusLabel };
+export const look = (s) => { const l = lookOf(s); return [l.glyph, l.word, l.tui]; };
 
 // ---------- text helpers ----------
 export const clean = (s) => String(s ?? "").replace(/[\u0000-\u001f\u007f-\u009f]+/g, " ").replace(/\s+/g, " ").trim();
@@ -40,9 +41,12 @@ export const gitText = (g) => (!g ? "" : `${g.branch}${g.files ? ` ${g.files}f +
 export const what = (s) => clean(s.status === "done" ? s.last_report || "finished" : s.doing || s.last_report || (s.mode === "shell" ? "shell" : s.mode === "axa" ? "select it and type to talk" : ""));
 export const fmtDur = (ms) => { const s = Math.max(0, Math.round(ms / 1000)); return s < 60 ? `${s}s` : s < 3600 ? `${Math.round(s / 60)}m` : `${Math.floor(s / 3600)}h${String(Math.round((s % 3600) / 60)).padStart(2, "0")}`; };
 
-// Colors that follow the live settings: c.cfg.theme (and NO_COLOR)
+// Colors that follow the live settings: c.cfg.theme at the terminal's color depth (c.depth, from the
+// environment: mono when NO_COLOR or TERM=dumb)
 export function theme(c) {
-  const T = () => THEMES[c.noColor ? "mono" : c.cfg.theme] || THEMES.terminal;
+  c.depth ||= colorDepth(process.env);
+  let memo = null;
+  const T = () => { const key = `${c.cfg.theme}|${c.depth}`; if (memo?.key !== key) memo = { key, roles: rolesFor(c.cfg.theme, c.depth) }; return memo.roles; };
   const sgr = (role, s) => { const code = T()[role] ?? role; return code && code !== "0" ? `${ESC}[${code}m${s}${ESC}[0m` : s; };
   // [text, role] segments cut to w columns, padded to exactly w
   const renderSegs = (segs, w) => { let o = "", n = 0; for (const [t, r] of segs) { if (!t) continue; if (n >= w) break; const s = cut(t, w - n); o += r ? sgr(r, s) : s; n += width(s); } return o + " ".repeat(Math.max(0, w - n)); };

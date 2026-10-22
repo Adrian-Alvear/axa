@@ -5,7 +5,7 @@ import { spawn } from "node:child_process";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
-import { ESC, look, clean, cut, pad, width, question, yesOpt, noOpt, gitText, fmtDur } from "./theme.mjs";
+import { ESC, look, needsYou, STATUS, clean, cut, pad, width, question, yesOpt, noOpt, gitText, fmtDur } from "./theme.mjs";
 
 export function overlays(c) {
   const { cfg, views: V } = c;
@@ -182,10 +182,10 @@ export function overlays(c) {
     const since = c.briefSince, keyName = c.keyName();
     let runs = [];
     try { runs = await c.api(`/api/runs?since=${since}&limit=300`); } catch {}
-    const waiting = c.list.filter((s) => s.mode !== "axa" && (s.status === "waiting" || s.status === "stuck"));
+    const waiting = c.list.filter((s) => s.mode !== "axa" && needsYou(s));
     if (auto && (!since || (!runs.length && !waiting.length))) return;
     const lines = [];
-    for (const s of waiting) lines.push({ text: `⚠ ${c.nameOf(s)}  ${s.status === "stuck" ? "looks stuck" : `waiting: ${s.choices ? question(s.choices) : clean(s.doing)}`}`, role: "wait" });
+    for (const s of waiting) lines.push({ text: `${look(s)[0]} ${c.nameOf(s)}  ${s.status === "waiting" ? `${STATUS.waiting.word}: ${s.choices ? question(s.choices) : clean(s.doing)}` : `${look(s)[1]}: ${clean(s.doing || s.last_report)}`}`, role: look(s)[2] });
     const groups = new Map();
     for (const r of runs.slice().reverse()) { const g = groups.get(r.terminal) || []; g.push(r); groups.set(r.terminal, g); }
     for (const rs of groups.values()) {
