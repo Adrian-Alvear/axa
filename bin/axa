@@ -11,6 +11,7 @@
 //   axa attach <name|id>   take over a session in this terminal (Ctrl-] detaches; it keeps running)
 //   axa stop       stop the console (sessions keep running in tmux; the next start shows them again)
 //   axa stop --all stop the console and end every session
+//   axa setup terminal   write a Windows Terminal fragment: an "AXA" profile and the theme as a scheme
 // Colors only on a real terminal; NO_COLOR, TERM=dumb or --no-color turn them off.
 import { readFileSync, existsSync, realpathSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -197,6 +198,20 @@ if (cmd === "console") {
     rmSync(join(home, "sessions.json"), { force: true });
     console.log("All sessions ended.");
   } else console.log("Sessions keep running; `axa console` shows them again. `axa stop --all` ends them too.");
+} else if (cmd === "setup" && rest[0] === "terminal") {
+  // A Windows Terminal profile for AXA plus the current theme as a color scheme, as a JSON fragment
+  // (console/wtfragment.mjs). Only written when you run this; --print shows it without writing.
+  const wt = await import(join(root, "console", "wtfragment.mjs"));
+  const { settingsFile } = await import(join(root, "console", "tui", "settings.mjs"));
+  const { DEFAULTS } = await import(join(root, "console", "tui", "theme.mjs"));
+  const themeArg = rest.find((a) => a.startsWith("--theme="))?.slice(8);
+  const theme = themeArg || settingsFile(join(home, "ui.json"), DEFAULTS).cfg.theme;
+  const frag = wt.fragment({ theme, commandline: wt.wslCommandline({ distro: process.env.WSL_DISTRO_NAME, node: process.execPath, axa: join(root, "bin", "axa") }) });
+  if (flags.has("--print")) { console.log(JSON.stringify(frag, null, 2)); process.exit(0); }
+  const dir = wt.fragmentsDir(process.env);
+  if (!dir) { console.error("Couldn't find Windows Terminal's fragments folder (this works from WSL or Windows). Set AXA_WT_FRAGMENTS to a folder, or use --print and save the JSON yourself."); process.exit(1); }
+  const file = wt.writeFragment(dir, frag);
+  console.log(`Wrote ${file}\n  profile "AXA" (${frag.profiles[0].commandline})\n  color scheme "${frag.schemes[0].name}"\nRestart Windows Terminal; AXA shows up in its new-tab menu. Delete that folder to remove it.`);
 } else if (!cmd || cmd === "ui") {
   // Mission control in this terminal: AXA and every session, live (console/tui/)
   if (!process.stdin.isTTY || !out.isTTY) { console.error("`axa` opens a full-screen UI and needs a terminal. In scripts use: axa status --json"); process.exit(1); }
@@ -217,5 +232,6 @@ if (cmd === "console") {
   axa console              open the console in your browser
   axa status [--watch|--json]   sessions, what needs you first (--watch: live, 1-9 attach, q quit)
   axa attach <name|id>     take over a session here (Ctrl-] detaches; it keeps running)
-  axa stop [--all]         stop the console (--all also ends every session)`);
+  axa stop [--all]         stop the console (--all also ends every session)
+  axa setup terminal [--print] [--theme=<id>]   add an AXA profile and color scheme to Windows Terminal`);
 }

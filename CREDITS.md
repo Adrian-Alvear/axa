@@ -19,3 +19,7 @@ The October 2026 improvements (sessions list, changes viewer, `axa status --watc
 `scripts/shot.mjs`) copy no outside code. The ideas behind them, from Claude Code Agent View, Conductor,
 Claude Squad, herdr, clig.dev, NO_COLOR, the gh CLI accessibility work, WCAG and others, are listed
 with links in `docs/research/2026-10-self-improve.md`.
+
+The terminal app's wide-character ranges (`console/tui/width.mjs`) follow Unicode's
+EastAsianWidth.txt as packaged by **get-east-asian-width** (https://github.com/sindresorhus/get-east-asian-width),
+MIT License, Copyright (c) Sindre Sorhus.

@@ -1,20 +1,45 @@
 // The screen: where everything goes (layout), the live session panes (a tmux client in a PTY, drawn
-// through a headless terminal), the tab row, the pane headers, the alert bar, the status line, and the
-// frame itself (only rows that changed are rewritten). Also copy-on-select inside a pane.
+// through a headless terminal), the tab row, the pane borders, the alert bar, the status bar, the
+// which-key popup, and the frame itself. A frame is rows of parts ({x, w, s}); floating panels are
+// spliced over them, and only the parts that changed since the last frame are written (output.mjs),
+// inside a synchronized-output block when the terminal supports one. A pane's rows are rebuilt only
+// when its session printed something (or the selection, size or theme changed). Also copy-on-select.
 import { spawn, spawnSync } from "node:child_process";
 import { homedir } from "node:os";
-import { ESC, look, needsYou, STATUS, statusLabel, cut, pad, width, question, yesOpt, noOpt, fmtTok, gitText } from "./theme.mjs";
+import { ESC, look, needsYou, STATUS, SPINNER, statusLabel, cut, pad, width, question, yesOpt, noOpt, fmtTok, gitText, costText, themeLabel } from "./theme.mjs";
 import { wakeLimitText } from "./events.mjs";
+import { createScreen, splice, frame } from "./output.mjs";
+
+// the app draws only the live screen of a session (tmux keeps its history), so its headless terminals
+// keep no scrollback of their own: memory stays flat however much a session prints (the console's
+// server-side terminals cap theirs at 2000 lines)
+export const HEADLESS_SCROLLBACK = 0;
+// a pane hidden behind the map this long gives back its terminal (it's re-attached when you return)
+export const PARK_AFTER_MS = 20_000;
+const HEAVY = { tl: "┏", tr: "┓", bl: "┗", br: "┛", h: "━", v: "┃" }, ROUND = { tl: "╭", tr: "╮", bl: "╰", br: "╯", h: "─", v: "│" };
+
+// The which-key popup: the keys after the prefix, grouped by what they do
+export const WHICH_KEY = [
+  ["Sessions", [["j/k", "next / prev"], ["0-9", "pick by number"], ["n/p", "next / prev tab"], ["s", "browse"], ["c", "new session"], ["w", "new in worktree"], ["r", "rename"], ["X", "close session"]]],
+  ["Panes", [["%", "split"], ["Tab", "switch pane"], ["z", "zoom"], ["!", "what needs you"]]],
+  ["Views", [[":", "palette"], ["m", "map"], ["b", "briefing"], ["h", "history"], ["/", "search"], ["a", "agents"]]],
+  ["Act", [["y/x", "answer yes / no"], ["g", "goal"], ["d", "diff"], ["v", "verify"], ["l", "link"], ["i", "paste image"]]],
+  ["App", [[",", "settings"], ["o", "web console"], ["?", "all keys"], ["q", "leave"]]],
+];
 
 export function views(c) {
   const { cfg, out, env, SOCK, seen } = c, V = c.views;
+  const screen = createScreen();
   const selId = () => V[c.focus]?.id || null;
   const sel = () => c.list.find((s) => s.id === selId());
   const onScreen = (id) => V.some((v) => v?.id === id);
   // A session not on screen that's waiting on a prompt
   const alertFor = () => c.list.find((s) => !onScreen(s.id) && s.status === "waiting" && s.choices) || null;
+  // a working session's glyph is the braille spinner (one frame per shared tick); others their status glyph
+  const glyph = (s) => (s?.status === "working" ? SPINNER[(c.tickN || 0) % SPINNER.length] : look(s)[0]);
 
-  // Where everything goes. Panes: one, or two side by side (stacked when the window is narrow).
+  // Where everything goes. Panes: one, or two side by side (stacked when the window is narrow), each
+  // of two in its own border (the focused one heavy and in the accent color).
   function layout() {
     c.W = out.columns || 120; c.H = out.rows || 36;
     const W = c.W;
@@ -22,17 +47,16 @@ export function views(c) {
     const sideX = cfg.sidebar === "right" ? W - side : 0; // 0-based column of the sidebar
     const mainX = side && cfg.sidebar !== "right" ? side + 1 : 0, mainW = W - (side ? side + 1 : 0);
     const alert = alertFor(), alertRows = alert ? 2 : 0;
-    const feedRows = 0; // the activity strip is gone: the briefing (b) and history (h) cover it
-    const mainH = c.H - 1 - alertRows - feedRows; // rows above the alert bar, the activity strip and the status line
-    // the tab row (sessions of the focused workspace) sits above the panes
+    const feedRows = 0;
+    const mainH = c.H - 1 - alertRows; // rows above the alert bar and the status line
     const tabRow = c.mapMode ? 0 : 1, ph = mainH - tabRow;
     const panes = [];
     if (V.length < 2) panes.push({ x: mainX, y: tabRow, w: mainW, h: ph });
-    else if (mainW >= 100) { const a = Math.floor((mainW - 1) / 2); panes.push({ x: mainX, y: tabRow, w: a, h: ph }, { x: mainX + a + 1, y: tabRow, w: mainW - a - 1, h: ph }); }
+    else if (mainW >= 100) { const a = Math.floor(mainW / 2); panes.push({ x: mainX, y: tabRow, w: a, h: ph }, { x: mainX + a, y: tabRow, w: mainW - a, h: ph }); }
     else { const a = Math.floor(ph / 2); panes.push({ x: mainX, y: tabRow, w: mainW, h: a }, { x: mainX, y: tabRow + a, w: mainW, h: ph - a }); }
-    // each pane: a header row, then the session's rows
-    // a header row per pane only when there are two; one pane is described by the tab row
-    for (const p of panes) { p.hdr = panes.length > 1 ? 1 : 0; p.cols = Math.max(10, p.w); p.rows = Math.max(3, p.h - p.hdr); }
+    // a bordered pane: the session's cells start one column right (ix) and one row down (hdr)
+    const boxed = panes.length > 1;
+    for (const p of panes) { p.box = boxed; p.hdr = p.ix = boxed ? 1 : 0; p.cols = Math.max(10, p.w - 2 * p.ix); p.rows = Math.max(3, p.h - 2 * p.hdr); }
     return { side, sideX, mainX, mainW, mainH, panes, alert, alertRows, feedRows };
   }
 
@@ -42,22 +66,24 @@ export function views(c) {
     try { if (v.proc?._pty) spawnSync("tmux", ["-L", SOCK, "detach-client", "-t", v.proc._pty], { stdio: "ignore", env }); } catch {}
     try { v.proc?.kill(); } catch {}
     try { v.term?.dispose(); } catch {}
+    v.term = null; v.proc = null; v.cache = null;
     v.closed = true;
   }
   const fitWindow = (v) => spawnSync("tmux", ["-L", SOCK, "resize-window", "-t", `=axa-${v.id}:`, "-x", String(v.cols), "-y", String(v.rows)], { stdio: "ignore", env });
   function makeView(s, pane) {
-    if (!s || !s.alive) return { id: s?.id, dead: "Session ended.", lastRows: [] };
-    if (spawnSync("tmux", ["-L", SOCK, "has-session", "-t", `=axa-${s.id}`], { stdio: "ignore", env }).status !== 0) return { id: s.id, dead: "This session isn't in tmux; open it in the web console (Ctrl-b o).", lastRows: [] };
-    const term = new c.Headless({ cols: pane.cols, rows: pane.rows, scrollback: 0, allowProposedApi: true });
+    if (!s || !s.alive) return { id: s?.id, dead: "Session ended." };
+    if (spawnSync("tmux", ["-L", SOCK, "has-session", "-t", `=axa-${s.id}`], { stdio: "ignore", env }).status !== 0) return { id: s.id, dead: "This session isn't in tmux; open it in the web console (Ctrl-b o)." };
+    const term = new c.Headless({ cols: pane.cols, rows: pane.rows, scrollback: HEADLESS_SCROLLBACK, allowProposedApi: true });
     const proc = c.pty.spawn("tmux", ["-L", SOCK, "attach-session", "-t", `=axa-${s.id}`], { name: "xterm-256color", cols: pane.cols, rows: pane.rows, cwd: homedir(), env });
-    const v = { id: s.id, proc, term, cursorOn: true, cols: pane.cols, rows: pane.rows, lastRows: [] };
+    const v = { id: s.id, proc, term, cursorOn: true, cols: pane.cols, rows: pane.rows, dirty: true, cache: null };
     fitWindow(v);
+    const parsed = () => { if (!v.closed) { v.dirty = true; schedule(); } };
     proc.onData((d) => {
       if (v.closed) return;
       // cursor visibility isn't in the public API: follow the last show/hide in the stream
       const i = Math.max(d.lastIndexOf("\x1b[?25h"), d.lastIndexOf("\x1b[?25l"));
       if (i >= 0) v.cursorOn = d[i + 5] === "h";
-      term.write(d, schedule);
+      term.write(d, parsed); // redrawn once the headless terminal has taken it in
     });
     proc.onExit(() => { if (!v.closed) { v.dead = "Detached or ended. Ctrl-b j/k picks another session."; schedule(); } });
     return v;
@@ -66,7 +92,8 @@ export function views(c) {
   function show(s, slot = c.focus) {
     if (!s) return;
     const at = V.findIndex((v) => v?.id === s.id);
-    if (at >= 0) { c.focus = at; return schedule(); }
+    if (at >= 0 && !V[at].parked) { c.focus = at; return schedule(); }
+    if (at >= 0) slot = at;
     closeView(V[slot]);
     V[slot] = null;
     const L = layout();
@@ -79,98 +106,122 @@ export function views(c) {
     V.forEach((v, i) => {
       const p = L.panes[i];
       if (!v?.term || !p || (v.cols === p.cols && v.rows === p.rows)) return;
-      v.cols = p.cols; v.rows = p.rows; v.lastRows = [];
+      v.cols = p.cols; v.rows = p.rows; v.dirty = true;
       try { v.proc.resize(p.cols, p.rows); v.term.resize(p.cols, p.rows); fitWindow(v); } catch {}
     });
   }
   function move(d) { const o = c.ordered(); if (!o.length) return; const i = Math.max(0, o.findIndex((s) => s.id === selId())); show(o[(i + d + o.length) % o.length]); }
   function toggleSplit() {
-    if (V.length > 1) { closeView(V[1]); V.length = 1; c.focus = 0; c.fullRedraw = true; return schedule(); }
+    if (V.length > 1) { closeView(V[1]); V.length = 1; c.focus = 0; return schedule(); }
     const next = c.ordered().find((s) => !onScreen(s.id) && s.alive);
     if (!next) return c.flash("Nothing to split with", ["Open another session first (Ctrl-b c)."]);
     V.push(null);
-    c.fullRedraw = true;
     resizeViews(); // the first pane narrows to make room
     show(next, 1);
   }
+  // The map hides the panes: after a while their terminals are given back, and re-attached on return
+  function setMap(on) {
+    c.mapMode = on; c.mapSince = Date.now();
+    if (on) c.mapWant = selId(); else unpark();
+    schedule();
+  }
+  function park() {
+    if (!c.mapMode) return;
+    V.forEach((v, i) => { if (v?.term) { closeView(v); V[i] = { id: v.id, parked: true }; } });
+  }
+  function unpark() {
+    V.forEach((v, i) => { if (v?.parked) { const s = c.list.find((x) => x.id === v.id); V[i] = null; V[i] = makeView(s, layout().panes[i] || layout().panes[0]); } });
+  }
 
   // ---------- drawing ----------
-  const schedule = () => { if (!c.timer) c.timer = setTimeout(() => { c.timer = null; draw(); }, 16); };
-  function cellSgr(cell) {
+  // c.frames (index.mjs) coalesces requests into at most one frame per 1/60 s
+  const schedule = () => (c.frames ? c.frames.schedule() : draw());
+  function cellSgr(cell, ansi) {
     const a = [];
     if (cell.isBold()) a.push(1); if (cell.isDim()) a.push(2); if (cell.isItalic()) a.push(3); if (cell.isUnderline()) a.push(4);
     if (cell.isInverse()) a.push(7); if (cell.isInvisible()) a.push(8); if (cell.isStrikethrough()) a.push(9);
     if (c.noColor) return a.join(";");
     if (cell.isFgRGB()) { const v = cell.getFgColor(); a.push(`38;2;${v >> 16};${(v >> 8) & 255};${v & 255}`); }
-    else if (cell.isFgPalette()) { const p = cell.getFgColor(); a.push(p < 8 ? 30 + p : p < 16 ? 82 + p : `38;5;${p}`); }
+    else if (cell.isFgPalette()) { const p = cell.getFgColor(); a.push(ansi && p < 16 ? ansi[p][0] : p < 8 ? 30 + p : p < 16 ? 82 + p : `38;5;${p}`); }
     if (cell.isBgRGB()) { const v = cell.getBgColor(); a.push(`48;2;${v >> 16};${(v >> 8) & 255};${v & 255}`); }
-    else if (cell.isBgPalette()) { const p = cell.getBgColor(); a.push(p < 8 ? 40 + p : p < 16 ? 92 + p : `48;5;${p}`); }
+    else if (cell.isBgPalette()) { const p = cell.getBgColor(); a.push(ansi && p < 16 ? ansi[p][1] : p < 8 ? 40 + p : p < 16 ? 92 + p : `48;5;${p}`); }
     return a.join(";");
   }
+  // a pane's rows (exactly p.cols wide each), rebuilt only when something in them changed
   function viewRows(v, p, pane) {
-    const { sgr } = c, rows = [];
-    // the text being selected (copy-on-select) shows inverted
-    const [sa, sb] = c.selection && c.selection.pane === pane ? selRange() : [null, null];
-    const inSel = (x, y) => sa && (y > sa.y || (y === sa.y && x >= sa.x)) && (y < sb.y || (y === sb.y && x <= sb.x));
+    const { sgr } = c;
     if (!v || v.dead || !v.term) {
-      const msg = v?.dead || "Pick a session: Ctrl-b j/k, or Ctrl-b s to browse with previews";
-      for (let y = 0; y < p.rows; y++) rows.push(y === Math.floor(p.rows / 2) ? pad(" ".repeat(Math.max(0, Math.floor((p.cols - width(msg)) / 2))) + sgr("dim", cut(msg, p.cols)), p.cols + 20) : " ".repeat(p.cols));
-      return rows;
+      const msg = v?.dead || (v?.parked ? "" : "Pick a session: Ctrl-b j/k, or Ctrl-b s to browse with previews");
+      return Array.from({ length: p.rows }, (_, y) => (y === Math.floor(p.rows / 2) && msg ? pad(" ".repeat(Math.max(0, Math.floor((p.cols - width(msg)) / 2))) + cut(msg, p.cols), p.cols).replace(msg, sgr("dim", msg)) : " ".repeat(p.cols)));
     }
+    const selSig = c.selection && c.selection.pane === pane ? JSON.stringify([c.selection.a, c.selection.b]) : "";
+    const key = `${c.reset()}|${p.cols}x${p.rows}|${selSig}`;
+    if (!v.dirty && v.cache?.key === key) return v.cache.rows;
+    const rows = [], base = c.base(), ansi = c.ansiMap();
+    // the text being selected (copy-on-select) shows inverted
+    const [sa, sb] = selSig ? selRange() : [null, null];
+    const inSel = (x, y) => sa && (y > sa.y || (y === sa.y && x >= sa.x)) && (y < sb.y || (y === sb.y && x <= sb.x));
     const b = v.term.buffer.active, cell = b.getNullCell();
     for (let y = 0; y < p.rows; y++) {
       const line = b.getLine(b.baseY + y);
-      let s = "", cur = "", n = 0;
+      let s = "", cur = null, n = 0;
       for (let x = 0; x < p.cols && line; x++) {
         line.getCell(x, cell);
         const w = cell.getWidth();
         if (w === 0) continue;
-        const base = cellSgr(cell), a = inSel(x, y) ? (base ? `${base};7` : "7") : base;
-        if (a !== cur) { s += `${ESC}[0${a ? ";" + a : ""}m`; cur = a; }
+        const attrs = cellSgr(cell, ansi), a = inSel(x, y) ? (attrs ? `${attrs};7` : "7") : attrs;
+        if (a !== cur) { s += `${ESC}[0${base ? ";" + base : ""}${a ? ";" + a : ""}m`; cur = a; }
         // a wide character that doesn't fit in the last column would spill over the pane's border
         if (x + w > p.cols) { s += " "; n += 1; break; }
         s += cell.getChars() || " "; n += w;
       }
-      rows.push(s + `${ESC}[0m` + " ".repeat(Math.max(0, p.cols - n)));
+      rows.push(s + c.reset() + " ".repeat(Math.max(0, p.cols - n)));
     }
+    v.dirty = false; v.cache = { key, rows };
     return rows;
   }
   // The tab row: the focused session's workspace and its sessions as tabs (click one, or Ctrl-b n/p)
   function tabStrip(L) {
-    const { sgr, shortName, unseenDone } = c;
-    // a project with several sessions shows them as tabs; one session (or AXA) is just its name
+    const { sgr, shortName, unseenDone, icon } = c;
     const cur = sel(), ws = cur && cur.mode !== "axa" ? c.workspaceOf(cur.id) : null, tabs = ws && ws.sessions.length > 1 ? ws.sessions : [];
-    const label = ws ? ` ▣ ${ws.name}${tabs.length || shortName(cur) === ws.name ? "" : ` · ${shortName(cur)}`} ` : cur ? " ◆ AXA commander " : " ◆ AXA ";
-    let o = sgr("title", label), n = width(label);
+    const label = ws ? ` ${icon("ws")} ${ws.name}${tabs.length || shortName(cur) === ws.name ? "" : ` · ${shortName(cur)}`} ` : cur ? ` ${icon("axa")} AXA commander ` : ` ${icon("axa")} AXA `;
+    const lab = cut(label, L.mainW);
+    let o = sgr("title", lab), n = width(lab);
     c.tabHits = [];
     for (const s of tabs) {
-      const [g, , role] = look(s), t = ` ${g} ${shortName(s)}${unseenDone(s) ? " •" : ""} `;
+      const [, , role] = look(s), t = ` ${glyph(s)} ${shortName(s)}${unseenDone(s) ? " •" : ""} `;
       if (n + width(t) + 1 > L.mainW) break;
       const x0 = L.mainX + n + 2;
       o += sgr("rule", "│") + (s.id === selId() ? sgr("sel", t) : sgr(role, t));
       n += width(t) + 1;
       c.tabHits.push({ x0, x1: x0 + width(t) - 1, id: s.id });
     }
-    o += sgr("rule", "│"); n += 1;
+    if (n < L.mainW) { o += sgr("rule", "│"); n += 1; }
     const s = sel();
     if (L.panes.length === 1 && s) {
       const [, word, role] = look(s);
-      const bits = [gitText(s.git), s.usage?.tokens ? `${fmtTok(s.usage.tokens)} tok${s.usage.budget ? ` of ${fmtTok(s.usage.budget)}` : ""}` : "", s.worktree ? "worktree" : ""].filter(Boolean);
+      const bits = [gitText(s.git), costText(s.cost), s.usage?.tokens ? `${fmtTok(s.usage.tokens)} tok${s.usage.budget ? ` of ${fmtTok(s.usage.budget)}` : ""}` : "", s.worktree ? "worktree" : ""].filter(Boolean);
       const right = cut(`${word}${bits.length ? " · " + bits.join(" · ") : ""} `, Math.max(0, L.mainW - n - 2));
-      return o + " ".repeat(Math.max(1, L.mainW - n - width(right))) + sgr(role === "off" ? "dim" : role, word) + sgr("dim", right.slice(word.length));
+      if (!right) return o + " ".repeat(Math.max(0, L.mainW - n));
+      const head = right.startsWith(word) ? word : "";
+      return o + " ".repeat(Math.max(1, L.mainW - n - width(right))) + (head ? sgr(role === "off" ? "dim" : role, head) : "") + sgr("dim", right.slice(head.length));
     }
     return o + " ".repeat(Math.max(0, L.mainW - n));
   }
-  function paneHeader(v, p, isFocus) {
-    const { sgr } = c;
+  // A bordered pane's top edge, with its title: "┏━ ▶ ⠹ name · working · main 2f +3 -1 ━━━┓"
+  function boxTop(v, p, isFocus) {
+    const { sgr } = c, B = isFocus ? HEAVY : ROUND, frameRole = isFocus ? "focus" : "rule";
     const s = c.list.find((x) => x.id === v?.id);
-    if (!s) return sgr("dim", pad(" (empty pane)", p.cols));
-    const [g, word, role] = look(s);
-    const bits = [gitText(s.git), s.usage?.tokens ? `${fmtTok(s.usage.tokens)} tok${s.usage.budget ? ` of ${fmtTok(s.usage.budget)}` : ""}` : "", s.worktree ? `worktree ${s.worktree.branch}` : ""].filter(Boolean).join(" · ");
-    const mark = V.length > 1 ? (isFocus ? "▶" : " ") : "";
-    const head = cut(`${mark} ${g} ${c.nameOf(s)}`, p.cols), rest = ` · ${word}${bits ? " · " + bits : ""}`;
-    const room = Math.max(0, p.cols - width(head));
-    return sgr(isFocus || V.length < 2 ? role : "dim", head) + sgr("dim", pad(cut(rest, room), room));
+    const inner = p.w - 4; // corners and one rule each side
+    let title = "", role = "dim";
+    if (s) {
+      const [, word, r] = look(s);
+      const bits = [gitText(s.git), costText(s.cost), s.worktree ? `worktree ${s.worktree.branch}` : ""].filter(Boolean).join(" · ");
+      title = cut(` ${isFocus ? "▶" : " "} ${glyph(s)} ${c.nameOf(s)} · ${word}${bits ? " · " + bits : ""} `, Math.max(0, inner));
+      role = isFocus ? r : "dim";
+    } else title = cut(" (empty pane) ", Math.max(0, inner));
+    const fill = Math.max(0, inner - width(title));
+    return sgr(frameRole, B.tl + B.h) + sgr(role, title) + sgr(frameRole, B.h.repeat(fill) + B.h + B.tr);
   }
   function alertRows(L) {
     const { sgr } = c;
@@ -180,86 +231,143 @@ export function views(c) {
       sgr("waitSoft", pad(`   ${k} y  ${yes.label}    ${k} x  ${no.label}    ${k} !  go there`, L.mainW)),
     ];
   }
-  function statusRow() {
-    const { sgr, notice } = c, W = c.W, k = c.keyName();
-    if (notice && Date.now() < notice.until) { const t = ` ✓ ${notice.text} `; return sgr("tag", t) + sgr("dim", pad(notice.hint || " Shift+drag uses your terminal's own selection", Math.max(0, W - width(t)))); }
-    if (c.updated) return sgr("tag", " ↻ AXA was updated ") + sgr("waitSoft", pad(` press ${k} q, then run axa again to get the new version (your sessions keep running)`, Math.max(0, W - 19)));
-    const tag = c.prefix ? " PREFIX " : "";
-    // the supervisor's hourly wake limit: updates are held back until it lifts
-    const limit = c.prefix ? null : wakeLimitText(c.ev);
-    const keys = c.prefix
-      ? " : palette · m map · b brief · h history · l link · i image · s browse · / search · j/k move · 0-9 pick · % split · Tab pane · z zoom · y/x answer · ! go · c new · w worktree · g goal · d diff · v verify · , settings · q quit · ? help"
-      : limit ? ` ⏸ ${limit}` : ` ${k} : palette · ${k} s browse · ${k} ? help · ${k} q leave`;
-    const clock = new Date().toLocaleTimeString([], { hour12: false });
-    // left: does anything need you; then the keys; the clock at the right end
-    const others = c.list.filter((s) => s.mode !== "axa"), needs = others.filter(needsYou).length, busy = others.filter((s) => s.status === "working").length;
-    const state = ` ${needs ? `${STATUS.waiting.glyph} ${needs} need${needs > 1 ? "" : "s"} you` : `${STATUS.done.glyph} nothing needs you`}${busy ? ` · ${busy} ${STATUS.working.word}` : ""} `;
-    const room = Math.max(0, W - 11 - tag.length - width(state) - 1);
-    return sgr(needs ? "wait" : "done", state) + sgr("rule", "│") + (tag ? sgr("tag", tag) : "") + sgr(limit ? "wait" : "dim", pad(keys, room)) + sgr("dim", pad(clock, 9) + " ");
+
+  // ---------- the status bar ----------
+  // mode chip · what needs you · this view's keys · the focused session's branch · theme · clock
+  const mode = () => (c.prefix ? "PREFIX" : c.overlay?.kind === "palette" ? "PALETTE" : c.mapMode ? "MAP" : c.zoom ? "ZOOM" : "NORMAL");
+  function legend(m, L) {
+    const k = c.keyName();
+    if (m === "PREFIX") return "press a key · ? all keys · Esc cancel";
+    if (m === "PALETTE") return "type to filter · ↑/↓ choose · Enter run · Esc close";
+    if (c.overlay) return "Esc close";
+    if (m === "MAP") return "↑/↓ move · Enter open · Space details · y/x answer · d diff · m back";
+    const bits = [`${k} : palette`];
+    if (L?.alert) bits.push(`${k} y/x answer`);
+    if (V.length > 1) bits.push(`${k} Tab pane`);
+    bits.push(m === "ZOOM" ? `${k} z sidebar` : `${k} s browse`, `${k} m map`, `${k} ? keys`);
+    return bits.join(" · ");
   }
+  const clock = () => new Date().toLocaleTimeString([], { hour12: false, hour: "2-digit", minute: "2-digit" });
+  function statusRow(L) {
+    const { sgr, notice, icon } = c, W = c.W, k = c.keyName();
+    if (notice && Date.now() < notice.until) { const t = ` ✓ ${notice.text} `; return sgr("tag", t) + sgr("dim", pad(notice.hint || " Shift+drag uses your terminal's own selection", Math.max(0, W - width(t)))); }
+    if (c.updated) { const t = " ↻ AXA was updated "; return sgr("tag", t) + sgr("waitSoft", pad(` press ${k} q, then run axa again to get the new version (your sessions keep running)`, Math.max(0, W - width(t)))); }
+    const m = mode(), chip = ` ${m} `;
+    const others = c.list.filter((s) => s.mode !== "axa"), needs = others.filter(needsYou).length, busy = others.filter((s) => s.status === "working").length;
+    const state = needs ? ` ${STATUS.waiting.glyph} ${needs} need${needs > 1 ? "" : "s"} you ` : ` ${STATUS.done.glyph} all clear `;
+    const work = busy ? `${SPINNER[(c.tickN || 0) % SPINNER.length]} ${busy} working ` : "";
+    // right side, dropped from the left when the window is too narrow: branch, theme, clock
+    const s = sel(), branch = s?.git?.branch ? ` ${icon("branch")} ${cut(s.git.branch, 24)} ` : "";
+    const right = [[branch, "accent"], [` ${themeLabel(cfg.theme)} `, "dim"], [` ${clock()} `, "dim"]];
+    const fixed = width(chip) + width(state) + width(work) + 1;
+    while (right.length > 1 && fixed + right.reduce((n, [t]) => n + width(t), 0) + 12 > W) right.shift();
+    const rw = right.reduce((n, [t]) => n + width(t), 0);
+    const limit = m === "NORMAL" ? wakeLimitText(c.ev) : null;
+    const room = Math.max(0, W - fixed - rw);
+    const keys = pad(` ${limit ? `⏸ ${limit}` : legend(m, L)}`, room);
+    return sgr(m === "NORMAL" ? "sel" : "tag", chip) + sgr(needs ? "wait" : "done", state) + (work ? sgr("work", work) : "") + sgr("rule", "│") + sgr(limit ? "wait" : "dim", keys) + right.map(([t, r]) => (t ? sgr(r, t) : "")).join("");
+  }
+
+  // ---------- the which-key popup: ~400 ms after the prefix, the keys that can follow it ----------
+  function whichKeyBox(L) {
+    const { sgr } = c;
+    // groups kept whole in columns, as few columns (and as wide) as the space allows
+    const groups = WHICH_KEY.map(([g, ks]) => [{ head: g }, ...ks.map(([key, what]) => ({ key, what }))]);
+    const pack = (n, h) => { const cols = [[]]; for (const g of groups) { if (cols.at(-1).length && cols.at(-1).length + g.length > h) cols.push([]); cols.at(-1).push(...g); } return cols.length <= n ? cols : null; };
+    const maxW = Math.min(c.W - 2, 4 * 22 + 2), maxH = Math.max(6, L.mainH - 3);
+    let cols = null, colW = 21;
+    // the shortest popup that fits, with as few columns as that height allows
+    for (let h = Math.max(...groups.map((g) => g.length)); h <= maxH && !cols; h++) for (let n = 1; n <= 4 && !cols; n++) {
+      const cw = Math.min(21, Math.floor((maxW - 3) / n) - 1);
+      if (cw < 14) break;
+      cols = pack(n, h); colW = cw;
+    }
+    // too small for whole groups: flow the keys down the columns that fit
+    if (!cols) {
+      const all = groups.flat(), n = Math.max(1, Math.floor((maxW - 2) / 15)), h = Math.ceil(all.length / n);
+      colW = Math.max(8, Math.floor((maxW - 2) / n) - 1);
+      cols = Array.from({ length: n }, (_, i) => all.slice(i * h, (i + 1) * h));
+    }
+    const h = Math.max(...cols.map((col) => col.length)), w = cols.length * (colW + 1) + 3;
+    const body = Array.from({ length: h }, (_, r) => cols.map((col) => {
+      const e = col[r];
+      return " " + (!e ? " ".repeat(colW) : e.head ? sgr("title", pad(` ${e.head}`, colW)) : sgr("accent", pad(` ${e.key}`, 5)) + pad(` ${e.what}`, colW - 5));
+    }).join("") + " ");
+    const title = cut(` ${c.keyName()} … `, w - 4), hint = " Esc cancel · ? all keys · : palette";
+    const rows = [
+      sgr("accent", "╭─") + sgr("title", title) + sgr("accent", "─".repeat(Math.max(0, w - 3 - width(title))) + "╮"),
+      ...body.map((r) => sgr("accent", "│") + r + sgr("accent", "│")),
+      sgr("accent", "│") + sgr("dim", pad(hint, w - 2)) + sgr("accent", "│"),
+      sgr("accent", "╰" + "─".repeat(w - 2) + "╯"),
+    ];
+    // over the main area when it fits there, else centered on the window
+    const y = Math.max(0, L.mainH - rows.length), x = w <= L.mainW ? L.mainX + Math.floor((L.mainW - w) / 2) : Math.max(0, Math.floor((c.W - w) / 2));
+    return { x, y, w, rows };
+  }
+
+  // ---------- the frame ----------
   function draw() {
     if (c.quitting) return;
     const { sgr } = c;
     resizeViews();
-    const L = layout(), H = c.H;
-    let o = `${ESC}[?25l`;
-    if (c.fullRedraw) { o += `${ESC}[0m${ESC}[2J`; V.forEach((v) => v && (v.lastRows = [])); c.fullRedraw = false; }
+    const L = layout(), H = c.H, W = c.W;
+    let pre = "";
+    if (c.clearScreen) { pre = `${c.reset()}${ESC}[2J`; c.clearScreen = false; c.fullRedraw = true; }
+    if (c.fullRedraw) { screen.reset(); c.fullRedraw = false; }
+    const rows = Array.from({ length: H }, () => []);
+    const put = (y, x, w, s) => { if (y >= 0 && y < H && w > 0) rows[y].push({ x, w, s }); };
     // sidebar and its border
     if (L.side) {
-      const side = c.sideRows(L);
-      for (let y = 0; y < H - 1; y++) o += `${ESC}[${y + 1};${L.sideX + 1}H${side[y] || " ".repeat(L.side)}${ESC}[${y + 1};${cfg.sidebar === "right" ? L.sideX : L.side + 1}H${sgr("rule", "│")}`;
+      const side = c.sideRows(L), ruleX = cfg.sidebar === "right" ? L.sideX - 1 : L.side;
+      for (let y = 0; y < H - 1; y++) { put(y, L.sideX, L.side, side[y] || " ".repeat(L.side)); put(y, ruleX, 1, sgr("rule", "│")); }
     }
     if (c.mapMode) {
-      // the map replaces the panes (sessions keep running and are still live underneath)
-      const rows = c.mapRows(L);
-      for (let y = 0; y < L.mainH; y++) o += `${ESC}[${y + 1};${L.mainX + 1}H${rows[y]}`;
+      // the map replaces the panes (sessions keep running underneath)
+      const mr = c.mapRows(L);
+      for (let y = 0; y < L.mainH; y++) put(y, L.mainX, L.mainW, mr[y] ?? " ".repeat(L.mainW));
     } else {
       // what's on screen counts as seen (a "done" you've looked at turns idle)
       for (const v of V) if (v?.id) seen.set(v.id, Date.now());
-      o += `${ESC}[1;${L.mainX + 1}H${tabStrip(L)}`;
+      put(0, L.mainX, L.mainW, tabStrip(L));
       L.panes.forEach((p, i) => {
-        const v = V[i];
-        if (p.hdr) o += `${ESC}[${p.y + 1};${p.x + 1}H${paneHeader(v, p, i === c.focus)}`;
-        const rows = viewRows(v, p, i);
-        for (let y = 0; y < p.rows; y++) {
-          if (v && v.lastRows[y] === rows[y]) continue;
-          o += `${ESC}[${p.y + y + 1 + p.hdr};${p.x + 1}H${rows[y]}`;
-          if (v) v.lastRows[y] = rows[y];
-        }
+        const v = V[i], pr = viewRows(v, p, i), isFocus = i === c.focus;
+        if (!p.box) { for (let y = 0; y < p.rows && y < p.h; y++) put(p.y + y, p.x, p.cols, pr[y]); return; }
+        const B = isFocus ? HEAVY : ROUND, fr = isFocus ? "focus" : "rule", side = sgr(fr, B.v);
+        put(p.y, p.x, p.w, boxTop(v, p, isFocus));
+        for (let y = 0; y < p.rows; y++) { put(p.y + 1 + y, p.x, 1, side); put(p.y + 1 + y, p.x + 1, p.cols, pr[y]); put(p.y + 1 + y, p.x + 1 + p.cols, 1, side); }
+        put(p.y + p.h - 1, p.x, p.w, sgr(fr, B.bl + B.h.repeat(Math.max(0, p.w - 2)) + B.br));
       });
-      // the line between two panes
-      if (L.panes.length === 2) {
-        const [a, b] = L.panes;
-        if (b.x > a.x) for (let y = a.y; y < L.mainH; y++) o += `${ESC}[${y + 1};${b.x}H${sgr("rule", "│")}`;
-      }
     }
+    if (L.alert) alertRows(L).forEach((r, i) => put(L.mainH + i, L.mainX, L.mainW, r));
+    put(H - 1, 0, W, statusRow(L));
+    const over = (box) => box.rows.forEach((s, i) => { const y = box.y + i; if (y >= 0 && y < H) rows[y] = splice(rows[y], box.x, box.w, s); });
     // panels float over the live sessions (which keep running and drawing underneath)
-    if (c.overlay) o += c.floatingPanel(L);
-    // the copied / pasted popup, bottom center of the main area (like herdr's clipboard toast)
+    if (c.overlay) over(c.floatingPanel(L));
+    else if (c.whichKey && c.prefix) over(whichKeyBox(L));
+    // the copied / pasted popup, bottom center of the main area
     const notice = c.notice, toast = !!(notice && Date.now() < notice.until && !c.overlay);
-    if (toast !== c.toastShown || toast) {
-      // repaint what the toast covered, now or when it ends
-      V.forEach((v) => v && (v.lastRows = []));
-      if (toast) { clearTimeout(c.toastTimer); c.toastTimer = setTimeout(schedule, Math.max(20, notice.until - Date.now() + 20)); }
-      if (!toast) schedule(); // it just ended: repaint the rows it covered on the next frame
-      c.toastShown = toast;
-    }
     if (toast) {
-      const t = ` ✓ ${notice.text} `, x = L.mainX + Math.max(0, Math.floor((L.mainW - width(t)) / 2));
-      o += `${ESC}[${Math.max(1, L.mainH - 1)};${x + 1}H${sgr("tag", t)}`;
+      clearTimeout(c.toastTimer); c.toastTimer = setTimeout(schedule, Math.max(20, notice.until - Date.now() + 20));
+      const t = ` ✓ ${notice.text} `, tw = Math.min(width(t), L.mainW), x = L.mainX + Math.max(0, Math.floor((L.mainW - tw) / 2));
+      over({ x, y: Math.max(0, L.mainH - 2), w: tw, rows: [sgr("tag", cut(t, tw))] });
     }
-    if (L.alert) alertRows(L).forEach((r, i) => (o += `${ESC}[${L.mainH + 1 + i};${L.mainX + 1}H${r}`));
-    o += `${ESC}[${H};1H${statusRow()}`;
+    let o = screen.diff(rows, c.base());
     // the focused session's own cursor, when it shows one
     const v = V[c.focus], p = L.panes[c.focus];
-    if (!c.overlay && !c.mapMode && v?.term && !v.dead && v.cursorOn && p) {
+    let cursor = "hidden";
+    if (!c.overlay && !c.mapMode && !(c.whichKey && c.prefix) && v?.term && !v.dead && v.cursorOn && p) {
       const b = v.term.buffer.active;
-      o += `${ESC}[${p.y + b.cursorY + 1 + p.hdr};${p.x + b.cursorX + 1}H${ESC}[?25h`;
-    } else if (c.overlay?.cursor) o += `${ESC}[${c.overlay.cursor[0]};${c.overlay.cursor[1]}H${ESC}[?25h`;
+      cursor = `${p.y + b.cursorY + 1 + p.hdr};${p.x + p.ix + b.cursorX + 1}`;
+    } else if (c.overlay?.cursor) cursor = `${c.overlay.cursor[0]};${c.overlay.cursor[1]}`;
+    // nothing changed and the cursor stays put: nothing is written at all
+    if (o || pre || cursor !== c.lastCursor) {
+      o = `${ESC}[?25l${pre}${o}${ESC}[0m${cursor === "hidden" ? "" : `${ESC}[${cursor}H${ESC}[?25h`}`;
+      c.lastCursor = cursor;
+    }
     // the window title says whether anything needs you
     const title = c.list.some(needsYou) ? `${STATUS.waiting.glyph} AXA` : "AXA";
     if (title !== c.lastTitle) { o += `${ESC}]0;${title}\x07`; c.lastTitle = title; }
-    out.write(o);
+    if (o) { c.bytesOut = (c.bytesOut || 0) + o.length; out.write(frame(o, c.sync)); }
   }
 
   // ---------- copy-on-select: drag across a session's text and it's copied when you let go ----------
@@ -299,5 +407,5 @@ export function views(c) {
     copyText(line.slice(a, b + 1));
   }
 
-  return { selId, sel, onScreen, alertFor, layout, closeView, show, resizeViews, move, toggleSplit, schedule, draw, selText, copyText, selectWord };
+  return { selId, sel, onScreen, alertFor, glyph, layout, closeView, show, resizeViews, move, toggleSplit, setMap, park, unpark, schedule, draw, selText, copyText, selectWord, mode };
 }

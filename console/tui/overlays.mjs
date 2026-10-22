@@ -5,7 +5,7 @@ import { spawn } from "node:child_process";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
-import { ESC, look, needsYou, STATUS, clean, cut, pad, width, question, yesOpt, noOpt, gitText, fmtDur } from "./theme.mjs";
+import { ESC, look, needsYou, STATUS, clean, cut, pad, width, question, yesOpt, noOpt, gitText, fmtDur, reasonOf, costText, githubBits } from "./theme.mjs";
 
 export function overlays(c) {
   const { cfg, views: V } = c;
@@ -18,9 +18,11 @@ export function overlays(c) {
     const w = Math.max(30, Math.min(L.mainW - (big ? 0 : 4), big ? 400 : 108)), h = Math.max(8, Math.min(L.mainH - (big ? 1 : 2), big ? 400 : Math.min(32, fit + 1)));
     const x = L.mainX + Math.floor((L.mainW - w) / 2), y = Math.floor((L.mainH - h) / 2);
     const rows = overlayRows({ x: x + 1, y: y + 1, cols: w - 2, rows: h - 3 });
-    let o = `${ESC}[${y + 1};${x + 1}H${sgr("accent", "╭" + "─".repeat(w - 2) + "╮")}`;
-    for (let i = 0; i < h - 2; i++) o += `${ESC}[${y + 2 + i};${x + 1}H${sgr("accent", "│")}${rows[i] ?? " ".repeat(w - 2)}${sgr("accent", "│")}`;
-    return o + `${ESC}[${y + h};${x + 1}H${sgr("accent", "╰" + "─".repeat(w - 2) + "╯")}`;
+    // { x, y, w, rows }: spliced over the frame (views.mjs)
+    const out = [sgr("accent", "╭" + "─".repeat(w - 2) + "╮")];
+    for (let i = 0; i < h - 2; i++) out.push(`${sgr("accent", "│")}${rows[i] ?? " ".repeat(w - 2)}${sgr("accent", "│")}`);
+    out.push(sgr("accent", "╰" + "─".repeat(w - 2) + "╯"));
+    return { x, y, w, rows: out };
   }
 
   // ---------- overlays ----------
@@ -37,7 +39,10 @@ export function overlays(c) {
       const raw = lines[ov.scroll + i];
       if (raw === undefined) { rows.push(" ".repeat(p.cols)); continue; }
       const t = typeof raw === "string" ? { text: raw } : raw;
-      rows.push(t.raw ? t.raw : t.role ? sgr(t.role, pad(t.text.replace(/\t/g, "    "), p.cols)) : pad(t.text.replace(/\t/g, "    "), p.cols));
+      if (t.segs) { rows.push(c.renderSegs(t.segs, p.cols)); continue; } // [text, role, url?] segments
+      // URLs and file paths in AXA's own text become OSC 8 links (the width is the same)
+      const text = c.linkify(pad(t.text.replace(/\t/g, "    "), p.cols));
+      rows.push(t.raw ? t.raw : t.role ? sgr(t.role, text) : text);
     }
     if (ov.input !== undefined) {
       const pr = ` ${ov.prompt || "›"} `;
@@ -48,7 +53,7 @@ export function overlays(c) {
     return rows;
   }
   // closing a panel repaints the sessions it covered
-  const closeOverlay = () => { c.overlay?.onClose?.(); c.overlay = null; c.fullRedraw = true; c.schedule(); };
+  const closeOverlay = () => { c.overlay?.onClose?.(); c.overlay = null; c.schedule(); };
   function overlayKey(k) {
     const ov = c.overlay;
     if (ov.onKey && ov.onKey(k)) return c.schedule();
@@ -76,7 +81,7 @@ export function overlays(c) {
   const help = () => {
     const keyName = c.keyName();
     return [
-      `Everything you type goes to the session in focus. AXA actions: press ${keyName}, then:`,
+      `Everything you type goes to the session in focus. AXA actions: press ${keyName}, then (wait a moment and a popup lists them):`,
       "",
       "  :          palette: search every action and session        ?   this help",
       "  s          browse sessions with a live preview (peek)      ,   settings: theme, prefix key, sidebar, bell",
@@ -185,16 +190,28 @@ export function overlays(c) {
     const waiting = c.list.filter((s) => s.mode !== "axa" && needsYou(s));
     if (auto && (!since || (!runs.length && !waiting.length))) return;
     const lines = [];
-    for (const s of waiting) lines.push({ text: `${look(s)[0]} ${c.nameOf(s)}  ${s.status === "waiting" ? `${STATUS.waiting.word}: ${s.choices ? question(s.choices) : clean(s.doing)}` : `${look(s)[1]}: ${clean(s.doing || s.last_report)}`}`, role: look(s)[2] });
+    // cost, the PR and CI of a session, when the console knows them (newer consoles)
+    const extras = (s) => {
+      if (!s) return null;
+      const gh = githubBits(s.github, c.icons()), cost = costText(s.cost);
+      if (!gh.length && !cost) return null;
+      return { segs: [["    ", ""], ...gh.flatMap((b, i) => [[i ? " · " : "", "dim"], [b.text, b.role, b.url]]), [cost ? `${gh.length ? " · " : ""}${c.icon("cost") === "$" ? "" : c.icon("cost") + " "}${cost}` : "", "dim"]] };
+    };
+    for (const s of waiting) {
+      lines.push({ text: `${look(s)[0]} ${c.nameOf(s)}  ${s.status === "waiting" ? `${STATUS.waiting.word}: ${s.choices ? question(s.choices) : clean(s.doing)}` : `${look(s)[1]}: ${reasonOf(s) || clean(s.doing || s.last_report)}`}`, role: look(s)[2] });
+      const ex = extras(s); if (ex) lines.push(ex);
+    }
     const groups = new Map();
     for (const r of runs.slice().reverse()) { const g = groups.get(r.terminal) || []; g.push(r); groups.set(r.terminal, g); }
-    for (const rs of groups.values()) {
+    for (const [tid, rs] of groups) {
       const lastRun = rs.at(-1), [g, role] = runGlyph(lastRun), done = rs.filter((r) => r.status === "done").length;
       const sum = (k) => rs.reduce((n, r) => n + (r[k] || 0), 0);
       const bits = [done ? `${done} run${done > 1 ? "s" : ""} finished` : "", lastRun.status === "running" ? "working now" : "", sum("gate") ? `verify gate ${sum("gate")}×` : "", sum("approvals") ? `${sum("approvals")} approved by AXA` : "", sum("escalated") ? `${sum("escalated")} asked you` : "", sum("failures") ? `${sum("failures")} failed steps` : ""].filter(Boolean).join(" · ");
       lines.push({ text: `${g} ${lastRun.name.padEnd(16)} ${bits}`, role });
       const rep = [...rs].reverse().find((r) => r.report);
       if (rep) lines.push({ text: `    └ ${clean(rep.report)}`, role: "dim" });
+      const s = c.list.find((x) => x.id === tid);
+      const ex = !waiting.includes(s) && extras(s); if (ex) lines.push(ex);
     }
     if (!lines.length) lines.push({ text: "Nothing happened since then.", role: "dim" });
     const at = since ? new Date(since).toLocaleTimeString([], { hour12: false, hour: "2-digit", minute: "2-digit" }) : "";
