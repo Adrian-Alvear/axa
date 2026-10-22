@@ -3,7 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { THEMES, ROLES, contrast, cssVars, cssText, xtermTheme, ansi16, tuiRoles, colorDepth, to256, to16, themeId } from "../console/theme.mjs";
-import { STATUS, URGENCY, statusOf, lookOf, byUrgency } from "../console/look.mjs";
+import { STATUS, URGENCY, STARTING_MS, statusOf, lookOf, byUrgency, reasonOf } from "../console/look.mjs";
 
 test("contrast table: every role >= 4.5:1 on bg and panel, in every theme", () => {
   const table = [];
@@ -50,6 +50,16 @@ test("one status vocabulary: glyph + word + role for every status", () => {
   assert.equal(statusOf({ mode: "shell", status: "starting" }), "shell");
   assert.equal(lookOf({ mode: "claude", status: "waiting" }).word, "needs you");
   assert.equal(lookOf("nonsense").glyph, "?");
+  // a live session with no traced events stops saying "starting" after STARTING_MS
+  const t0 = 1_000_000;
+  assert.equal(statusOf({ mode: "claude", status: "starting", alive: true, created: t0 }, t0 + 1000), "starting");
+  assert.equal(statusOf({ mode: "claude", status: "starting", alive: true, created: t0 }, t0 + STARTING_MS + 1), "ready");
+  assert.equal(statusOf({ mode: "claude", status: "starting", alive: false, created: t0 }, t0 + STARTING_MS + 1), "starting");
+  assert.equal(statusOf({ status: "starting" }), "starting");
+  assert.equal(reasonOf({ status: "stuck", stuck_reason: "no output 25m" }), "no output 25m");
+  assert.equal(reasonOf({ status: "failed", failed_reason: "rate limit" }), "rate limit");
+  assert.equal(reasonOf({ status: "working", stuck_reason: "old" }), "");
+  assert.equal(reasonOf({ status: "stuck" }), "");
   const list = [{ status: "done" }, { status: "waiting" }, { mode: "shell", status: "ready" }, { status: "working" }];
   assert.deepEqual(list.sort(byUrgency).map(statusOf), ["waiting", "working", "done", "shell"]);
 });

@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- AXA's reactor, in the AXA HUD theme's bg and accent tokens (console/theme.mjs) -->
+  <rect width="512" height="512" fill="#04070b"/>
+  <g fill="none" stroke="#4fd8ff" stroke-linecap="round">
+    <circle cx="256" cy="256" r="150" stroke-width="10" stroke-dasharray="40 22" opacity=".55"/>
+    <circle cx="256" cy="256" r="104" stroke-width="16" opacity=".9"/>
+    <path d="M256 74a182 182 0 0 1 157 90" stroke-width="10"/>
+    <path d="M99 348a182 182 0 0 0 157 90" stroke-width="10"/>
+  </g>
+  <circle cx="256" cy="256" r="46" fill="#cfe9f3"/>
+</svg>

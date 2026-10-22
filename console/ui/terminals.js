@@ -48,17 +48,19 @@ function openTab(info) {
   if (gpu && window.WebglAddon) try { const gl = new WebglAddon.WebglAddon(); gl.onContextLoss(() => gl.dispose()); term.loadAddon(gl); } catch {}
   term.attachCustomKeyEventHandler((e) => {
     if (e.type === "keydown" && (e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === "f") { openFind(); return false; }
+    // the page's palette: Cmd-K, or Ctrl-Shift-K (plain Ctrl-K stays the shell's); the page's handler opens it
+    if (e.key?.toLowerCase() === "k" && (e.metaKey || (e.ctrlKey && e.shiftKey))) return false;
     return true;
   });
   const tab = document.createElement("div"); tab.className = "tab";
-  tab.innerHTML = `<span class="stx tg"></span><span>${esc(info.name)}</span><span class="mode">${{ claude: "claude", axa: "commander", shell: "sh" }[info.mode] || "sh"}</span><span class="x" title="Close">✕</span>`;
+  tab.innerHTML = `<span class="stx tg"></span><span>${esc(info.name)}</span><span class="mode">${{ claude: "claude", axa: "commander", shell: "sh" }[info.mode] || "sh"}</span><span class="x" title="Close" role="button" aria-label="Close ${esc(info.name)}">${icon("close")}</span>`;
   if (info.mode === "axa") { tab.classList.add("axa"); $("tablist").prepend(tab); }
-  tab.onclick = (ev) => { if (ev.target.classList.contains("x")) closeTab(info.id); else activate(info.id); };
+  tab.onclick = (ev) => { if (ev.target.closest(".x")) closeTab(info.id); else activate(info.id); };
   if (info.mode !== "axa") $("tablist").appendChild(tab);
   const t = { info, term, fit, el, tab, ws: null, search };
   tabs.set(info.id, t);
   const connectWs = () => {
-    const ws = new WebSocket(`ws://${location.host}/pty/${info.id}`);
+    const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/pty/${info.id}`);
     t.ws = ws;
     let replay = true;
     ws.onopen = () => { term.reset(); fitTab(t); };
@@ -87,7 +89,7 @@ function openTab(info) {
 function tabStatus(t) {
   const st = t.tab.classList.contains("dead") || t.info.alive === false ? "exited" : LK.statusOf(t.info) || "starting", l = LK.lookOf(st);
   const g = t.tab.querySelector(".tg");
-  g.textContent = l.glyph; g.style.setProperty("--c", roleVar(l.role));
+  g.textContent = glyphOf(st); g.style.setProperty("--c", roleVar(l.role));
   t.tab.dataset.state = st; t.tab.title = `${t.info.name} · ${l.word}`;
 }
 
@@ -168,7 +170,7 @@ async function launch(cwd, mode, extra = {}) {
   const r = await fetch("/api/terms", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ cwd, mode, ...extra }) });
   const body = await r.json();
   if (!r.ok) return alert(body.error || "Could not start terminal");
-  openTab(body); activate(body.id); setTermsOpen(true);
+  openTab(body); activate(body.id); showTerminal();
 }
 
 // project list with Claude / Shell launch buttons (used by the + popover and the empty pane)
@@ -205,7 +207,7 @@ $("newterm").onclick = showPicker;
 function setLayout(mode) {
   const bottom = mode === "bottom";
   document.body.classList.toggle("term-bottom", bottom);
-  $("layoutbtn").textContent = bottom ? "◫" : "⬓";
+  $("layoutbtn").innerHTML = icon(bottom ? "layoutSide" : "layout");
   $("layoutbtn").title = bottom ? "Put terminal beside the map" : "Put terminal along the bottom";
   try { localStorage.setItem("axa.layout", mode); } catch {}
   requestAnimationFrame(() => { const t = tabs.get(activeTab); fitTab(t); t?.term.focus(); });

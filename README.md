@@ -232,29 +232,65 @@ or writing to databases. Keep replies short.
 
 or run it yourself: `node console/server.mjs --open` → http://localhost:4747
 
-- **Center:** AXA (your main session). **Orbit:** each subagent, glowing while it works.
-- **Satellites:** the tools (grey), skills (⚡ violet) and agent spawns (➜ amber) each node has called, sized by count, flashing on use, red on failure.
-- **Click a node** to see the prompt it was given and what it reported back.
-- **Session picker** follows your most recent session automatically.
-- **Themes:** AXA HUD (default), Graphite, Paper (light), Solarized and High contrast, from the header
-  picker or **Settings**. Every text color meets 4.5:1 contrast, embedded terminals included. Settings
-  also has *follow system* (Paper when your system is light, your chosen dark theme when it's dark), *sync with the terminal app*,
-  and compact or comfortable density. Status always uses the same glyph and word in the web console,
-  the terminal app and `axa status`.
+The console opens on **Home**. Five views sit along the top: **Home, Sessions, Map, Runs, Settings**
+(on a phone they're bottom tabs instead: Home, Sessions, Terminal, More). The page remembers the last
+view, and the address works too (`/#runs`).
 
-- **Sessions list:** every project session, sorted by what needs you: needs you, stuck, working, done,
-  idle, ended. Each shows its status as a glyph and a word (never color alone), what it's doing or its
-  last report, its branch and uncommitted changes (`⎇ v7-polish · 3 files +40 −2`), and tokens used.
-  **A session waiting on you shows the prompt and its options as buttons.** Tap one to arm it and tap
-  again to send it (so a stray tap on the phone does nothing). AXA first checks the same prompt is
-  still on screen, then picks that option in the session's terminal. Only you can do this, from the
-  console page: the commander's tools refuse, and project sessions can't reach the console's controls.
-  **Open** jumps to its terminal; **Changes** shows its diff against the last commit, plus new files
-  (secret files like `.env` and keys are left out, and secrets in the diff are redacted). The
-  commander gets the same diff with its `read_changes` tool, so it checks the work before calling it done.
-- **On your phone:** the sessions list comes first, with big buttons, and a bottom bar jumps to
-  Sessions (with a needs-you badge), Terminal, Map and Activity. Animations stop if your system asks
-  for reduced motion.
+- **Home: "Needs you", then "While you were away".** First come the sessions waiting on you:
+  a prompt with its question and options, a stuck session with the reason, a failed one with why it
+  stopped. **Tap an option to arm it, tap again to send it**, so a stray tap does nothing. AXA first
+  checks the same prompt is still on screen, then picks that option in the session's terminal. Only
+  you can do this, from the console page: the commander's tools refuse, and project sessions can't
+  reach the console's controls. Below that is a timeline of what happened since you last looked in
+  this browser (`lastSeen` is kept per browser): finished runs with a one-line outcome, verify-gate
+  bounces, AXA's approvals (routine ones folded into one line per session), refusals and questions,
+  failures and links that fired. A row opens its run, its session or its diff. **Mark seen** starts
+  the timeline over. When nothing needs you, Home says so: *All quiet · 3 idle · last event 4m ago*.
+- **Sessions:** every project session, sorted by what needs you: needs you, stuck, failed, working,
+  done, idle, ended. Each card shows its status as a glyph and a word (never color alone), what it's
+  doing or its last report (or the stuck or failed reason), its branch and uncommitted changes
+  (`⎇ v7-polish · 3 files +40 −2`), and its spend: USD, context use and model when the console knows
+  them, otherwise tokens. When GitHub data is available it also shows the branch's pull request with
+  its checks and review, or the latest CI run, linked. **Open** jumps to its terminal; **Changes**
+  shows its diff against the last commit, plus new files (secret files like `.env` and keys are left
+  out, and secrets in the diff are redacted). The commander gets the same diff with its
+  `read_changes` tool, so it checks the work before calling it done.
+- **Map:** AXA's mission map: AXA's reactor in the center, each session around it, and helpers
+  appearing as they're dispatched. Beside it are the selected node (the prompt it was given and what
+  it reported back) and the activity feed. **Detail** shows every tool call, **Center** fits the view,
+  and you can drag cards to move them. The orb in the header shows AXA's state from any view; click
+  it to open the map.
+- **Runs:** every instruction a session got, newest first. Each run has a timeline: steps (folded
+  into stretches like `5 steps: Read ×2, Edit, Bash`), helpers started and reporting back, AXA's
+  approvals and refusals, verify-gate checks, your answers, and the result. It's the same history as
+  the terminal app's (`/api/runs`; one run's events come from the read-only `/api/runs/:id`).
+- **Cost meter:** the header shows today's spend in USD when the console tracks cost (`/api/cost`),
+  otherwise the open sessions' USD or tokens. Click it for spend per day and per session. Set a daily
+  budget in **Settings**: the meter turns amber at 80% and red past it. A session over its token
+  budget (`policy.json`) is flagged too.
+- **Command palette:** **Ctrl-K** (**⌘K** on a Mac; inside a terminal, ⌘K or Ctrl-Shift-K) jumps to
+  a session, answers a prompt, opens a diff, gives a session a goal, links two sessions ("when this
+  one finishes, tell that one…"), switches theme, opens settings, and more. The keys match the
+  terminal app's: **j/k** move through a list, **Enter** opens, **a** answers, **d** shows the diff,
+  **g** then **h s m r ,** switches views, **t** shows the terminals, **!** jumps to whatever needs
+  you, **?** lists every key.
+- **Themes:** AXA HUD (default), Graphite, Paper (light), Solar Night and High Contrast, in
+  **Settings** or the palette. Every text color meets 4.5:1 contrast, embedded terminals included.
+  Settings also has *follow system* (Paper when your system is light, your chosen dark theme when
+  it's dark), *sync with the terminal app*, compact or comfortable density, desktop notifications and
+  the daily budget. Status always uses the same glyph and word in the web console, the terminal app
+  and `axa status`. Icons are inline SVG, with no emoji. Animation is kept for changes of state: short
+  crossfades, one flash when something newly needs you, and a slow pulse only on working sessions.
+  If your system asks for reduced motion, it all stops, the map's reactor included.
+- **On your phone:** bottom tabs: Home (with the needs-you badge), Sessions, Terminal, and More (Map,
+  Runs, Settings). An approval opens in a bottom sheet with big buttons within thumb reach; it's
+  still tap to arm, tap again to send. The terminal gets the whole screen, and its key bar stays just
+  above the on-screen keyboard. The layout keeps clear of the notch and the home indicator (safe-area
+  insets).
+- **Works like an app, and offline:** the console is a PWA. Add it to your home screen and it opens
+  without the browser's toolbars. A service worker keeps the page shell (never `/api/` or the event
+  stream), so the console still opens when the server is down and says
+  *Console unreachable · last seen 14:06*.
 - **Terminal comfort:** **A− / A+** set the text size (remembered per browser, a little larger on
   phones). **⌕** or Ctrl+Shift+F searches the terminal's history. Links are clickable. On desktop the
   terminal draws with the GPU, so long output stays fast (`localStorage["axa.webgl"]` = `"0"` turns that
@@ -262,7 +298,7 @@ or run it yourself: `node console/server.mjs --open` → http://localhost:4747
   the on-screen keyboard lacks: Esc (stop Claude), Ctrl (then a letter), ^C, Tab, ⇧Tab (Claude's mode
   switch), the arrows and Enter. The terminal also takes the size of whichever screen you're using, so
   switching between phone, desktop and `axa attach` no longer leaves it mis-sized.
-- **Terminals:** press **Terminals → +** to launch Claude Code (or a plain shell) in any project, right inside the dashboard. Sessions started here are traced and run in auto mode. Run several projects side by side; the map follows whichever tab you're in. Terminals keep running if you reload the page.
+- **Terminals:** press **Terminal → +** (or **New session**) to launch Claude Code (or a plain shell) in any project, right inside the dashboard. Sessions started here are traced and run in auto mode. Run several projects side by side; the map follows whichever tab you're in. Terminals keep running if you reload the page.
 - **Sessions survive restarts:** each session runs in tmux (on AXA's own socket, `tmux -L axa-<port>`, so your tmux setup is untouched). Stopping or restarting the console (`axa stop`) leaves them running, and the next start shows them again with the same ids. After a machine restart, Claude sessions are relaunched resuming their chat (marked `recovered`); plain shells are dropped. `axa stop --all` ends every session. Without tmux (e.g. a Mac without it installed), sessions end with the console as before; `AXA_NO_TMUX=1` forces that.
 
 **Checking how it looks:** `node scripts/shot.mjs [url] [outdir]` saves `desktop.png` (1440×900)
@@ -271,7 +307,31 @@ Chromium headless (Node 22+, no dependencies; set `AXA_CHROME` to choose the bin
 `--eval='js'` runs code in the page first, for example to open a dialog. Agents can read the PNGs
 and fix what they see.
 
-Env: `AXA_PORT` (default 4747), `AXA_HOME` (default `~/.axa`). The event log is capped at 50MB
+### From your phone, over Tailscale (optional)
+
+The console only listens on `127.0.0.1`. To reach it from your phone without opening it to your
+network, put [Tailscale Serve](https://tailscale.com/kb/1312/serve) in front of it. Serve gives the
+console an HTTPS address that only devices on your tailnet can reach. HTTPS is also what the PWA
+install and the service worker need. AXA doesn't set this up for you. In outline:
+
+1. Install Tailscale on the computer and the phone, signed in to the same tailnet, with HTTPS
+   certificates turned on for the tailnet (admin console → DNS → HTTPS).
+2. Tell the console the name it will be reached by. Without this it refuses the request, because it
+   checks the Host header to block DNS rebinding:
+   `AXA_ALLOWED_HOSTS=mybox.your-tailnet.ts.net` (comma-separated; it adds that host and its
+   `https://` origin, nothing else). Restart the console with it set.
+3. `tailscale serve --bg 4747` proxies `https://mybox.your-tailnet.ts.net` to the console.
+   `tailscale serve status` shows it, and `tailscale serve reset` removes it.
+4. On the phone, open the unlock link once, with the tailnet name in place of `localhost:4747`:
+   `https://mybox.your-tailnet.ts.net/?t=<token>` (the token is in the link `axa console` prints).
+   That sets the cookie, and from then on `https://mybox.your-tailnet.ts.net/` works. Use **Add to
+   Home Screen** to install it.
+
+Anyone who can open that address and has the token can drive your sessions, so keep it on your own
+tailnet. Don't use `tailscale funnel`, which publishes to the internet.
+
+Env: `AXA_PORT` (default 4747), `AXA_HOME` (default `~/.axa`), `AXA_ALLOWED_HOSTS` (extra host
+names the console answers to, for an HTTPS proxy such as Tailscale Serve; see above). The event log is capped at 50MB
 (the previous one is kept as `events.1.jsonl`).
 
 ### Security
