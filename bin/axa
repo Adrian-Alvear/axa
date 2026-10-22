@@ -22,6 +22,8 @@ import { spawn, spawnSync } from "node:child_process";
 
 const root = join(dirname(realpathSync(fileURLToPath(import.meta.url))), "..");
 const { ensureConsole, home, port, readToken, openUrl } = await import(join(root, "console", "ensure.mjs"));
+const { lookOf, byUrgency: urgent, needsYou, STATUS } = await import(join(root, "console", "look.mjs"));
+const { tuiRoles } = await import(join(root, "console", "theme.mjs"));
 const [cmd, ...rest] = process.argv.slice(2);
 const flags = new Set(rest.filter((a) => a.startsWith("--")));
 const out = process.stdout;
@@ -35,35 +37,32 @@ async function api(path) {
 // ---------- how a session looks in the terminal: glyph + word + color, never color alone ----------
 const color = out.isTTY && !process.env.NO_COLOR && process.env.TERM !== "dumb" && !flags.has("--no-color");
 const utf8 = process.platform === "darwin" || /utf-?8/i.test(process.env.LC_ALL || process.env.LC_CTYPE || process.env.LANG || "");
-const paint = (code, s) => (color ? `\x1b[${code}m${s}\x1b[0m` : s);
-// status: [glyph, ascii glyph, word, ANSI color] (the 16 basic colors, so your terminal theme applies)
-const LOOK = {
-  waiting: ["⚠", "!", "needs you", "1;33"], stuck: ["◷", "~", "stuck", "31"], working: ["●", "*", "working", "36"],
-  done: ["✓", "+", "done", "32"], ready: ["○", "o", "ready", "0"], shell: ["○", "$", "shell", "2"], starting: ["◌", ".", "starting", "2"], exited: ["–", "-", "exited", "2"],
-};
-const URGENCY = ["waiting", "stuck", "working", "done", "ready", "shell", "starting", "exited"];
-const byUrgency = (list) => list.slice().sort((a, b) => URGENCY.indexOf(a.status) - URGENCY.indexOf(b.status) || (b.last_event_at || b.created) - (a.last_event_at || a.created));
+// status looks come from console/look.mjs (the vocabulary every AXA surface shares), colors from the
+// "terminal" theme's roles: the 16 basic colors, so your terminal theme applies
+const ROLES = tuiRoles("terminal", "16");
+const paint = (role, s) => { const code = ROLES[role] ?? role; return color && code !== "0" ? `\x1b[${code}m${s}\x1b[0m` : s; };
+const byUrgency = (list) => list.slice().sort(urgent);
 // control characters (escape codes in a folder name, say) never reach your terminal
 const oneLine = (s) => String(s || "").replace(/[\u0000-\u001f\u007f-\u009f]+/g, " ").replace(/\s+/g, " ").trim();
 const cut = (s, n) => (n <= 0 ? "" : s.length > n ? s.slice(0, Math.max(0, n - 1)) + "…" : s);
 const gitText = (g) => (!g ? "" : `${utf8 ? "⎇" : "git:"} ${g.branch}${g.files ? ` ${g.files}f +${g.added} -${g.removed}` : ""}${g.ahead ? ` ↑${g.ahead}` : ""}`);
 const what = (s) => oneLine(s.status === "done" ? s.last_report || "finished" : s.doing || s.last_report || (s.mode === "shell" ? "shell" : ""));
 function row(s, { cols = Infinity, num } = {}) {
-  const [g, ascii, word, code] = LOOK[s.status] || ["?", "?", s.status, "0"];
+  const { glyph: g, ascii, word, tui: code } = lookOf(s);
   const head = `${num ? `${num} ` : ""}${utf8 ? g : ascii} ${word.padEnd(9)} `;
   const name = (s.mode === "axa" ? "AXA" : oneLine(s.name)).slice(0, 16).padEnd(17);
   const git = gitText(s.git);
   const u = s.usage ? `${fmtTok(s.usage.tokens)} tok${s.usage.over_budget ? "!" : ""}`.padEnd(10) : "";
   const tail = cut(`${name}${git ? git.padEnd(26) + " " : ""}${u}${what(s)}`, cols - head.length);
   // a waiting session: the prompt and its options on the next line (answer it with `axa attach`)
-  const ask = s.choices ? `\n${" ".repeat(Math.min(head.length, 14))}${paint("33", "↳")} ${cut(oneLine(`${[...s.choices.question.split("\n")].reverse().find((l) => l.includes("?")) || s.choices.question.split("\n").pop()} ${s.choices.options.map((o) => `${o.n}. ${o.label}`).join("  ")}`), cols - 16)}` : "";
+  const ask = s.choices ? `\n${" ".repeat(Math.min(head.length, 14))}${paint("waitSoft", "↳")} ${cut(oneLine(`${[...s.choices.question.split("\n")].reverse().find((l) => l.includes("?")) || s.choices.question.split("\n").pop()} ${s.choices.options.map((o) => `${o.n}. ${o.label}`).join("  ")}`), cols - 16)}` : "";
   return paint(code, head) + tail + ask;
 }
 const fmtTok = (n) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${Math.round(n / 1e3)}k` : String(n));
 const summaryLine = (list) => {
   const n = (st) => list.filter((s) => s.status === st).length;
-  const needs = n("waiting") + n("stuck");
-  return [needs ? paint("1;33", `${utf8 ? "⚠" : "!"} ${needs} need${needs > 1 ? "" : "s"} you`) : "nothing needs you", n("working") && `${n("working")} working`, n("done") && `${n("done")} done`].filter(Boolean).join(" · ");
+  const needs = list.filter(needsYou).length, W = STATUS.waiting;
+  return [needs ? paint(W.tui, `${utf8 ? W.glyph : W.ascii} ${needs} need${needs > 1 ? "" : "s"} you`) : "nothing needs you", n("working") && `${n("working")} ${STATUS.working.word}`, n("done") && `${n("done")} ${STATUS.done.word}`].filter(Boolean).join(" · ");
 };
 
 // ---------- attach: drive a session from this terminal ----------
@@ -127,21 +126,21 @@ async function watch() {
     const cols = out.columns || 80, rows = out.rows || 24;
     const clock = new Date().toLocaleTimeString([], { hour12: false });
     const lines = [
-      `${paint("1;36", "AXA")}  ${summaryLine(list)}`,
+      `${paint("title", "AXA")}  ${summaryLine(list)}`,
       "",
-      ...(err ? [paint("31", cut(err, cols))] : list.length ? list.flatMap((s, i) => row(s, { cols, num: i < 9 ? i + 1 : " " }).split("\n")) : ["No sessions running. Start one with `axa` (the commander) or from the console."]),
+      ...(err ? [paint("bad", cut(err, cols))] : list.length ? list.flatMap((s, i) => row(s, { cols, num: i < 9 ? i + 1 : " " }).split("\n")) : ["No sessions running. Start one with `axa` (the commander) or from the console."]),
     ];
     while (lines.length < rows - 1) lines.push("");
     lines.length = rows - 1;
     const keys = `${list.length ? "1-9 attach · " : ""}c console · q quit`;
-    lines.push(paint("2", cut(`${keys}   ${clock}  :${port}`, cols)));
+    lines.push(paint("dim", cut(`${keys}   ${clock}  :${port}`, cols)));
     out.write("\x1b[H" + lines.map((l) => l + "\x1b[K").join("\r\n"));
   }
   async function tick() {
     try { list = byUrgency(await api("/api/terms")); err = ""; } catch (e) { err = `Console not reachable on port ${port} (${e.message}). Start it with: axa console`; }
     // ring the bell when a session starts needing you (not for what already did when the watch began)
     const now = new Map(list.map((s) => [s.id, s.status]));
-    if (prev && !busy && list.some((s) => ["waiting", "stuck"].includes(s.status) && prev.get(s.id) !== s.status)) out.write("\x07");
+    if (prev && !busy && list.some((s) => needsYou(s) && prev.get(s.id) !== s.status)) out.write("\x07");
     prev = now;
     draw();
   }

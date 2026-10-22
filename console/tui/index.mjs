@@ -3,11 +3,12 @@
 // fully interactive view of one session (or two side by side), rendered here through a headless
 // terminal. tmux-style: everything you type goes to the session in focus; the prefix key (Ctrl-b by
 // default) then a key is an AXA action: Ctrl-b : opens a palette of every action, Ctrl-b ? lists keys.
-// Settings (theme, prefix, sidebar, bell) live in $AXA_HOME/ui.json and Ctrl-b , edits them live.
+// Settings (theme, prefix, sidebar, bell) live in $AXA_HOME/ui.json (theme shared with the web console) and Ctrl-b , edits them live.
 // Same backend as the web console, so the browser, phone and this window always agree.
 //
 // The app is one shared state object (c) that each part adds its functions to:
-//   theme.mjs    colors, status looks, text width helpers
+//   theme.mjs    colors (../theme.mjs), status looks (../look.mjs), text width helpers
+//   settings.mjs ui.json: load, save, pick up a theme changed in the web console
 //   events.mjs   the event stream and what's derived from it (helpers, tallies, activity, feed)
 //   sidebar.mjs  sessions, workspaces, display order, the sidebar
 //   views.mjs    layout, live panes, drawing, copy-on-select
@@ -16,13 +17,15 @@
 //   palette.mjs  the prefix actions, the palette and settings
 //   index.mjs    (this file) settings file, console API, polling, clipboard paste, input, start
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { dirname, join, relative, isAbsolute } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { fileURLToPath } from "node:url";
-import { ESC, DEFAULTS, theme } from "./theme.mjs";
+import { ESC, DEFAULTS, theme, needsYou } from "./theme.mjs";
+import { colorDepth } from "../theme.mjs";
+import { settingsFile } from "./settings.mjs";
 import { createEvents, streamEvents } from "./events.mjs";
 import { sidebar } from "./sidebar.mjs";
 import { views } from "./views.mjs";
@@ -40,10 +43,10 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
   for (const k of ["TMUX", "TMUX_PANE"]) delete env[k];
 
   // ---------- settings ----------
-  const cfgPath = join(home, "ui.json");
-  let cfg = { ...DEFAULTS };
-  try { cfg = { ...DEFAULTS, ...JSON.parse(readFileSync(cfgPath, "utf8")) }; } catch {}
-  const saveCfg = () => { try { writeFileSync(cfgPath, JSON.stringify(cfg, null, 2) + "\n", { mode: 0o600 }); chmodSync(cfgPath, 0o600); } catch {} };
+  // (theme and themeSync are shared with the web console: see settings.mjs)
+  const settingsStore = settingsFile(join(home, "ui.json"), DEFAULTS);
+  const { cfg, path: cfgPath, save: saveCfg } = settingsStore;
+  const depth = colorDepth(process.env);
 
   // ---------- console API ----------
   const api = async (path, { method = "GET", body, headers = {} } = {}) => {
@@ -60,7 +63,7 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
   const c = {
     port, readToken, openUrl, root, home, out, env, SOCK: `axa-${port}`,
     pty: require("node-pty"), Headless: require("@xterm/headless").Terminal,
-    cfg, cfgPath, saveCfg, noColor: !!process.env.NO_COLOR || process.env.TERM === "dumb", api,
+    cfg, cfgPath, saveCfg, depth, noColor: depth === "mono", api,
     list: [], err: "", chainsList: [], ev: createEvents(),
     overlay: null, prefix: false, quitting: false, zoom: false, updated: false,
     mapMode: false, mapSel: 0, mapNodes: [], mapWant: null, // the map view, its selected node (session or helper)
@@ -83,13 +86,15 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
   // stream is the main change signal: an event polls right away (debounced).
   let prev = null, inflight = null, queued = null, lastSig = "", lastChange = Date.now(), pollTimer = null, kickTimer = null;
   async function pollOnce() {
+    // a theme picked in the web console (with sync on): the file's mtime says whether to read it
+    if (settingsStore.sync()) { c.fullRedraw = true; schedule(); }
     try { c.list = await api("/api/terms"); c.err = ""; } catch (e) { c.err = e.message; }
     try { c.chainsList = await api("/api/chains"); } catch {}
     const sig = JSON.stringify([c.list, c.chainsList, c.err], (k, v) => (k === "idle_seconds" ? undefined : v)); // (idle time ticks every poll)
     if (sig === lastSig) return; // nothing new: the clock's tick redraws anyway
     lastSig = sig; lastChange = Date.now();
     const now = new Map(c.list.map((s) => [s.id, s.status]));
-    if (cfg.bell && prev && c.list.some((s) => ["waiting", "stuck"].includes(s.status) && prev.get(s.id) !== s.status)) out.write("\x07");
+    if (cfg.bell && prev && c.list.some((s) => needsYou(s) && prev.get(s.id) !== s.status)) out.write("\x07");
     prev = now;
     c.views.forEach((v) => { const s = v && c.list.find((x) => x.id === v.id); if (v && !v.dead && (!s || !s.alive)) v.dead = "Session ended."; });
     schedule();
