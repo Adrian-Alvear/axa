@@ -309,11 +309,31 @@ Project sessions that AXA starts check every tool call against a policy before r
     folder) is approved at once, and an approval or refusal for the same command in the same project
     and session is reused (logged with `cached: true`). One-way doors and anything AXA passed to
     you are never remembered.
+  - **Test data isn't a command:** when a one-way-door pattern (say `npm publish`) only appears in
+    text a heredoc or a small Python script writes into a project file (`cat > test/x.mjs <<'EOF'`,
+    `python3 - <<'EOF'` that only opens project files), AXA's model judges it, told the match is file
+    data. Piped into a shell, run afterwards, or written outside the project: still yours.
+  - **When the model can't be reached** (usage limit, network, timeout): requests that are local and
+    reversible inside the project (edits, `mkdir`/`cp`/`mv`, deleting build output or temp files,
+    non-rewriting git, read-only curl to localhost) are still approved, logged with `fallback: "local-rules"`;
+    everything else comes to you (`fallback: "escalated"`). Never remembered.
 - **Claude Code's own settings are off limits:** sessions can't edit `.claude/settings*.json` (that
   could switch AXA's checks off), and commands that write files (`sort -o`, `tee`, `cp`…) are never
   auto-approved.
 
-It only applies to project sessions AXA starts, never to the commander or your own Claude sessions.
+**The commander** (the AXA session itself) gets its own, narrower rules:
+
+- **Auto-approved:** reading and searching anywhere in your home folder except secrets and private
+  folders (`~/.ssh`, `~/.aws`, `~/.config`…); read-only shell (`cat`, `grep`, `rg`, `ls`, `git
+  log/status/diff/show`, `node --check`, `node --test` in a project); GET-only curl to localhost (reading
+  the console API; anything that sends data to it goes to the approver); edits only inside a project folder it was started in. From `~/.axa` it only reads the event
+  log, session list and console token.
+- **Refused:** the dangerous-command list, writing anything in `~/.axa`, and answering prompts: a
+  request to the console's `/answer` route or with its page/TUI headers. Answering is always yours.
+- **Everything else goes to the approver**, which reads your latest messages to the commander as
+  its goal. One-way doors and the rest of `~/.axa` always come to you.
+
+It never applies to your own Claude sessions.
 Every decision is logged. To tune it, create `~/.axa/policy.json`:
 
 ```json
