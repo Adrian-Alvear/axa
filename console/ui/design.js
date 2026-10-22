@@ -84,7 +84,6 @@ function setSync(on) {
 // ---------- controls: the header picker and the settings dialog ----------
 function syncControls() {
   if (!TH) return;
-  const sel = byId("themesel"); if (sel) sel.value = pickedTheme();
   const box = byId("settings"); if (!box) return;
   for (const r of box.querySelectorAll("input[name=theme]")) r.checked = r.value === pickedTheme();
   for (const r of box.querySelectorAll("input[name=density]")) r.checked = r.value === prefs.density;
@@ -94,8 +93,6 @@ function syncControls() {
 }
 function buildControls() {
   const list = TH.themeList();
-  byId("themesel").innerHTML = list.map((t) => `<option value="${t.id}">${t.label}</option>`).join("");
-  byId("themesel").onchange = (ev) => setTheme(ev.target.value);
   // each choice shows its own colors (the swatch is drawn in that theme, whatever is on screen)
   byId("setthemes").innerHTML = list.map((t) => {
     const k = TH.tokens(t.id);
@@ -106,18 +103,17 @@ function buildControls() {
   for (const r of document.querySelectorAll("#settings input[name=density]")) r.onchange = () => setDensity(r.value);
   byId("setfollow").onchange = (ev) => setFollow(ev.target.checked);
   byId("setsync").onchange = (ev) => setSync(ev.target.checked);
-  byId("setbtn").onclick = openSettings;
-  byId("setclose").onclick = closeSettings;
-  byId("settings").onclick = (ev) => { if (ev.target === byId("settings")) closeSettings(); };
-  document.addEventListener("keydown", (ev) => { if (ev.key === "Escape" && !byId("settings").hidden) closeSettings(); });
 }
-function openSettings() { syncControls(); byId("settings").hidden = false; byId("setclose").focus(); }
-function closeSettings() { byId("settings").hidden = true; byId("setbtn").focus(); }
+// Settings is a view now (nav.js): opening it just shows it with the controls up to date
+function openSettings() { syncControls(); if (typeof go === "function") go("settings"); }
 
 // ---------- status vocabulary helpers (look.mjs): glyph + word + color role, never color alone ----------
 const roleVar = (role) => `var(--${role})`;
+// a status glyph always drawn as text, never as a color emoji (U+FE0E asks for the text form of ⚠)
+const glyphOf = (s) => LK.lookOf(s).glyph + "\uFE0E";
 // <span class="stx" style="--c:var(--warn)">⚠ needs you</span>
-const statusHtml = (s, extra = "") => { const l = LK.lookOf(s); return `<span class="stx" style="--c:${roleVar(l.role)}">${l.glyph} ${l.word}${extra}</span>`; };
+const statusHtml = (s, extra = "") => { const l = LK.lookOf(s); return `<span class="stx" style="--c:${roleVar(l.role)}">${glyphOf(s)} ${l.word}${extra}</span>`; };
+const statusText = (s) => `${glyphOf(s)} ${LK.lookOf(s).word}`;
 const statusColor = (s) => C[LK.lookOf(s).role] || C.dim;
 
 // ---------- startup ----------

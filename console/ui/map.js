@@ -42,6 +42,9 @@ function step(g) {
 }
 
 // ---------- drawing ----------
+// prefers-reduced-motion: the reactor stops spinning, nothing pulses, no data packets
+const calm = matchMedia("(prefers-reduced-motion: reduce)");
+const still = (now) => (calm.matches ? 0 : now);
 const cv = $("cv"), ctx = cv.getContext("2d");
 let Wd = 0, Ht = 0, dpr = 1;
 const cam = { x: 0, y: 0, k: 1 }; let autoFit = true;
@@ -117,7 +120,7 @@ const axaStatus = (n) => (n.perm ? "waiting" : n.status === "running" ? "working
 // the page's text font, for labels drawn on the canvas
 const FONT_UI = getComputedStyle(document.documentElement).getPropertyValue("--font-ui").trim() || "system-ui, sans-serif";
 function drawAxa(n, now) {
-  const t = now / 1000, on = n.status === "running", pulse = 0.5 + 0.5 * Math.sin(t * 3);
+  const t = still(now) / 1000, on = n.status === "running", pulse = calm.matches ? 0.5 : 0.5 + 0.5 * Math.sin(t * 3);
   const st = axaStatus(n), ACCENT = statusColor(st) === C.text ? C.accent : statusColor(st);
   ctx.save(); ctx.translate(n.x, n.y);
   // core glow
@@ -155,7 +158,7 @@ function drawAxaCallout(n, g, now) {
   else if (st === "done") { label = `${LK.label(st)} · your turn to reply`; urgent = true; }
   else return;
   c = statusColor(st);
-  const pulse = urgent ? 0.5 + 0.5 * Math.sin(now / 260) : 1;
+  const pulse = urgent && !calm.matches ? 0.5 + 0.5 * Math.sin(now / 260) : 1;
   // The tag sits where you put it (drag it; default up and to the right). The branch leaves the
   // ring toward it, then runs a short horizontal step into the tag's nearest side.
   const { dx, dy } = mapLayout.callout || { dx: 118, dy: -96 };
@@ -175,7 +178,7 @@ function drawAxaCallout(n, g, now) {
 }
 
 function drawRole(g, n, now) {
-  const t = now / 1000, on = n.status === "running", hot = n.hotUntil > now, c = n.color;
+  const t = still(now) / 1000, on = n.status === "running", hot = n.hotUntil > now, c = n.color;
   const appear = ease((now - n.born) / 600), r = 15 * appear;
   const jobs = [...g.nodes.values()].filter((x) => x.parent === n.id && x.status === "running").length;
   if (on || hot) { const gl = ctx.createRadialGradient(n.x, n.y, 0, n.x, n.y, 40); gl.addColorStop(0, rgba(c, 0.28)); gl.addColorStop(1, rgba(c, 0)); ctx.fillStyle = gl; ctx.beginPath(); ctx.arc(n.x, n.y, 40, 0, 7); ctx.fill(); }
@@ -192,11 +195,11 @@ function drawRole(g, n, now) {
 
 function drawInst(n, now) {
   const on = n.status === "running", c = n.fail ? C.bad : n.color, appear = ease((now - n.born) / 500);
-  const pulse = 0.5 + 0.5 * Math.sin(now / 250 + hash(n.id));
+  const pulse = calm.matches ? 0.5 : 0.5 + 0.5 * Math.sin(now / 250 + hash(n.id));
   if (on) { ctx.shadowColor = c; ctx.shadowBlur = 10 + pulse * 8; }
   ctx.fillStyle = on ? c : C.bg; ctx.beginPath(); ctx.arc(n.x, n.y, 6 * appear, 0, 7); ctx.fill(); ctx.shadowBlur = 0;
   arc(n.x, n.y, 6 * appear, 0, 7, c, 1.2, on ? 1 : 0.5);
-  if (on) arc(n.x, n.y, 11, now / 300, now / 300 + 1.6, c, 1, 0.7);
+  if (on) arc(n.x, n.y, 11, still(now) / 300, still(now) / 300 + 1.6, c, 1, 0.7);
   text(trunc(typed(n.label, n, now), 34), n.x, n.y - 15, { size: 10, color: on ? C.text : C.dim });
 }
 
@@ -235,7 +238,7 @@ function draw(g, now) {
     ctx.strokeStyle = rgba(b.fail ? C.bad : b.color, on ? 0.6 : b.kind === "leaf" ? 0.16 : 0.26);
     ctx.lineWidth = (on ? 1.4 : 1) / Math.max(cam.k, 0.6);
     ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(ex, ey); ctx.stroke();
-    if (on && b.kind !== "leaf" && grow >= 1) {
+    if (on && b.kind !== "leaf" && grow >= 1 && !calm.matches) {
       const len = Math.hypot(b.x - a.x, b.y - a.y), ux = (b.x - a.x) / len, uy = (b.y - a.y) / len;
       ctx.strokeStyle = C.core; ctx.lineWidth = 2 / Math.max(cam.k, 0.6); ctx.shadowColor = b.color; ctx.shadowBlur = 8;
       for (let i = 0; i < 3; i++) {
@@ -259,7 +262,7 @@ function draw(g, now) {
     }
     if (n.perm) {
       const by = n.y - (n.kind === "inst" ? 34 : n.kind === "role" ? 44 : 24);
-      const pulse = 0.5 + 0.5 * Math.sin(now / 180);
+      const pulse = calm.matches ? 0.5 : 0.5 + 0.5 * Math.sin(now / 180);
       ctx.strokeStyle = C.warn; ctx.lineWidth = 1; ctx.shadowColor = C.warn; ctx.shadowBlur = 6 + pulse * 8;
       ctx.fillStyle = rgba(C.warnSoft, 0.94); ctx.beginPath(); ctx.rect(n.x - 52, by - 9, 104, 16); ctx.fill(); ctx.stroke(); ctx.shadowBlur = 0;
       text(LK.label("waiting").toUpperCase(), n.x, by + 3, { size: 8, weight: 600, color: C.warn, spacing: 1.5 });

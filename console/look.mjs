@@ -14,8 +14,17 @@ export const STATUS = {
 };
 // most urgent first: what needs you, then what's moving, then what's quiet
 export const URGENCY = ["waiting", "stuck", "failed", "working", "done", "ready", "shell", "starting", "exited"];
-// plain shells report "shell" (older consoles said "starting"/"ready" for them forever)
-export const statusOf = (s) => (s?.mode === "shell" && ["starting", "ready"].includes(s.status) ? "shell" : s?.status);
+// plain shells report "shell" (older consoles said "starting"/"ready" for them forever), and a session
+// that is alive but has sent no traced event for STARTING_MS (hooks missing, or a plain `claude` that
+// hasn't been given anything yet) is ready, not "starting" forever
+export const STARTING_MS = 45_000;
+export const statusOf = (s, now = Date.now()) => {
+  if (s?.mode === "shell" && ["starting", "ready"].includes(s.status)) return "shell";
+  if (s?.status === "starting" && s.alive === true && s.created && now - s.created > STARTING_MS) return "ready";
+  return s?.status;
+};
+// why a session needs you, in one line, when the server says (stuck_reason / failed_reason, Phase 4)
+export const reasonOf = (s) => { const st = statusOf(s); return (st === "stuck" && s?.stuck_reason) || (st === "failed" && s?.failed_reason) || ""; };
 export const lookOf = (s) => STATUS[typeof s === "string" ? s : statusOf(s)] || { glyph: "?", ascii: "?", word: String((typeof s === "string" ? s : s?.status) || "unknown"), role: "dim", tui: "off" };
 export const byUrgency = (a, b) => URGENCY.indexOf(statusOf(a)) - URGENCY.indexOf(statusOf(b)) || (b.last_event_at || b.created || 0) - (a.last_event_at || a.created || 0);
 // "needs you" counts waiting and stuck sessions (and failed ones: a rate limit or billing stop)

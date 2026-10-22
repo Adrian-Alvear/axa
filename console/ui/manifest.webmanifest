@@ -1,0 +1,15 @@
+{
+  "name": "AXA Console",
+  "short_name": "AXA",
+  "description": "AXA: what needs you, your Claude Code sessions, runs and terminals.",
+  "start_url": "/#home",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#04070b",
+  "theme_color": "#04070b",
+  "icons": [
+    { "src": "/ui/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "/ui/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "maskable" }
+  ]
+}

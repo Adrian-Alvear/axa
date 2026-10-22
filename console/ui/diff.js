@@ -7,6 +7,7 @@ async function showDiff(p) {
   $("diffbody").textContent = "Loading…";
   $("diffview").hidden = false;
   $("diffclose").focus();
+  if (p.demo) { $("diffbody").innerHTML = `<span class="f">diff --git a/src/routes/orders.ts b/src/routes/orders.ts</span>\n<span class="h">@@ -12,6 +12,14 @@</span>\n<span class="a">+export async function listOrders(cursor) {</span>\n<span class="a">+  return db.orders.page({ after: cursor, limit: 50 });</span>\n<span class="a">+}</span>\n<span class="n">(a demo session: sample changes)</span>`; return; }
   try {
     const r = await fetch(`/api/terms/${p.id}/diff`), d = await r.json();
     if (diffFor !== p) return;

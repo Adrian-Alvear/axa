@@ -2,9 +2,15 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
 <meta name="theme-color" content="#04070b">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="AXA">
 <title>AXA Console</title>
+<link rel="manifest" href="/ui/manifest.webmanifest">
+<link rel="icon" href="/ui/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/ui/icon.svg">
 <script>
 // Before the first paint: the theme and density this browser chose (ui/design.js keeps these up to date)
 try {
@@ -24,78 +30,183 @@ try {
 <script src="/vendor/addon-webgl.js"></script>
 <link rel="stylesheet" href="/ui/app.css">
 </head>
-<body>
+<body data-view="home">
 <header>
-  <div class="brand"><h1>AXA</h1><span>orchestration console</span></div>
-  <span id="live">offline</span>
-  <div class="stat"><small>sessions</small><b id="s-agents">0</b></div>
-  <div class="stat"><small>working</small><b id="s-running">0</b></div>
-  <div class="stat"><small>done</small><b id="s-calls">0</b></div>
-  <button id="needs" title="A session is waiting for your approval: open it"><span id="needsg">⚠</span> <span id="needsn">0</span> <span id="needsw">needs you</span></button>
+  <button id="orb" class="orb" title="AXA" aria-label="AXA status"><i></i></button>
+  <div class="brand"><h1>AXA</h1></div>
+  <nav id="tnav" aria-label="Views">
+    <button data-view="home" data-icon="home">Home</button>
+    <button data-view="sessions" data-icon="list">Sessions<span class="badge" id="nbadge"></span></button>
+    <button data-view="map" data-icon="map">Map</button>
+    <button data-view="runs" data-icon="runs">Runs</button>
+    <button data-view="settings" data-icon="settings">Settings</button>
+  </nav>
   <span class="spacer"></span>
-  <button id="tbtn" title="Show terminals">Terminals</button>
-  <button id="ibtn" class="on" title="Show the intel panel">Intel</button>
-  <button id="viewbtn" title="Show every tool call on the map">Detail</button>
-  <button id="demo" title="Play a simulated orchestration">Demo</button>
-  <button id="fit" title="Fit the view · double-click: put moved cards back">Center</button>
-  <select id="session" title="session"></select>
-  <select id="themesel" title="Theme" aria-label="Theme"></select>
-  <button id="setbtn" title="Settings: theme, density, sync with the terminal app">Settings</button>
+  <button id="cost" class="chip" title="Spend: today and per session" hidden></button>
+  <button id="needs" class="chip" title="A session is waiting for you: answer it"><span id="needsg"></span> <span id="needsn">0</span> <span id="needsw">needs you</span></button>
+  <button id="palbtn" class="chip ghost" data-icon="search" title="Command palette (Ctrl/Cmd-K)"><span class="lbl">Search</span><kbd id="palkey">Ctrl K</kbd></button>
+  <button id="tbtn" class="chip ghost" data-icon="terminal" title="Show or hide the terminals"><span class="lbl">Terminal</span></button>
+  <span id="live" title="Live connection to the console">offline</span>
 </header>
+<div id="offline" role="status" hidden></div>
 <div id="limitnote" role="status" hidden></div>
-<section id="terms">
-  <div class="tabs"><button id="newterm" title="New terminal">+</button><div id="tablist" style="display:flex"></div><span class="grow"></span><button class="tb" id="fontdown" title="Smaller text">A−</button><button class="tb" id="fontup" title="Larger text">A+</button><button class="tb" id="findbtn" title="Search the terminal (Ctrl+Shift+F)">⌕</button><button id="layoutbtn" title="Move terminal">⬓</button></div>
+<section id="terms" aria-label="Terminals">
+  <div class="tabs"><button id="newterm" data-icon="plus" title="New terminal" aria-label="New terminal"></button><div id="tablist" style="display:flex"></div><span class="grow"></span><button class="tb" id="fontdown" title="Smaller text">A−</button><button class="tb" id="fontup" title="Larger text">A+</button><button class="tb" id="findbtn" data-icon="search" title="Search the terminal (Ctrl+Shift+F)" aria-label="Search the terminal"></button><button id="layoutbtn" data-icon="layout" title="Move terminal" aria-label="Move terminal"></button></div>
   <div id="termhost"><div id="termmsg">No terminals<br><br>Press + to launch Claude Code in a project</div></div>
   <div id="keybar" aria-label="Keys a phone keyboard lacks">
     <button data-k="esc" title="Esc: stop or go back">Esc</button><button data-k="ctrl" title="Ctrl: hold for the next key">Ctrl</button><button data-k="c" title="Ctrl-C">^C</button>
     <button data-k="tab">Tab</button><button data-k="stab" title="Shift-Tab: Claude's mode switch">⇧Tab</button>
-    <button data-k="up" title="Up">↑</button><button data-k="down" title="Down">↓</button><button data-k="left" title="Left">←</button><button data-k="right" title="Right">→</button>
-    <button data-k="enter" title="Enter">⏎</button><button data-k="kbd" title="Show the keyboard">⌨</button>
+    <button data-k="up" title="Up" aria-label="Up">↑</button><button data-k="down" title="Down" aria-label="Down">↓</button><button data-k="left" title="Left" aria-label="Left">←</button><button data-k="right" title="Right" aria-label="Right">→</button>
+    <button data-k="enter" title="Enter" aria-label="Enter">⏎</button><button data-k="kbd" data-icon="keyboard" title="Show the keyboard" aria-label="Show the keyboard"></button>
   </div>
-  <div id="findbar" hidden><input id="findq" placeholder="Search this terminal" aria-label="Search this terminal"><span id="findn"></span><button id="findprev" title="Previous (Shift+Enter)">↑</button><button id="findnext" title="Next (Enter)">↓</button><button id="findx" title="Close (Esc)">✕</button></div>
+  <div id="findbar" hidden><input id="findq" placeholder="Search this terminal" aria-label="Search this terminal"><span id="findn"></span><button id="findprev" title="Previous (Shift+Enter)">↑</button><button id="findnext" title="Next (Enter)">↓</button><button id="findx" data-icon="close" title="Close (Esc)" aria-label="Close"></button></div>
   <div id="picker" hidden></div>
   <div id="splitter"></div>
 </section>
-<main id="stage">
-  <canvas id="cv"></canvas>
-  <div id="planets"></div>
-  <div id="now"><span class="k">Now</span><span class="txt" id="nowtxt">Ready</span>
-    <span class="legend" id="legend"></span>
-    <button id="bell" title="Desktop notification when something needs you or AXA finishes">🔔</button></div>
-  <div id="dock"><div class="mission"><span>Mission</span><span class="bar"><i id="mbar"></i></span><span id="mtext"></span></div><div id="cards"></div></div>
-  <div id="empty">Standing by<br><br>Start a Claude Code session with AXA enabled — or run the demo</div>
+<main id="views">
+  <!-- Home: what needs you, then what happened while you were away -->
+  <section id="v-home" class="view" data-view="home" aria-label="Home">
+    <div class="vwrap">
+      <div class="vhead"><h2>Needs you</h2><span id="homesum" class="sum"></span></div>
+      <div id="needlist" class="cards"><div class="sess skel"></div></div>
+      <div class="vhead"><h2>While you were away</h2><span id="awaysince" class="sum"></span><span class="grow"></span><button id="seenbtn" class="small" title="Mark everything as seen">Mark seen</button></div>
+      <div id="away" class="timeline"><div class="trow skel"></div><div class="trow skel"></div><div class="trow skel"></div></div>
+    </div>
+  </section>
+  <!-- Sessions: every project session, urgency first -->
+  <section id="v-sessions" class="view" data-view="sessions" aria-label="Sessions" hidden>
+    <div class="vwrap wide">
+      <div class="vhead"><h2>Sessions</h2><span id="inboxsum" class="sum"></span><span class="grow"></span><button id="newsess" class="small" data-icon="plus">New session</button></div>
+      <div id="sesslist" class="cards grid"><div class="sess skel"></div><div class="sess skel"></div></div>
+    </div>
+  </section>
+  <!-- Map: AXA's mission map (its identity), the selected node and the activity feed -->
+  <section id="v-map" class="view" data-view="map" aria-label="Map" hidden>
+    <div id="stage">
+      <canvas id="cv"></canvas>
+      <div id="planets"></div>
+      <div id="maptools">
+        <button id="viewbtn" class="small" title="Show every tool call on the map">Detail</button>
+        <button id="fit" class="small" title="Fit the view · double-click: put moved cards back">Center</button>
+        <button id="ibtn" class="small on" title="Show the intel panel">Intel</button>
+        <button id="demo" class="small" title="Play a simulated orchestration">Demo</button>
+        <select id="session" title="session"></select>
+      </div>
+      <div id="now"><span class="k">Now</span><span class="txt" id="nowtxt">Ready</span><span class="legend" id="legend"></span></div>
+      <div id="dock"><div class="mission"><span>Mission</span><span class="bar"><i id="mbar"></i></span><span id="mtext"></span></div><div id="cards"></div></div>
+      <div id="empty">Standing by</div>
+    </div>
+    <aside>
+      <section id="detail"></section>
+      <section id="feedwrap"><p class="title">Activity</p><div id="feed"></div></section>
+    </aside>
+  </section>
+  <!-- Runs: each instruction a session got, from the prompt to its result -->
+  <section id="v-runs" class="view" data-view="runs" aria-label="Runs" hidden>
+    <div class="runs">
+      <div class="runlist">
+        <div class="vhead"><h2>Runs</h2><span class="grow"></span><select id="runfilter" title="Filter by session" aria-label="Filter by session"><option value="">All sessions</option></select></div>
+        <div id="runrows"></div>
+      </div>
+      <div id="rundetail" class="rundetail"></div>
+    </div>
+  </section>
+  <!-- Settings -->
+  <section id="v-settings" class="view" data-view="settings" aria-label="Settings" hidden>
+    <div class="vwrap" id="settings">
+      <div class="vhead"><h2 id="settitle">Settings</h2></div>
+      <div id="setbody">
+        <fieldset><legend>Theme</legend><div id="setthemes"></div>
+          <label class="check"><input type="checkbox" id="setfollow"> Follow system light/dark <small>light: Paper · dark: your theme (AXA HUD if you picked a light one)</small></label>
+          <small id="setnow"></small>
+          <label class="check"><input type="checkbox" id="setsync"> Sync with the terminal app <small>one theme for this page and <code>axa</code>, kept in AXA's <code>ui.json</code></small></label>
+        </fieldset>
+        <fieldset><legend>Density</legend>
+          <label class="check"><input type="radio" name="density" value="comfortable"> Comfortable</label>
+          <label class="check"><input type="radio" name="density" value="compact"> Compact</label>
+        </fieldset>
+        <fieldset><legend>Notifications</legend>
+          <label class="check"><input type="checkbox" id="setbell"> Desktop notification when something needs you or AXA finishes <small>only while this tab is in the background</small></label>
+        </fieldset>
+        <fieldset><legend>Spend</legend>
+          <label class="field">Daily budget (USD) <input id="setbudget" type="number" min="0" step="1" inputmode="decimal" placeholder="none"></label>
+          <small class="note">The cost meter turns amber at 80% of it and red past it. Token budgets per session come from AXA's policy.json.</small>
+        </fieldset>
+        <fieldset><legend>Keys</legend>
+          <small class="note"><kbd>Ctrl/Cmd K</kbd> palette · <kbd>j</kbd>/<kbd>k</kbd> move · <kbd>Enter</kbd> open · <kbd>g</kbd> then <kbd>h s m r</kbd> go to a view · <kbd>?</kbd> all keys</small>
+          <button id="sethelp" class="small" style="justify-self:start">Show all keys</button>
+        </fieldset>
+        <fieldset><legend>App</legend>
+          <small class="note" id="pwanote">Add this page to your home screen to open it like an app. The page shell works offline; live data needs the console.</small>
+        </fieldset>
+        <small class="note">Theme, density, notifications and budget are saved in this browser.</small>
+      </div>
+    </div>
+  </section>
 </main>
-<aside>
-  <section id="inbox"><p class="title"><span>Sessions</span><span id="inboxsum"></span></p><div id="sesslist"></div></section>
-  <section id="detail"></section>
-  <section id="feedwrap"><p class="title">Activity</p><div id="feed"></div></section>
-</aside>
-<div id="diffview" hidden><div id="diffbox" role="dialog" aria-modal="true" aria-labelledby="diffname">
-  <div id="diffhead"><b id="diffname"></b><span class="meta" id="diffmeta"></span><button id="diffterm">Open terminal</button><button id="diffclose" title="Close (Esc)">✕</button></div>
-  <pre id="diffbody"></pre>
+
+<!-- phone: bottom tabs -->
+<nav id="mnav" aria-label="Sections">
+  <button data-go="home" data-icon="home" class="on">Home</button>
+  <button data-go="sessions" data-icon="list">Sessions<span class="badge" id="mbadge"></span></button>
+  <button data-go="terminal" data-icon="terminal">Terminal</button>
+  <button data-go="more" data-icon="more">More</button>
+</nav>
+<div id="more" class="sheetwrap" hidden><div class="sheet" role="dialog" aria-modal="true" aria-label="More">
+  <span class="grip"></span>
+  <button data-view="map" data-icon="map">Map</button>
+  <button data-view="runs" data-icon="runs">Runs</button>
+  <button data-view="settings" data-icon="settings">Settings</button>
+  <button data-act="palette" data-icon="search">Command palette</button>
+  <button data-act="demo" data-icon="play">Play the demo</button>
 </div></div>
-<div id="settings" hidden><div id="setbox" role="dialog" aria-modal="true" aria-labelledby="settitle">
-  <div id="sethead"><b id="settitle">Settings</b><span class="grow"></span><button id="setclose" title="Close (Esc)">✕</button></div>
-  <div id="setbody">
-    <fieldset><legend>Theme</legend><div id="setthemes"></div>
-      <label class="check"><input type="checkbox" id="setfollow"> Follow system light/dark <small>light: Paper · dark: your theme (AXA HUD if you picked a light one)</small></label>
-      <small id="setnow"></small>
-      <label class="check"><input type="checkbox" id="setsync"> Sync with the terminal app <small>one theme for this page and <code>axa</code>, kept in AXA's <code>ui.json</code></small></label>
-    </fieldset>
-    <fieldset><legend>Density</legend>
-      <label class="check"><input type="radio" name="density" value="comfortable"> Comfortable</label>
-      <label class="check"><input type="radio" name="density" value="compact"> Compact</label>
-    </fieldset>
-    <small class="note">Theme and density are saved in this browser.</small>
+
+<!-- an approval: a bottom sheet on phones, a dialog on desktop -->
+<div id="ask" class="sheetwrap" hidden><div class="sheet" role="dialog" aria-modal="true" aria-labelledby="askname">
+  <span class="grip"></span>
+  <div class="askhead"><span id="askst" class="stx"></span><b id="askname"></b><span class="grow"></span><button id="askx" class="icon" data-icon="close" title="Close (Esc)" aria-label="Close"></button></div>
+  <pre id="askq"></pre>
+  <div id="askopts"></div>
+  <small class="note" id="asknote">Tap an option to arm it, tap again to send.</small>
+  <div class="askfoot"><button id="askterm" data-icon="terminal">Open terminal</button><button id="askdiff" data-icon="diff">Changes</button></div>
+</div></div>
+
+<div id="palette" class="overlay" hidden><div class="palbox" role="dialog" aria-modal="true" aria-label="Command palette">
+  <div class="palin"><span data-icon="search"></span><input id="palq" placeholder="Jump to a session, answer, open a diff, give a goal…" aria-label="Command" autocomplete="off" spellcheck="false"></div>
+  <div id="pallist" role="listbox"></div>
+  <div class="palfoot"><span><kbd>↑</kbd><kbd>↓</kbd> choose</span><span><kbd>Enter</kbd> run</span><span><kbd>Esc</kbd> close</span></div>
+</div></div>
+
+<div id="help" class="overlay" hidden><div class="helpbox" role="dialog" aria-modal="true" aria-labelledby="helptitle">
+  <div class="dhead"><b id="helptitle">Keys</b><span class="grow"></span><button id="helpx" class="icon" data-icon="close" title="Close (Esc)" aria-label="Close"></button></div>
+  <div class="helpbody">
+    <dl>
+      <dt><kbd>Ctrl/Cmd</kbd> <kbd>K</kbd></dt><dd>Command palette (in a terminal: <kbd>Cmd K</kbd> or <kbd>Ctrl Shift K</kbd>)</dd>
+      <dt><kbd>j</kbd> / <kbd>k</kbd></dt><dd>Next / previous item in the list</dd>
+      <dt><kbd>Enter</kbd></dt><dd>Open it (a session's terminal, a run's details)</dd>
+      <dt><kbd>a</kbd></dt><dd>Answer the selected session's prompt</dd>
+      <dt><kbd>d</kbd></dt><dd>Changes (diff) of the selected session</dd>
+      <dt><kbd>g</kbd> <kbd>h</kbd> · <kbd>g</kbd> <kbd>s</kbd> · <kbd>g</kbd> <kbd>m</kbd> · <kbd>g</kbd> <kbd>r</kbd> · <kbd>g</kbd> <kbd>,</kbd></dt><dd>Home · Sessions · Map · Runs · Settings</dd>
+      <dt><kbd>t</kbd></dt><dd>Show or hide the terminals</dd>
+      <dt><kbd>!</kbd></dt><dd>Jump to whatever needs you</dd>
+      <dt><kbd>?</kbd></dt><dd>This list</dd>
+      <dt><kbd>Esc</kbd></dt><dd>Close a dialog, or leave the terminal for the page</dd>
+    </dl>
   </div>
 </div></div>
-<nav id="mnav" aria-label="Sections">
-  <button data-go="inbox" class="on"><i>☰</i>Sessions<span class="badge" id="mbadge"></span></button>
-  <button data-go="terms"><i>›_</i>Terminal</button>
-  <button data-go="stage"><i>◎</i>Map</button>
-  <button data-go="feedwrap"><i>≡</i>Activity</button>
-</nav>
 
+<div id="costview" class="overlay" hidden><div class="costbox" role="dialog" aria-modal="true" aria-labelledby="costtitle">
+  <div class="dhead"><b id="costtitle">Spend</b><span class="grow"></span><button id="costx" class="icon" data-icon="close" title="Close (Esc)" aria-label="Close"></button></div>
+  <div id="costbody"></div>
+</div></div>
+
+<div id="diffview" hidden><div id="diffbox" role="dialog" aria-modal="true" aria-labelledby="diffname">
+  <div id="diffhead"><b id="diffname"></b><span class="meta" id="diffmeta"></span><button id="diffterm">Open terminal</button><button id="diffclose" data-icon="close" title="Close (Esc)" aria-label="Close"></button></div>
+  <pre id="diffbody"></pre>
+</div></div>
+<div id="toast" role="status" hidden></div>
+
+<script src="/ui/icons.js"></script>
 <script src="/ui/design.js"></script>
 <script src="/ui/state.js"></script>
 <script src="/ui/map.js"></script>
@@ -103,6 +214,11 @@ try {
 <script src="/ui/sessions.js"></script>
 <script src="/ui/diff.js"></script>
 <script src="/ui/nav.js"></script>
+<script src="/ui/home.js"></script>
+<script src="/ui/runs.js"></script>
+<script src="/ui/cost.js"></script>
+<script src="/ui/palette.js"></script>
+<script src="/ui/phone.js"></script>
 <script src="/ui/demo.js"></script>
 <script src="/ui/terminals.js"></script>
 <script src="/ui/main.js"></script>

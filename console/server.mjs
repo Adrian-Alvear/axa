@@ -10,7 +10,7 @@ import { homedir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { openUrl } from "./ensure.mjs";
-import { createStatus } from "./status.mjs";
+import { createStatus, RUNS_MAX, GATE_MS } from "./status.mjs";
 import { createSupervisor } from "./supervisor.mjs";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { themeId, DEFAULT_THEME } from "./theme.mjs";
@@ -46,6 +46,11 @@ const openBrowser = () => {
 // ---------- access control ----------
 const allowedHosts = new Set([`localhost:${port}`, `127.0.0.1:${port}`]);
 const allowedOrigins = new Set([...allowedHosts].map((h) => "http://" + h));
+// Opt-in extra names the console answers to, for an HTTPS proxy you run yourself on this machine
+// (e.g. Tailscale Serve: AXA_ALLOWED_HOSTS=mybox.tailnet-name.ts.net). The token cookie is still needed.
+for (const h of (process.env.AXA_ALLOWED_HOSTS || "").split(",").map((x) => x.trim().toLowerCase()).filter((x) => /^[a-z0-9.-]+(?::\d+)?$/.test(x))) {
+  allowedHosts.add(h); allowedOrigins.add("https://" + h);
+}
 const safeEq = (a, b) => a.length === b.length && timingSafeEqual(Buffer.from(a), Buffer.from(b));
 const cookieToken = (req) => (req.headers.cookie || "").split(";").map((c) => c.trim().split("=")).find(([k]) => k === "axa_token")?.[1] || "";
 const hostOk = (req) => allowedHosts.has(req.headers.host);
@@ -82,6 +87,20 @@ function readRoster() {
 const status = createStatus({ stuckMs: (Number(process.env.AXA_STUCK_MINUTES) || 20) * 60_000, onChat: (terminal, chat) => T?.noteSession?.(terminal, chat) });
 const { sessions, track, statusOf } = status;
 const runsSince = (since, limit) => status.runsSince(since, limit, T?.listTerms() || []);
+// A run's own events (its session, from its prompt to its end), slimmed to what a timeline shows
+const RUN_EVENT_KEYS = ["ts", "event", "tool", "summary", "skill", "subagent_type", "agent_id", "agent_type", "decision", "reason", "by", "error", "answer", "message", "from", "to", "text"];
+function runEvents(run, max = 400) {
+  const from = run.start, to = (run.end || Date.now()) + GATE_MS, needle = `"terminal":${JSON.stringify(run.terminal)}`, out = [];
+  for (const line of history) {
+    if (!line.includes(needle)) continue;
+    let e; try { e = JSON.parse(line); } catch { continue; }
+    if (e.terminal !== run.terminal || !(e.ts >= from && e.ts <= to)) continue;
+    const slim = {};
+    for (const k of RUN_EVENT_KEYS) if (e[k] != null) slim[k] = typeof e[k] === "string" ? e[k].slice(0, k === "message" ? 600 : 300) : e[k];
+    out.push(slim);
+  }
+  return out.slice(-max);
+}
 const logEvent = (ev) => { try { appendFileSync(logPath, JSON.stringify(ev) + "\n"); } catch {} };
 
 const clients = new Set();
@@ -210,6 +229,15 @@ const server = createServer(async (req, res) => {
     return res.end(body);
   }
 
+  // The service worker (caches the page shell for offline use; never /api/ or /events). Served from
+  // the root so it can control the page at "/".
+  if (path === "/sw.js") {
+    let body;
+    try { body = readFileSync(join(uiDir, "sw.js")); } catch { return res.writeHead(404).end(); }
+    res.writeHead(200, { "content-type": "text/javascript; charset=utf-8", "cache-control": "no-cache" });
+    return res.end(body);
+  }
+
   if (SHARED[path]) {
     let body;
     try { body = readFileSync(join(here, SHARED[path])); } catch { return res.writeHead(404).end(); }
@@ -222,6 +250,13 @@ const server = createServer(async (req, res) => {
 
   if (path === "/roster") return json(res, 200, readRoster());
   if (path === "/api/runs") return json(res, 200, runsSince(Number(u.searchParams.get("since")) || 0, Math.min(500, Number(u.searchParams.get("limit")) || 200)));
+  // One run and the events it logged (read-only, from the in-memory history): the Runs view's timeline
+  const rm = path.match(/^\/api\/runs\/([\w-]+)$/);
+  if (rm && req.method === "GET") {
+    const run = runsSince(0, RUNS_MAX).find((r) => r.id === rm[1]);
+    if (!run) return json(res, 404, { error: "no such run" });
+    return json(res, 200, { run, events: runEvents(run) });
+  }
   if (path === "/events") {
     res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
     // the lines are valid JSON already (remember() only keeps those): join them, no re-parsing

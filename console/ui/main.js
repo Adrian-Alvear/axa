@@ -8,12 +8,22 @@ async function refreshTerms() {
   try {
     const r = await fetch("/api/terms");
     if (r.ok) {
-      terms = await r.json();
+      terms = [...(await r.json()), ...demoTerms()];
+      termsLoaded = true; termsError = ""; termsOffline = false; markOnline();
       for (const t of terms) if (!tabs.has(t.id) && typeof Terminal !== "undefined") openTab(t); // sessions AXA opened show up as tabs too
       for (const [id, t] of tabs) { const info = terms.find((x) => x.id === id); if (info) { t.info = info; t.tab.classList.toggle("dead", !info.alive); tabStatus(t); } }
-      renderPlanets(); renderInbox(); dirty = true;
+      renderPlanets(); renderInbox(); renderCost(); updateAsk(); dirty = true;
+    } else {
+      termsLoaded = true; termsOffline = false;
+      termsError = r.status === 401 ? "" : (await r.json().catch(() => ({}))).error || `The console answered ${r.status}`;
+      if (r.status === 401) locked = true;
+      terms = demoTerms(); renderPlanets(); renderInbox(); markOnline();
     }
-  } catch {}
+  } catch {
+    // unreachable: keep showing what we had, and say so
+    termsLoaded = true; termsOffline = true; if (!terms.length) termsError = "The console is unreachable";
+    renderInbox(); markOffline();
+  }
   termsBusy = false;
   if (termsAgain) { termsAgain = false; if (!document.hidden) await refreshTerms(); }
 }
@@ -67,13 +77,35 @@ function connect() {
   es.addEventListener("history", (m) => {
     for (const k of [...sessions.keys()]) if (k !== "demo") sessions.delete(k); feedFor = null;
     const list = JSON.parse(m.data); list.forEach(ingest); dirty = true;
+    evlog = list.filter((e) => e && e.ts); markOnline(); if (viewNow === "home") renderAwaySoon();
     for (const e of list) if (e?.event === "SupervisorLimit") wakeLimit(e);
   });
-  es.onmessage = (m) => { try { const e = JSON.parse(m.data); ingest(e); if (e?.event === "SupervisorLimit") wakeLimit(e); termsSoon(); } catch {} };
-  es.onopen = () => { $("live").classList.add("on"); $("live").textContent = "online"; };
-  es.onerror = () => { $("live").classList.remove("on"); $("live").textContent = "offline"; };
+  es.onmessage = (m) => {
+    try {
+      const e = JSON.parse(m.data); ingest(e); logSeen(e); markOnline();
+      if (e?.event === "SupervisorLimit") wakeLimit(e);
+      if (e?.event === "Stop") awaySoon(); // a run finished: Home and Runs fetch the runs again
+      termsSoon();
+    } catch {}
+  };
+  es.onopen = () => { $("live").classList.add("on"); $("live").textContent = "live"; markOnline(); };
+  es.onerror = () => { $("live").classList.remove("on"); $("live").textContent = "offline"; markOffline(); };
 }
 // start once the design system (theme + status vocabulary) is in: everything draws with it
+let awayTimer2 = 0;
+const awaySoon = () => { clearTimeout(awayTimer2); awayTimer2 = setTimeout(() => { if (viewNow === "home") loadAway(); if (viewNow === "runs") loadRuns(); }, 1500); };
+// the view to open: the address (#runs), else the last one in this browser, else Home
+{
+  let v = location.hash.slice(1);
+  if (!VIEWS.includes(v)) { try { v = localStorage.getItem("axa.viewNow"); } catch {} }
+  go(VIEWS.includes(v) ? v : "home");
+}
 designReady.then(loadRoster).then(() => {
-  if (locked) { $("empty").innerHTML = "Console locked<br><br>Open it with /axa:console — or the unlock link the server prints"; $("live").textContent = "locked"; requestAnimationFrame(frame); return; }
-  setView(mission); termsBusy = true; initTerms().catch(() => {}).then(() => { termsBusy = termsAgain = false; pollTerms(); }); connect(); requestAnimationFrame(frame); if (new URLSearchParams(location.search).has("demo")) demo(); });
+  if (locked) {
+    $("empty").innerHTML = "Console locked<br><br>Open it with /axa:console, or the unlock link the server prints"; $("live").textContent = "locked";
+    termsLoaded = true; renderInbox(); renderAway(); renderRuns(); requestAnimationFrame(frame); return;
+  }
+  setView(mission); termsBusy = true; initTerms().catch(() => {}).then(() => { termsBusy = termsAgain = false; pollTerms(); }); connect(); requestAnimationFrame(frame);
+  loadAway(); loadCost(); if (viewNow === "runs") loadRuns();
+  if (new URLSearchParams(location.search).has("demo")) demo();
+}).catch(() => { termsLoaded = true; termsError = "The page couldn't load its design system"; renderInbox(); markOffline(); });

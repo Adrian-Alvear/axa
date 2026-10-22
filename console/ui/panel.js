@@ -126,15 +126,12 @@ function renderDock(g) {
 function renderChrome(g) {
   renderDock(g);
   $("empty").style.display = g || mission ? "none" : "grid";
-  if (!g && !locked) $("empty").innerHTML = focusCwd ? `Standing by<br><br>No activity in ${esc(focusCwd.split("/").pop())} yet` : "Standing by<br><br>Start a Claude Code session with AXA enabled — or run the demo";
+  if (!g && !locked) $("empty").innerHTML = focusCwd ? `Standing by<br><br>No activity in ${esc(focusCwd.split("/").pop())} yet` : "Standing by<br><br>Start a Claude Code session with AXA enabled, or run the demo";
   const projects = projectSessions();
-  $("s-agents").textContent = projects.length;
-  $("s-running").textContent = projects.filter((p) => LK.statusOf(p) === "working").length;
-  $("s-calls").textContent = projects.filter((p) => LK.statusOf(p) === "done").length;
   // "Needs you": waiting on an approval, stuck long enough to need a look, or stopped by a failure
   const waiting = projects.filter(LK.needsYou).sort(LK.byUrgency);
   $("needs").classList.toggle("on", waiting.length > 0);
-  $("needsg").textContent = LK.lookOf("waiting").glyph; $("needsw").textContent = LK.lookOf("waiting").word;
+  $("needsg").textContent = glyphOf("waiting"); $("needsw").textContent = LK.lookOf("waiting").word;
   $("needsn").textContent = waiting.length;
   $("needs").title = waiting.length ? waiting.map((p) => `${p.name}: ${LK.label(p)}`).join(" · ") : "";
   renderNow(g, waiting);
@@ -184,10 +181,10 @@ onTheme(() => {
 function frame(now) {
   follow();
   const g = sessions.get(current) || (mission ? idle : undefined);
-  if (g) { step(g); if (autoFit) fit(g); }
-  draw(g, now);
-  placePlanets();
-  if (dirty || now - lastPanel > 1000) { renderDetail(g); renderFeed(g); renderChrome(g); dirty = false; lastPanel = now; }
+  // the map is drawn only while it's on screen (it's one view among five now)
+  const onMap = viewNow === "map" && !document.hidden;
+  if (onMap) { if (g) { step(g); if (autoFit) fit(g); } draw(g, now); placePlanets(); }
+  if (dirty || now - lastPanel > 1000) { if (onMap) { renderDetail(g); renderFeed(g); } renderChrome(g); renderOrb(); dirty = false; lastPanel = now; }
   requestAnimationFrame(frame);
 }
 
