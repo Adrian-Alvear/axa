@@ -22,7 +22,7 @@ function planetPos(i, n, p) {
   else if ((d -= rx) < 2 * ry) { x = rx; y = d - ry; }
   else if ((d -= 2 * ry) < 2 * rx) { x = rx - d; y = ry; }
   else if ((d -= 2 * rx) < 2 * ry) { x = -rx; y = ry - d; }
-  else { x = d - 2 * ry - rx; y = -ry; }
+  else { x = d - rx; y = -ry; }
   return [x / k, (y + (48 - below) / 2) / k + 10];
 }
 // one line on what a session is doing (or why it needs you)
