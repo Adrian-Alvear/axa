@@ -2,7 +2,7 @@
 // depth, the shared status vocabulary, the settings file synced with the web console, text helpers
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, writeFileSync, utimesSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, writeFileSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { look, URGENCY, byUrgency, width, cut, pad, theme, appTheme, rolesFor, THEME_NAMES, DEFAULTS, themeLabel } from "../console/tui/theme.mjs";
@@ -96,9 +96,22 @@ test("settings: old names load, saves keep the rest of the file", () => {
   assert.equal(st.cfg.themeSync, false);
   st.cfg.prefix = "C-a"; st.save();
   const f = JSON.parse(readFileSync(path, "utf8"));
-  assert.equal(f.prefix, "C-a"); assert.equal(f.theme, "paper"); assert.deepEqual(f.labels, { a: "x" });
+  // (sync is off: the app's own theme is tuiTheme, the shared one is left as it was)
+  assert.equal(f.prefix, "C-a"); assert.equal(f.tuiTheme, "paper"); assert.equal(f.theme, "light"); assert.deepEqual(f.labels, { a: "x" });
+  assert.equal(settingsFile(path, DEFAULTS).cfg.theme, "paper");
   // a missing file is the defaults
   assert.equal(settingsFile(join(dir, "none.json"), DEFAULTS).cfg.theme, "terminal");
+});
+
+test("settings: with sync off, a theme picked in the app doesn't change the web console's", () => {
+  const dir = mkdtempSync(join(tmpdir(), "axa-ui-")), path = join(dir, "ui.json");
+  writeFileSync(path, JSON.stringify({ theme: "paper", themeSync: true }));
+  const st = settingsFile(path, DEFAULTS);
+  st.cfg.themeSync = false; st.save();
+  st.cfg.theme = "terminal"; st.save();
+  const f = JSON.parse(readFileSync(path, "utf8"));
+  assert.equal(f.themeSync, false); assert.equal(f.theme, "paper"); assert.equal(f.tuiTheme, "terminal");
+  assert.deepEqual(readdirSync(dir), ["ui.json"]); // written atomically, no temp file left
 });
 
 test("settings: with sync on, a theme changed in the web console is picked up; with it off, not", () => {

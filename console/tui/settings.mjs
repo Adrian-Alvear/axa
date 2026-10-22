@@ -3,7 +3,8 @@
 // next poll (the file's mtime is checked, it's only read when it changed), and a theme picked here is
 // written for the web console to pick up. A change made elsewhere is never overwritten by an older
 // value here: before each save, keys changed in the file (and not here) are taken from it first.
-import { chmodSync, readFileSync, statSync, writeFileSync } from "node:fs";
+// With syncing off the app keeps its own theme in tuiTheme and leaves the shared one alone.
+import { chmodSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { appTheme } from "./theme.mjs";
 
 const SHARED = ["theme", "themeSync"];
@@ -17,6 +18,8 @@ export function settingsFile(path, defaults) {
   const remember = () => { known = Object.fromEntries(SHARED.map((k) => [k, cfg[k]])); };
   const f0 = readFile();
   if (f0) Object.assign(cfg, f0);
+  if (f0 && !f0.themeSync && f0.tuiTheme) cfg.theme = f0.tuiTheme;
+  delete cfg.tuiTheme;
   cfg.theme = appTheme(cfg.theme); cfg.themeSync = !!cfg.themeSync; // old names (light) keep working
   stamp = stampOf(); remember();
 
@@ -44,7 +47,11 @@ export function settingsFile(path, defaults) {
   const sync = () => merge(new Set());
   function save() {
     merge(new Set(SHARED.filter((k) => cfg[k] !== known[k])));
-    try { writeFileSync(path, JSON.stringify(cfg, null, 2) + "\n", { mode: 0o600 }); chmodSync(path, 0o600); } catch {}
+    const out = { ...cfg, tuiTheme: cfg.theme };
+    if (!cfg.themeSync) { const f = readFile(); if (f && "theme" in f) out.theme = f.theme; else delete out.theme; }
+    // (written whole, then renamed: the server never reads half a file)
+    const tmp = `${path}.${process.pid}.tmp`;
+    try { writeFileSync(tmp, JSON.stringify(out, null, 2) + "\n", { mode: 0o600 }); chmodSync(tmp, 0o600); renameSync(tmp, path); } catch {}
     stamp = stampOf(); remember();
   }
   return { cfg, save, sync, path };
