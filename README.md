@@ -349,9 +349,9 @@ event log through `GET /api/digest?since=<ms>`; text a session wrote stays marke
 Besides the 20-minute idle timer, a working session is flagged **stuck** with a reason when it looks
 like it's going in circles:
 
-- `looks stuck: the same Bash call 5 times in a row` (same tool and summary; edits to one file don't count)
+- `looks stuck: the same Bash call 6 times in a row` (same tool and summary; edits to one file and commands that wait between checks, like `sleep 30 && gh run list`, don't count)
 - `looks stuck: 4 failed tool calls in a row`
-- `looks stuck: refused 3 times without progress` (policy or AXA's approver)
+- `looks stuck: refused 3 times without progress` (policy or AXA's approver; an edit or three successful calls in a row count as progress)
 - `looks stuck: sent back by the verify gate 3 times`
 
 It counts as "needs you", the commander is told why, and nothing is killed. The next instruction or

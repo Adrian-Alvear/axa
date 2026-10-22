@@ -1,7 +1,8 @@
 // ---------- cost: what each Claude session has spent, from Claude Code's own statusLine data ----------
 // `axa statusline` (console/statusline.mjs) records each session's cost.total_cost_usd and context %
 // into $AXA_HOME/cost.json; the console reads it back (cached by mtime) for the session list and
-// per-day totals. The file only holds numbers, ids and the model name, never prompt or screen text.
+// per-day totals. The file holds numbers, ids, the model name and the session's folder path, never
+// prompt or screen text.
 import { readFileSync, writeFileSync, renameSync, statSync, mkdirSync, chmodSync } from "node:fs";
 import { join } from "node:path";
 

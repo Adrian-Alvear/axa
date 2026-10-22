@@ -14,7 +14,10 @@ export const RUNS_MAX = 1000;
 // Looping, beyond the idle timer: the same tool call this many times in a row, this many refusals
 // (AXA or policy) or verify-gate bounces since the last real progress, or a streak of failed tool
 // calls. The session is flagged to the user ("looks stuck: ..."), never stopped.
-export const LOOP = { repeat: 5, denied: 3, gate: 3, failures: 4 };
+// Refusals also clear after `progress` successful calls in a row (a read-only session never edits).
+export const LOOP = { repeat: 6, denied: 3, gate: 3, failures: 4, progress: 3 };
+// a command that waits between checks (polling CI, a log, a server) repeats on purpose
+const POLLS = /\b(?:sleep|wait|watch|until)\b/;
 // Edits to one file look alike in the log (only the file name is traced): never counted as a loop
 const NO_REPEAT = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit", "TodoWrite"]);
 const PROGRESS = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"]);
@@ -78,15 +81,17 @@ export function createStatus({ stuckMs = STUCK_MS, approverMs = APPROVER_MS, run
         if (e.tool_use_id) s.inflight.set(e.tool_use_id, { tool: e.tool, summary: e.summary, since: e.ts });
         // the same call again and again (helpers' calls interleave, so only the session's own count)
         const key = `${e.tool}\u0000${String(e.summary ?? "").replace(/\s+/g, " ").trim()}`;
-        if (!e.agent_id && !NO_REPEAT.has(e.tool)) s.repeat = s.repeat?.key === key ? { ...s.repeat, n: s.repeat.n + 1 } : { key, tool: e.tool, n: 1 };
+        if (!e.agent_id && !NO_REPEAT.has(e.tool) && !(e.tool === "Bash" && POLLS.test(e.summary ?? ""))) s.repeat = s.repeat?.key === key ? { ...s.repeat, n: s.repeat.n + 1 } : { key, tool: e.tool, n: 1 };
         else if (!e.agent_id) s.repeat = null;
         break;
       }
       case "PostToolUse":
         if (s.status === "waiting") s.status = "working"; s.asking = null; s.inflight.delete(e.tool_use_id);
-        if (!e.agent_id) s.failStreak = 0;
-        // real progress: a change to a file clears refusals and gate bounces counted so far
+        if (!e.agent_id) { s.failStreak = 0; s.okStreak = (s.okStreak || 0) + 1; }
+        // real progress: a change to a file clears refusals and gate bounces counted so far, and a run
+        // of successful calls clears refusals
         if (PROGRESS.has(e.tool)) s.denied = s.gates = 0;
+        if (s.okStreak >= (loop.progress ?? LOOP.progress)) s.denied = 0;
         break;
       case "PostToolUseFailure":
         s.error = [e.tool, e.error].filter(Boolean).join(": "); s.asking = null; s.inflight.delete(e.tool_use_id);
@@ -98,7 +103,7 @@ export function createStatus({ stuckMs = STUCK_MS, approverMs = APPROVER_MS, run
         s.status = "failed"; s.failed_reason = failureText(e.error); s.doing = s.tool = s.summary = s.skill = undefined; s.asking = null; s.inflight.clear();
         s.error = [`API error: ${s.failed_reason}`, e.error_details].filter(Boolean).join(" · ");
         tally(s, e.ts, "api_errors"); break;
-      case "PolicyDecision": if (e.decision === "deny") { s.denied = (s.denied || 0) + 1; tally(s, e.ts, "refused"); } break;
+      case "PolicyDecision": if (e.decision === "deny") { s.denied = (s.denied || 0) + 1; s.okStreak = 0; tally(s, e.ts, "refused"); } break;
       // A permission request goes to AXA's approver first (hooks/approver.mjs). The session only waits
       // on the user when the approver escalates it, or the prompt is still open after approverMs.
       case "PermissionRequest":
@@ -110,7 +115,7 @@ export function createStatus({ stuckMs = STUCK_MS, approverMs = APPROVER_MS, run
         if (e.decision === "escalate") { s.status = "waiting"; s.doing = `needs your approval · ${e.reason}`; }
         else s.doing = `AXA ${e.decision === "allow" ? "approved" : "declined"} · ${e.reason}`;
         s.decisions = [...(s.decisions || []), { ts: e.ts, decision: e.decision, reason: e.reason, summary: e.summary, by: e.by }].slice(-20);
-        if (e.decision === "deny") s.denied = (s.denied || 0) + 1;
+        if (e.decision === "deny") { s.denied = (s.denied || 0) + 1; s.okStreak = 0; }
         tally(s, e.ts, e.decision === "allow" ? "approved" : e.decision === "deny" ? "declined" : "escalated");
         break;
       case "Notification": if (/permission/i.test(e.notification_type || e.message || "")) { s.status = "waiting"; s.asking = null; s.doing = e.message; } break;

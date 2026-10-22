@@ -12,17 +12,37 @@ function setup() {
 }
 const call = (ev, tool, summary, id, ok = true) => { ev("PreToolUse", { tool, summary, tool_use_id: id }); ev(ok ? "PostToolUse" : "PostToolUseFailure", { tool, tool_use_id: id, error: ok ? undefined : "exit 1" }); };
 
-test("the same tool call 5 times in a row = stuck with a reason; a different call clears it", () => {
+test("the same tool call 6 times in a row = stuck with a reason; a different call clears it", () => {
   const { ev, get } = setup();
   ev("UserPromptSubmit", { prompt: "x" });
   for (let i = 0; i < LOOP.repeat - 1; i++) call(ev, "Bash", "curl  127.0.0.1:3000/health", `u${i}`);
   assert.equal(get().status, "working");
   call(ev, "Bash", "curl 127.0.0.1:3000/health", "u9"); // whitespace normalized: the same call
   assert.equal(get().status, "stuck");
-  assert.equal(get().stuck_reason, "looks stuck: the same Bash call 5 times in a row");
+  assert.equal(get().stuck_reason, `looks stuck: the same Bash call ${LOOP.repeat} times in a row`);
   call(ev, "Read", "app.js", "r1");
   assert.equal(get().status, "working");
   assert.equal(get().stuck_reason, undefined);
+});
+
+test("a command that waits between checks (polling) repeats on purpose: not a loop", () => {
+  const { ev, get } = setup();
+  ev("UserPromptSubmit", { prompt: "x" });
+  for (let i = 0; i < 12; i++) call(ev, "Bash", "sleep 30 && gh run list --limit 1", `p${i}`);
+  assert.equal(get().status, "working");
+});
+
+test("refusals clear after a run of successful calls (a read-only session never edits)", () => {
+  const { ev, get } = setup();
+  ev("UserPromptSubmit", { prompt: "x" });
+  ev("PolicyDecision", { decision: "deny", reason: "r" }); ev("PolicyDecision", { decision: "deny", reason: "r" });
+  for (let i = 0; i < LOOP.progress; i++) call(ev, "Read", `f${i}.js`, `r${i}`);
+  ev("PolicyDecision", { decision: "deny", reason: "r" });
+  assert.equal(get().status, "working");
+  // but a refusal in between restarts the count
+  call(ev, "Read", "a.js", "x1"); ev("AxaDecision", { decision: "deny", reason: "r" }); call(ev, "Read", "b.js", "x2");
+  ev("PolicyDecision", { decision: "deny", reason: "r" });
+  assert.equal(get().stuck_reason, "looks stuck: refused 3 times without progress");
 });
 
 test("edits to one file and helpers' calls never count as a loop", () => {
@@ -88,7 +108,7 @@ test("idle stuck has a reason too, in AXA's words", () => {
 });
 
 test("loopReason never echoes session text: tool names are cleaned", () => {
-  assert.equal(loopReason({ repeat: { tool: "mcp__x__y; say hi", n: 5 } }), "looks stuck: the same mcp__x__ysayhi call 5 times in a row");
+  assert.equal(loopReason({ repeat: { tool: "mcp__x__y; say hi", n: 6 } }), "looks stuck: the same mcp__x__ysayhi call 6 times in a row");
 });
 
 test("StopFailure = failed with a short reason, ends the run; the next prompt clears it", () => {

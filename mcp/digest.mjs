@@ -26,7 +26,7 @@ export function digestText(d, now = Date.now()) {
   const lines = list.map((s) => {
     const flag = s.status === "waiting" ? " — NEEDS THE USER'S APPROVAL" : s.status === "stuck" ? ` — ${s.stuck_reason || "looks stuck"}, tell the user` : s.status === "failed" ? ` — FAILED (${s.failed_reason || "API error"}), tell the user` : "";
     const money = [s.cost?.usd != null && `$${s.cost.usd.toFixed(2)}`, s.cost?.context_pct != null && `ctx ${Math.round(s.cost.context_pct)}%`, s.usage && `${fmtTokens(s.usage.tokens)} tok${s.usage.over_budget ? " OVER BUDGET" : ""}`].filter(Boolean).join(" ");
-    const head = `[${s.id}] ${s.name} (${s.mode}) · ${s.status}${flag}${money ? ` · ${money}` : ""}${s.last_event_at ? ` · last event ${ago(now - s.last_event_at)} ago` : ""}`;
+    const head = `[${s.id}] ${String(s.name ?? "").replace(/[^\w .@+-]/g, "").slice(0, 60)} (${s.mode}) · ${s.status}${flag}${money ? ` · ${money}` : ""}${s.last_event_at ? ` · last event ${ago(now - s.last_event_at)} ago` : ""}`;
     const n = s.since || {};
     const counts = [n.approved && `${n.approved} approved`, n.declined && `${n.declined} declined`, n.escalated && `${n.escalated} escalated to the user`, n.refused && `${n.refused} refused by policy`, n.failures && plural(n.failures, "failed tool call"), n.gate && plural(n.gate, "verify-gate bounce"), n.api_errors && plural(n.api_errors, "API error")].filter(Boolean);
     const pr = prText(s.github);
