@@ -137,6 +137,13 @@ agents/ skills/      axa:builder / reviewer / researcher; the axa, verify and we
 - **Project sessions run in accept-edits mode** under AXA's permission policy: safe actions are
   approved, dangerous ones refused, the rest goes to AXA's approver. Only one-way doors (shipping to
   main, deploying, publishing, accounts, spending) wait for you, in the yellow bar.
+- **Guardrails stay on.** Sessions can't edit `.claude/settings*.json` (that could switch AXA's checks
+  off), and commands that write files are never auto-approved. Test data isn't a command: a one-way-door
+  pattern that only appears in text a heredoc writes into a project file is judged as file data. If
+  AXA's approver can't be reached (usage limit, network), only local, reversible steps inside the
+  project are approved; everything else comes to you. **The commander** gets narrower rules: read-only
+  shell and reads in your home folder (not secrets), edits only in the project it started in, never
+  writing to `~/.axa` or answering prompts. Details: `hooks/policy.mjs`, tests in `test/`.
 - **"Done" means checked.** If a session edits code and tries to finish without running a check,
   AXA's verify gate sends it back once. `"verifyGate": "off"` in `~/.axa/policy.json` turns it off.
 - **AXA wakes itself.** When a session finishes, gets stuck or needs you, the daemon tells the
