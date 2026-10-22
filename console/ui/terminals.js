@@ -80,7 +80,8 @@ function openTab(info) {
     if (ctrlArmed && d.length === 1) { d = ctrlOf(d); armCtrl(false); } // the phone key bar's Ctrl
     sendInput(t, d);
   });
-  connectWs();
+  // a demo session has no terminal behind it: its tab keeps the demo's status instead of "exited"
+  if (info.demo) term.write("(a demo session: there is no terminal behind it)\r\n"); else connectWs();
   tabStatus(t);
   return t;
 }

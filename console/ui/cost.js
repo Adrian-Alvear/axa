@@ -12,6 +12,7 @@ async function loadCost() {
     const r = await fetch("/api/cost");
     costData = r.ok ? await r.json() : null; // 404: this console doesn't track cost
     if (costData && !Array.isArray(costData.days)) costData = null;
+    if (demoOn()) costData = demoCost(); // the demo started while this was in flight
   } catch {}
   renderCost();
 }

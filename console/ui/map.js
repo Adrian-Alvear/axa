@@ -35,6 +35,11 @@ function step(g) {
   for (const n of ns) {
     if (n.fixed) { n.vx = n.vy = 0; continue; }
     n.vx -= n.x * 0.0015; n.vy -= n.y * 0.0015;
+    // the mission view: helpers keep clear of AXA's reactor and its labels (which keep their size on screen)
+    if (mission && n.kind === "inst") {
+      const d = Math.hypot(n.x, n.y) || 1, min = 60 + px(n.y > 0 ? 90 : 50);
+      if (d < min && n !== drag?.node) { n.x *= min / d; n.y *= min / d; }
+    }
     n.vx *= 0.8; n.vy *= 0.8;
     const v = Math.hypot(n.vx, n.vy); if (v > 12) { n.vx *= 12 / v; n.vy *= 12 / v; }
     if (n !== drag?.node) { n.x += n.vx; n.y += n.vy; }
@@ -71,13 +76,15 @@ function fit(g, instant) {
 }
 
 function rgba(hex, a) { const n = parseInt(hex.slice(1), 16); return `rgba(${n >> 16},${(n >> 8) & 255},${n & 255},${a})`; }
+// screen pixels in world units once the map zooms out: labels stay readable on a phone-sized map
+const px = (n) => n / Math.min(cam.k, 1);
 const trunc = (s, n) => (s && s.length > n ? s.slice(0, n - 1) + "…" : s || "");
 const ease = (x) => 1 - Math.pow(1 - Math.min(1, Math.max(0, x)), 3);
 function text(str, x, y, { size = 10, color = C.text, weight = 400, spacing = 0, align = "center", alpha = 1 } = {}) {
   ctx.font = `${weight} ${size}px ${FONT_UI}`;
   if ("letterSpacing" in ctx) ctx.letterSpacing = spacing + "px";
   ctx.textAlign = align; ctx.globalAlpha = alpha;
-  ctx.lineJoin = "round"; ctx.lineWidth = 4; ctx.strokeStyle = C.bg; ctx.strokeText(str, x, y);
+  ctx.lineJoin = "round"; ctx.lineWidth = Math.max(3, size * 0.4); ctx.strokeStyle = C.bg; ctx.strokeText(str, x, y);
   ctx.fillStyle = color; ctx.fillText(str, x, y);
   ctx.globalAlpha = 1; if ("letterSpacing" in ctx) ctx.letterSpacing = "0px";
 }
@@ -143,14 +150,15 @@ function drawAxa(n, now) {
     ctx.beginPath(); ctx.moveTo(Math.cos(a) * 52, Math.sin(a) * 52); ctx.lineTo(Math.cos(a) * r1, Math.sin(a) * r1); ctx.stroke();
   }
   ctx.restore();
-  text("AXA", n.x, n.y + 78, { size: 13, weight: 500, color: ACCENT, spacing: 7 });
+  text("AXA", n.x, n.y + 60 + px(18), { size: px(13), weight: 500, color: ACCENT, spacing: px(7) });
   const state = LK.label(st) + (st === "done" ? " · your turn" : "");
-  text(state.toUpperCase(), n.x, n.y + 93, { size: 9, weight: 600, color: st === "ready" ? C.dim : statusColor(st), spacing: 2.5 });
+  text(state.toUpperCase(), n.x, n.y + 60 + px(33), { size: px(9), weight: 600, color: st === "ready" ? C.dim : statusColor(st), spacing: px(2.5) });
 }
 
 // A tag on a branch off AXA saying, in words, what state it's in: waiting on you, or what it's doing
 function drawAxaCallout(n, g, now) {
   calloutBox = null;
+  if (Wd < 600) return; // a phone-sized map: the Now bar under it says the same
   let label, c, urgent = false;
   const st = axaStatus(n), l = LK.lookOf(st);
   if (st === "waiting") { label = `${LK.label(st)} · approve it in the AXA tab`; urgent = true; }
@@ -167,14 +175,17 @@ function drawAxaCallout(n, g, now) {
   ctx.strokeStyle = rgba(c, 0.75); ctx.lineWidth = 1.2 / Math.max(cam.k, 0.6);
   ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(ax - side * 14, ay); ctx.lineTo(ax, ay); ctx.stroke();
   ctx.fillStyle = c; ctx.beginPath(); ctx.arc(x0, y0, 2.5, 0, 7); ctx.fill();
-  ctx.font = `500 11px ${FONT_UI}`;
-  const w = ctx.measureText(label).width + 20, h = 24, bx = right ? ax : ax - w, by = ay - h / 2;
+  ctx.font = `500 ${px(11)}px ${FONT_UI}`;
+  // shortened to the room left on screen on its side of AXA
+  const room = (right ? Wd - 16 - ((ax - cam.x) * cam.k + Wd / 2) : (ax - cam.x) * cam.k + Wd / 2 - 16) / cam.k - px(20);
+  while (label.length > 12 && ctx.measureText(label).width > room) label = label.slice(0, -2) + "…";
+  const w = ctx.measureText(label).width + px(20), h = px(24), bx = right ? ax : ax - w, by = ay - h / 2;
   calloutBox = { x: bx, y: by, w, h, ax, ay };
   ctx.shadowColor = c; ctx.shadowBlur = urgent ? 6 + pulse * 12 : 4;
   ctx.fillStyle = rgba(C.panel, 0.94); ctx.fillRect(bx, by, w, h);
   ctx.strokeStyle = c; ctx.lineWidth = 1; ctx.strokeRect(bx, by, w, h); ctx.shadowBlur = 0;
-  ctx.fillStyle = c; ctx.fillRect(bx, by, 3, h);
-  text(label, bx + 12, by + 16, { size: 11, weight: 500, color: urgent ? c : C.text, align: "left", alpha: urgent ? 0.75 + 0.25 * pulse : 1 });
+  ctx.fillStyle = c; ctx.fillRect(bx, by, px(3), h);
+  text(label, bx + px(12), by + px(16), { size: px(11), weight: 500, color: urgent ? c : C.text, align: "left", alpha: urgent ? 0.75 + 0.25 * pulse : 1 });
 }
 
 function drawRole(g, n, now) {
@@ -200,7 +211,7 @@ function drawInst(n, now) {
   ctx.fillStyle = on ? c : C.bg; ctx.beginPath(); ctx.arc(n.x, n.y, 6 * appear, 0, 7); ctx.fill(); ctx.shadowBlur = 0;
   arc(n.x, n.y, 6 * appear, 0, 7, c, 1.2, on ? 1 : 0.5);
   if (on) arc(n.x, n.y, 11, still(now) / 300, still(now) / 300 + 1.6, c, 1, 0.7);
-  text(trunc(typed(n.label, n, now), 34), n.x, n.y - 15, { size: 10, color: on ? C.text : C.dim });
+  text(trunc(typed(n.label, n, now), 34), n.x, n.y - 6 - px(9), { size: px(10), color: on ? C.text : C.dim });
 }
 
 function drawLeaf(n, now) {
@@ -227,7 +238,7 @@ function draw(g, now) {
 
   // links: draw outward from the parent as the node appears, then carry data packets while active
   if (mission) drawPlanetLinks(now);
-  if (mission) text("click to talk", 0, 108, { size: 8, color: C.dim, spacing: 2, alpha: 0.8 });
+  if (mission) text("click to talk", 0, 60 + px(48), { size: px(9), color: C.dim, spacing: px(2), alpha: 0.8 });
   for (const l of g.links) {
     let a = g.nodes.get(l.a);
     const b = g.nodes.get(l.b);
@@ -264,8 +275,8 @@ function draw(g, now) {
       const by = n.y - (n.kind === "inst" ? 34 : n.kind === "role" ? 44 : 24);
       const pulse = calm.matches ? 0.5 : 0.5 + 0.5 * Math.sin(now / 180);
       ctx.strokeStyle = C.warn; ctx.lineWidth = 1; ctx.shadowColor = C.warn; ctx.shadowBlur = 6 + pulse * 8;
-      ctx.fillStyle = rgba(C.warnSoft, 0.94); ctx.beginPath(); ctx.rect(n.x - 52, by - 9, 104, 16); ctx.fill(); ctx.stroke(); ctx.shadowBlur = 0;
-      text(LK.label("waiting").toUpperCase(), n.x, by + 3, { size: 8, weight: 600, color: C.warn, spacing: 1.5 });
+      ctx.fillStyle = rgba(C.warnSoft, 0.94); ctx.beginPath(); ctx.rect(n.x - px(52), by - px(9), px(104), px(16)); ctx.fill(); ctx.stroke(); ctx.shadowBlur = 0;
+      text(LK.label("waiting").toUpperCase(), n.x, by + px(3), { size: px(8), weight: 600, color: C.warn, spacing: 1.5 });
     }
   }
   ctx.restore();

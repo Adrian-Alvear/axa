@@ -2,6 +2,14 @@
 // between them; plus the live detail panels for a session's agents and work and for one helper.
 import { ESC, look, cut, width, question, yesOpt, noOpt, fmtTok, gitText, what, fmtDur } from "./theme.mjs";
 
+// a line of text as two lines of at most w columns, broken between words (the second one cut)
+const wrap2 = (t, w) => {
+  if (width(t) <= w) return [t, ""];
+  let i = t.lastIndexOf(" ", w);
+  if (i <= 0) i = w;
+  return [cut(t.slice(0, i), w), cut(t.slice(i).trim(), w)];
+};
+
 export function map(c) {
   function mapRows(L) {
     const { renderSegs, nameOf } = c;
@@ -34,7 +42,9 @@ export function map(c) {
       // AXA's node, left of the trunk, level with the middle of the sessions
       const left = " ".repeat(TX - 1);
       const [, aword, arole] = axa ? look(axa) : ["", "not running", "off"], ag = axa ? c.glyph(axa) : c.icon("axa");
-      const node = k === mid - 1 ? [[` ${c.icon("axa")} AXA`, "title"]] : k === mid ? [[` ${ag} ${aword}`, arole]] : k === mid + 1 ? [[` ${cut(axa ? what(axa) : "Ctrl-b 0", TX - 3)}`, "dim"]] : null;
+      // what it's doing, on up to two lines under it (words kept whole)
+      const hint = wrap2(axa ? what(axa) : "Ctrl-b 0", TX - 3);
+      const node = k === mid - 1 ? [[` ${c.icon("axa")} AXA`, "title"]] : k === mid ? [[` ${ag} ${aword}`, arole]] : k === mid + 1 ? [[` ${hint[0]}`, "dim"]] : k === mid + 2 && hint[1] ? [[` ${hint[1]}`, "dim"]] : null;
       const segs = node ? [...node] : [[left, ""]];
       const used = node ? width(node.map(([t]) => t).join("")) : TX - 1;
       if (k === mid) segs.push(["─".repeat(Math.max(0, TX - 1 - used)), "rule"]); else segs.push([" ".repeat(Math.max(0, TX - 1 - used)), ""]);

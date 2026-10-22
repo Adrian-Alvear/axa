@@ -70,7 +70,7 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
     pty: require("node-pty"), Headless: require("@xterm/headless").Terminal,
     cfg, cfgPath, saveCfg, depth, noColor: depth === "mono", api,
     list: [], err: "", chainsList: [], ev: createEvents(),
-    overlay: null, prefix: false, quitting: false, zoom: false, updated: false,
+    overlay: null, prefix: false, quitting: false, entered: false, zoom: false, updated: false,
     mapMode: false, mapSel: 0, mapNodes: [], mapWant: null, // the map view, its selected node (session or helper)
     briefSince: cfg.lastSeenAt || 0, // when you last had mission control open (for "since you left")
     W: out.columns || 120, H: out.rows || 36,
@@ -345,7 +345,9 @@ export async function runTui({ port, readToken, openUrl, root, home }) {
   // ---------- start: AXA is always there ----------
   // mouse: clicks and wheel (1000), drags (1002, for copy-on-select), in SGR form (1006)
   // focus reports (1004) say whether the window is in front; the probe asks about synchronized output
-  const enter = () => { out.write(`${ESC}[?1049h${ESC}[?1000h${ESC}[?1002h${ESC}[?1006h${FOCUS_ON}${ESC}[2J${PROBE}`); process.stdin.setRawMode(true); process.stdin.resume(); };
+  // (nothing is drawn before this: a frame drawn earlier would land on your shell's screen, and the
+  // cleared alternate screen would then miss the parts that never change, like the sidebar's border)
+  const enter = () => { out.write(`${ESC}[?1049h${ESC}[?1000h${ESC}[?1002h${ESC}[?1006h${FOCUS_ON}${ESC}[2J${PROBE}`); c.entered = true; c.fullRedraw = true; process.stdin.setRawMode(true); process.stdin.resume(); };
   const leave = () => { out.write(`${SYNC_END}${FOCUS_OFF}${ESC}[?1002l${ESC}[?1000l${ESC}[?1006l${ESC}[0m${ESC}[?25h${ESC}[?1049l`); try { process.stdin.setRawMode(false); } catch {} };
   function quit() { c.quitting = true; cfg.lastSeenAt = Date.now(); saveCfg(); c.views.forEach(c.closeView); leave(); console.log("AXA keeps running: `axa` reopens this, `axa console` opens the web console."); process.exit(0); }
   c.quit = quit;

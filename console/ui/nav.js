@@ -71,9 +71,11 @@ $("orb").onclick = () => go("map");
 function placePlanets() {
   if (!mission) return;
   const list = projectSessions();
+  $("planets").classList.toggle("small", Wd < 600 || Ht < 620);
+  const pos = list.map((p, i) => planetPos(i, list.length, p)); // (the cards' sizes are read before any is moved)
   list.forEach((p, i) => {
     const el = planetEls.get(p.id); if (!el) return;
-    const [wx, wy] = planetPos(i, list.length, p);
+    const [wx, wy] = pos[i];
     el.style.transform = `translate(${(wx - cam.x) * cam.k + Wd / 2}px, ${(wy - cam.y) * cam.k + Ht / 2}px) translate(-50%, -50%)`;
   });
 }

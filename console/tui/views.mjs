@@ -226,9 +226,13 @@ export function views(c) {
   function alertRows(L) {
     const { sgr } = c;
     const a = L.alert, q = question(a.choices), yes = yesOpt(a.choices), no = noOpt(a.choices), k = c.keyName();
+    // the answers in full, or just their first words ("No, and tell Claude…" is "No") when that's what fits
+    const keys = (y, n) => `   ${k} y  ${y}    ${k} x  ${n}    ${k} !  go there`;
+    const short = (l) => l.split(/[,(]/)[0].trim() || l, ys = short(yes.label), ns = short(no.label);
+    const line = [keys(yes.label, no.label), keys(ys, ns), ` ${k} y ${ys}   ${k} x ${ns}   ${k} ! go there`].find((t) => width(t) <= L.mainW) || ` ${k} y ${ys}   ${k} x ${ns}   ${k} ! go there`;
     return [
       sgr("wait", pad(` ${statusLabel("waiting")} · ${c.nameOf(a)}: ${q}`, L.mainW)),
-      sgr("waitSoft", pad(`   ${k} y  ${yes.label}    ${k} x  ${no.label}    ${k} !  go there`, L.mainW)),
+      sgr("waitSoft", pad(line, L.mainW)),
     ];
   }
 
@@ -309,7 +313,7 @@ export function views(c) {
 
   // ---------- the frame ----------
   function draw() {
-    if (c.quitting) return;
+    if (c.quitting || !c.entered) return;
     const { sgr } = c;
     resizeViews();
     const L = layout(), H = c.H, W = c.W;

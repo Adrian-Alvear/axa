@@ -89,8 +89,8 @@ header { grid-column: 1 / -1; display: flex; align-items: center; gap: var(--s3)
 #offline button { color: var(--bad); border-color: var(--bad); }
 #limitnote { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; letter-spacing: .04em; }
 #limitnote::before { content: "‖ "; font-weight: 700; }
-body.is-offline #limitnote { top: calc(var(--hdr) + 56px); }
-body.is-offline .vwrap, body.is-offline .runlist, body.is-offline .rundetail { padding-top: 64px; }
+body.is-offline #limitnote { top: calc(var(--hdr) + var(--banner, 40px) + var(--s4)); }
+body.is-offline .vwrap, body.is-offline .runlist, body.is-offline .rundetail { padding-top: calc(var(--banner, 40px) + var(--s2) + var(--s5)); }
 
 /* ---------- views ---------- */
 #views { grid-column: 2; grid-row: 2; position: relative; min-width: 0; min-height: 0; overflow: hidden; }
@@ -212,9 +212,12 @@ a.ghl:hover { color: var(--text); text-decoration: underline; }
 .sw-dots i { width: 12px; height: 12px; border-radius: 50%; }
 .swatch input:checked + .sw-card { outline: 2px solid var(--accent); outline-offset: 2px; }
 .swatch input:focus-visible + .sw-card { outline: 2px dashed var(--accent); outline-offset: 2px; }
-.check { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--s1) var(--s2); cursor: pointer; }
+/* the box, then its words (wrapping beside it, not under it), then the hint under the words */
+.check { display: grid; grid-template-columns: auto 1fr; align-items: baseline; gap: var(--s1) var(--s2); cursor: pointer; }
 .check input { accent-color: var(--accent); margin: 0; transform: translateY(1px); }
-.check small, #setnow { color: var(--dim); font-size: var(--fs-xs); flex-basis: 100%; padding-left: var(--s5); }
+.check small, #setnow { color: var(--dim); font-size: var(--fs-xs); }
+.check small { grid-column: 2; }
+#setnow { padding-left: var(--s5); }
 #setnow:empty { display: none; }
 .field { display: flex; align-items: center; gap: var(--s3); }
 .field input { width: 110px; }
@@ -335,6 +338,12 @@ body:not(.detail) #session { display: none; }
 .planet .pg { color: var(--dim); font-size: var(--fs-xxs); margin-top: var(--s1); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .planet.working .ps { animation: pulse 2.4s ease-in-out infinite; }
 .planet.exited { opacity: .6; }
+/* small cards on a small map (a phone, or a short one beside the terminal): name and status only
+   (the Sessions view has the rest); the status wraps rather than losing its end */
+#planets.small .planet { width: 118px; padding: var(--s1) var(--s2); }
+#planets.small .planet .pd, #planets.small .planet .pg, #planets.small .planet .pe, #planets.small .planet .pn .mode { display: none; }
+#planets.small .planet .pn { font-size: var(--fs-xxs); letter-spacing: .12em; }
+#planets.small .planet .ps { font-size: 10px; letter-spacing: .04em; }
 .planet.hot { box-shadow: 0 0 0 1px var(--c), 0 0 22px color-mix(in srgb, var(--c) calc(var(--glow) * 35%), transparent); }
 /* the one slow pulse: working things */
 @keyframes pulse { 50% { opacity: .45; } }
@@ -462,11 +471,6 @@ body:not(.detail) #session { display: none; }
   #feed { max-height: 60vh; }
   #maptools { left: var(--s3); top: var(--s3); }
   #maptools #fit, #maptools #ibtn { display: none; }
-  /* small cards on a small map: name and status only (the Sessions tab has the rest) */
-  .planet { width: 118px; padding: var(--s1) var(--s2); }
-  .planet .pd, .planet .pg, .planet .pe, .planet .pn .mode { display: none; }
-  .planet .pn { font-size: var(--fs-xxs); letter-spacing: .12em; }
-  .planet .ps { font-size: 10px; letter-spacing: .04em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   #dock { display: none !important; }
   .rtitle { order: 3; flex-basis: 100%; }
   .row { grid-template-columns: 60px 72px 1fr; padding: var(--s1) var(--s4); }

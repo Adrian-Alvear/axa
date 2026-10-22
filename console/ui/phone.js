@@ -88,10 +88,13 @@ function markOffline(why = "") {
     offlineTimer = 0;
     const el = $("offline");
     el.innerHTML = `${icon("offline")}<span>Console unreachable${lastSeenAt ? ` · last seen ${hhmm(lastSeenAt)} (${ago(Date.now() - lastSeenAt)} ago)` : ""}${why ? ` · ${esc(why)}` : ""}</span><span class="grow"></span><button class="small" id="offretry">Retry</button>`;
-    el.hidden = false; document.body.classList.add("is-offline");
+    el.hidden = false; document.body.classList.add("is-offline"); fitBanner();
     $("offretry").onclick = () => { refreshTerms(); };
   }, navigator.onLine === false ? 0 : 3000);
 }
+// the views make room for the banner, however many lines it wraps to
+function fitBanner() { const el = $("offline"); if (!el.hidden) document.body.style.setProperty("--banner", el.offsetHeight + "px"); }
+addEventListener("resize", fitBanner);
 addEventListener("offline", () => markOffline("this device is offline"));
 addEventListener("online", () => refreshTerms());
 

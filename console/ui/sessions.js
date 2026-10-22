@@ -11,8 +11,19 @@ const planetEls = new Map();
 const ago = (ms) => { const s = Math.max(0, Math.round(ms / 1000)); return s < 60 ? `${s}s` : s < 3600 ? `${Math.round(s / 60)}m` : s < 86400 ? `${Math.round(s / 3600)}h` : `${Math.round(s / 86400)}d`; };
 function planetPos(i, n, p) {
   if (p && mapLayout.planets[p.name]) return mapLayout.planets[p.name];
-  const a = -Math.PI / 2 + (i * Math.PI * 2) / Math.max(n, 1) + (n === 2 ? Math.PI / 2 : 0);
-  return [Math.cos(a) * PLANET_R, Math.sin(a) * PLANET_R * 0.78];
+  // The cards keep their size as the map zooms out, so they're spaced evenly round the edge of the
+  // map as it is on screen (clear of the buttons on top and the Now bar or job cards below), starting
+  // top center, clockwise; a fixed radius would pile them onto each other on a phone
+  const el = p && planetEls.get(p.id), w = el?.offsetWidth || 212, h = el?.offsetHeight || 64, k = cam.k || 1;
+  const below = $("dock").offsetHeight || $("now").offsetHeight || 44;
+  const rx = Math.max(60, (Wd - w) / 2 - 12), ry = Math.max(40, (Ht - h - below - 48) / 2), per = 4 * (rx + ry);
+  let d = ((i / Math.max(n, 1)) * per + (n === 2 ? per / 4 : 0)) % per, x, y;
+  if (d < rx) { x = d; y = -ry; }
+  else if ((d -= rx) < 2 * ry) { x = rx; y = d - ry; }
+  else if ((d -= 2 * ry) < 2 * rx) { x = rx - d; y = ry; }
+  else if ((d -= 2 * rx) < 2 * ry) { x = -rx; y = ry - d; }
+  else { x = d - 2 * ry - rx; y = -ry; }
+  return [x / k, (y + (48 - below) / 2) / k + 10];
 }
 // one line on what a session is doing (or why it needs you)
 function planetDetail(p) {
