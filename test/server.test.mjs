@@ -3,7 +3,7 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -34,7 +34,7 @@ function req(path, { method = "GET", headers = {}, body, cookie = true } = {}) {
 before(async () => {
   // a log with history from before the start: replayed to each new page from memory
   writeFileSync(join(home, "events.jsonl"), [{ ts: 1, event: "SessionStart", terminal: "old1", role: "worker" }, { ts: 2, event: "Stop", terminal: "old1", role: "worker", message: "earlier" }].map((e) => JSON.stringify(e)).join("\n") + "\nnot json\n", { mode: 0o600 });
-  const env = { ...process.env, AXA_PORT: String(PORT), AXA_HOME: home, AXA_SUPERVISOR: "0" };
+  const env = { ...process.env, AXA_PORT: String(PORT), AXA_HOME: home, AXA_SUPERVISOR: "0", AXA_GITHUB: "0" };
   for (const k of ["TMUX", "TMUX_PANE", "AXA_TERMINAL_ID", "AXA_ROLE"]) delete env[k];
   server = spawn(process.execPath, [join(root, "console/server.mjs")], { env, stdio: ["ignore", "pipe", "pipe"] });
   server.stdout.on("data", (d) => (out += d));
@@ -152,6 +152,28 @@ test("shells, links and answering", async (t) => {
     assert.ok(list.some((c) => c.id === ok.json.id && c.from_name && c.to_name));
     assert.equal((await req(`/api/chains/${ok.json.id}`, { method: "DELETE" })).status, 200);
     assert.equal((await req(`/api/chains/${ok.json.id}`, { method: "DELETE" })).status, 404);
+  });
+
+  await t.test("/api/digest: every session with what happened since; /api/cost: per-day totals", async () => {
+    const t0 = Date.now();
+    const log = (e) => appendFileSync(join(home, "events.jsonl"), JSON.stringify({ terminal: a.json.id, role: "worker", ...e }) + "\n");
+    log({ ts: t0 - 60_000, event: "AxaDecision", decision: "allow", reason: "old" });
+    log({ ts: t0, event: "AxaDecision", decision: "deny", reason: "r" });
+    log({ ts: t0, event: "PostToolUseFailure", tool: "Bash", error: "boom sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" });
+    writeFileSync(join(home, "cost.json"), JSON.stringify({ sessions: { c1: { usd: 1.5, at: t0, day: "2026-10-21", base: 0 } }, days: { "2026-10-21": { c1: 1.5 }, "2026-10-20": { c9: 0.25 } } }));
+    await sleep(600);
+    const d = (await req(`/api/digest?since=${t0 - 1000}`)).json;
+    assert.ok(d.now >= t0 && d.since === t0 - 1000);
+    const s = d.sessions.find((x) => x.id === a.json.id);
+    assert.deepEqual(s.since, { approved: 0, declined: 1, escalated: 0, refused: 0, failures: 1, gate: 0, api_errors: 0, last_failures: [s.since.last_failures[0]] });
+    assert.doesNotMatch(s.since.last_failures[0], /AAAAAAAAAAAAAAAA/); // redacted
+    assert.equal((await req("/api/digest")).json.sessions.find((x) => x.id === a.json.id).since.approved, 1);
+    assert.equal(s.status, "shell");
+    assert.equal(s.github, null); // AXA_GITHUB=0 here: no gh calls from tests
+    const term = (await req("/api/terms")).json.find((x) => x.id === a.json.id);
+    assert.ok("cost" in term && "github" in term);
+    assert.deepEqual((await req("/api/cost")).json, { days: [{ date: "2026-10-21", usd: 1.5, sessions: 1 }, { date: "2026-10-20", usd: 0.25, sessions: 1 }], today_usd: (await req("/api/cost")).json.today_usd, total_usd: 1.75 });
+    assert.equal((await req("/api/digest", { cookie: false })).status, 401);
   });
 
   await t.test("reading the screen and closing", async () => {

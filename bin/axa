@@ -11,6 +11,7 @@
 //   axa attach <name|id>   take over a session in this terminal (Ctrl-] detaches; it keeps running)
 //   axa stop       stop the console (sessions keep running in tmux; the next start shows them again)
 //   axa stop --all stop the console and end every session
+//   axa statusline Claude Code statusLine command: AXA's state, cost and context in your own Claude window
 // Colors only on a real terminal; NO_COLOR, TERM=dumb or --no-color turn them off.
 import { readFileSync, existsSync, realpathSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -54,7 +55,10 @@ function row(s, { cols = Infinity, num } = {}) {
   const name = (s.mode === "axa" ? "AXA" : oneLine(s.name)).slice(0, 16).padEnd(17);
   const git = gitText(s.git);
   const u = s.usage ? `${fmtTok(s.usage.tokens)} tok${s.usage.over_budget ? "!" : ""}`.padEnd(10) : "";
-  const tail = cut(`${name}${git ? git.padEnd(26) + " " : ""}${u}${what(s)}`, cols - head.length);
+  // cost (from `axa statusline`) and the branch's PR with its checks: "$1.24 PR #12 ✓"
+  const pr = s.github?.pr, mark = { passing: utf8 ? "✓" : "ok", failing: utf8 ? "✕" : "x", pending: utf8 ? "◌" : "..." }[pr?.checks] || "";
+  const extra = [s.cost?.usd != null && `$${s.cost.usd.toFixed(2)}`, pr && `PR #${pr.number}${mark ? ` ${mark}` : ""}`].filter(Boolean).join(" ");
+  const tail = cut(`${name}${git ? git.padEnd(26) + " " : ""}${u}${extra ? extra + " " : ""}${what(s)}`, cols - head.length);
   // a waiting session: the prompt and its options on the next line (answer it with `axa attach`)
   const ask = s.choices ? `\n${" ".repeat(Math.min(head.length, 14))}${paint("33", "↳")} ${cut(oneLine(`${[...s.choices.question.split("\n")].reverse().find((l) => l.includes("?")) || s.choices.question.split("\n").pop()} ${s.choices.options.map((o) => `${o.n}. ${o.label}`).join("  ")}`), cols - 16)}` : "";
   return paint(code, head) + tail + ask;
@@ -160,7 +164,11 @@ async function watch() {
   setInterval(tick, 1500);
 }
 
-if (cmd === "console") {
+if (cmd === "statusline") {
+  // Runs on every Claude Code status refresh: no console start, short timeouts (console/statusline.mjs)
+  const { main } = await import(join(root, "console", "statusline.mjs"));
+  await main();
+} else if (cmd === "console") {
   if (!(await ensureConsole())) { console.error(`Couldn't start the console; see ${join(home, "console.log")}`); process.exit(1); }
   const url = `http://localhost:${port}/?t=${readToken()}`;
   console.log(`AXA console → ${url}`);
@@ -218,5 +226,6 @@ if (cmd === "console") {
   axa console              open the console in your browser
   axa status [--watch|--json]   sessions, what needs you first (--watch: live, 1-9 attach, q quit)
   axa attach <name|id>     take over a session here (Ctrl-] detaches; it keeps running)
-  axa stop [--all]         stop the console (--all also ends every session)`);
+  axa stop [--all]         stop the console (--all also ends every session)
+  axa statusline           Claude Code statusLine command (see the README to install it)`);
 }

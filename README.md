@@ -283,7 +283,8 @@ AXA also protects you while it works:
   force-pushes, `reset --hard`, piped installers, or anything touching `.env`/keys into a shell
   session unless you approved that exact command.
 - **Stuck sessions are flagged.** A session with a step running and no activity for 20 minutes
-  (`AXA_STUCK_MINUTES`) shows as stuck and counts toward "needs you".
+  (`AXA_STUCK_MINUTES`), or one that looks like it's looping, shows as stuck with the reason and
+  counts toward "needs you" (see [Stuck and looping sessions](#stuck-and-looping-sessions)).
 
 ### Permission policy (so project sessions don't keep stopping for you)
 
@@ -332,6 +333,86 @@ always asks you for matching requests.
 
 Some of these patterns are adapted from ECC (MIT); see [CREDITS.md](CREDITS.md).
 
+## Integrations (all optional)
+
+### The commander's digest
+
+The commander checks on everything with one `digest_sessions` call instead of reading screens: per
+session its state (with the stuck or failed reason), last report, uncommitted diff stat, cost and
+context %, PR/CI status, and what happened since its previous digest (approvals, declines,
+escalations, policy refusals, failed tool calls, verify-gate bounces, API errors). It comes from the
+event log through `GET /api/digest?since=<ms>`; text a session wrote stays marked as untrusted.
+`read_session` is for when the digest isn't enough.
+
+### Stuck and looping sessions
+
+Besides the 20-minute idle timer, a working session is flagged **stuck** with a reason when it looks
+like it's going in circles:
+
+- `looks stuck: the same Bash call 5 times in a row` (same tool and summary; edits to one file don't count)
+- `looks stuck: 4 failed tool calls in a row`
+- `looks stuck: refused 3 times without progress` (policy or AXA's approver)
+- `looks stuck: sent back by the verify gate 3 times`
+
+It counts as "needs you", the commander is told why, and nothing is killed. The next instruction or
+real progress (a different call, a successful one, a file edit) clears it. A turn that ends on an
+API error (Claude Code's `StopFailure` hook) shows as **failed** with the reason (`rate limit`,
+`billing`, `login needed`…) until you send the next instruction.
+
+### `axa statusline`: AXA and real cost in your own Claude window
+
+`axa statusline` is a Claude Code status line. It shows one line, e.g.
+`AXA ⚠ 1 needs you · 3 working · $1.24 · ctx 42%` (just cost and context when the console isn't
+running), and records each session's cost (`cost.total_cost_usd`) and context % into
+`~/.axa/cost.json`. The console then shows `cost: { usd, context_pct, model, at }` per session and
+per-day totals at `GET /api/cost`; `axa status` shows `$1.24` per session. AXA never edits your
+settings: add it yourself to `~/.claude/settings.json` (use the full path to `bin/axa` if `axa`
+isn't on your `PATH`):
+
+```json
+{
+  "statusLine": { "type": "command", "command": "axa statusline", "padding": 0 }
+}
+```
+
+Sessions AXA starts use your settings too, so they record their cost once this is set.
+
+### GitHub (read-only)
+
+When `gh` is installed and `gh auth status` succeeds (checked every 10 minutes), each session gets
+its branch's pull request and latest CI run: `github: { pr: { number, state, url, draft, review,
+checks: "passing" | "failing" | "pending" }, ci: { status, conclusion, name, url } }`, shown as
+`PR #12 ✓` in `axa status`. AXA only runs `gh pr view --json …` and `gh run list --json …` in the
+session's folder, in the background, at most once a minute per branch; it never opens or changes
+anything on GitHub. Without `gh`, or signed out, there's simply no GitHub info. `AXA_GITHUB=0` turns
+it off.
+
+### Phone push (off by default)
+
+AXA can tell your phone when a session needs you, through [ntfy](https://ntfy.sh). Nothing is sent
+until you turn it on:
+
+1. `node console/notify.mjs init` writes `~/.axa/notify.json` with pushes **off** and a private random
+   topic (anyone who knows the topic can read it, so keep it secret):
+   `{ "ntfy": { "enabled": false, "server": "https://ntfy.sh", "topic": "…" } }`
+2. Subscribe to that topic in the ntfy app (or point `server` at your own ntfy).
+3. Set `"enabled": true`. `node console/notify.mjs test` sends a test push. Optionally
+   `"on": ["waiting", "failed"]` limits which changes are pushed (default: waiting, stuck, failed, done).
+
+A push contains only the session's name and a short reason in AXA's words: `launches: needs you`,
+`stuck`, `failed: rate limit`, `done`. Never prompts, screen text, commands or reports. Pushes follow
+the same changes the supervisor reports, at most one per session and reason every 10 minutes and 12
+an hour.
+
+### Measuring the approver
+
+`node scripts/approver-eval.mjs` replays the synthetic cases in `test/fixtures/approver-eval.jsonl`
+(never your own log) against `haiku` and `sonnet` with the approver's own prompt, and prints each
+model's agreement with the expected decision, how often it allowed what it shouldn't have, agreement
+between the models, and median/max latency. It makes at most 30 model calls (`--limit N`,
+`--models haiku,sonnet`, `--cases file.jsonl`); `--dry-run` shows the plan without calling anything.
+It only recommends; the model stays whatever `approver.model` says in `policy.json`.
+
 ## Development
 
 Zero dependencies outside the console's terminal packages. `npm test` (or `node --test`) runs the
@@ -343,7 +424,8 @@ with 8 shell sessions (numbers in `docs/perf/baseline.md`).
 
 ## Privacy
 
-Everything stays on your machine. Events are a local JSONL file; prompts and agent
+Everything stays on your machine (phone push, off by default, sends only a session name and a
+short reason to the ntfy server you choose). Events are a local JSONL file; prompts and agent
 reports are clipped to 2KB each. Delete `~/.axa/events.jsonl` any time.
 
 ## License
