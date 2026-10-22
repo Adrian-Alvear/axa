@@ -102,9 +102,8 @@ const MONO_ROLES = { title: "1", accent: "1", wait: "1;4", waitSoft: "1", stuck:
 export function tuiRoles(id, depth = "truecolor") {
   if (depth === "mono") return { ...MONO_ROLES };
   if (themeId(id) === TERMINAL_THEME) return { ...TERMINAL_ROLES };
+  // (on 16 colors each role takes the nearest basic color: how close it looks depends on your scheme)
   const t = tokens(id), f = (c) => fg(c, depth);
-  // on 16 colors a theme can't be shown faithfully: the basic named colors read better than a guess
-  if (depth === "16") return { ...TERMINAL_ROLES };
   return {
     title: `1;${f(t.accent)}`, accent: f(t.accent), wait: `1;${f(t.warn)}`, waitSoft: f(t.warn), stuck: f(t.bad), work: f(t.accent), done: f(t.ok),
     idle: f(t.text), off: f(t.dim), dim: f(t.dim), sel: `${bgc(t.sel, depth)};${f(t.text)}`, rule: f(t.line2), tag: `1;${bgc(t.accent, depth)};${f(t.onAccent)}`,

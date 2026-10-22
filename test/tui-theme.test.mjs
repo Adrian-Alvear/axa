@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { look, URGENCY, byUrgency, width, cut, pad, theme, appTheme, rolesFor, THEME_NAMES, DEFAULTS, themeLabel } from "../console/tui/theme.mjs";
 import { STATUS } from "../console/look.mjs";
-import { THEMES, rgb, to256, colorDepth } from "../console/theme.mjs";
+import { THEMES, rgb, to256, to16, tokens, colorDepth } from "../console/theme.mjs";
 import { settingsFile } from "../console/tui/settings.mjs";
 
 test("shell sessions show as shell, dim, never starting", () => {
@@ -59,13 +59,15 @@ test("theme names: the app's list, old saved names, unknown ones", () => {
   assert.equal(themeLabel("terminal"), "Terminal colors");
 });
 
-test("theme by color depth: exact on truecolor, quantized on 256, named basics on 16, none on mono", () => {
+test("theme by color depth: exact on truecolor, quantized on 256 and 16, none on mono", () => {
   const hud = THEMES.hud;
   assert.equal(rolesFor("hud", "truecolor").accent, `38;2;${rgb(hud.accent).join(";")}`);
   assert.equal(rolesFor("hud", "256").accent, `38;5;${to256(hud.accent)}`);
   assert.equal(rolesFor("paper", "256").wait, `1;38;5;${to256(THEMES.paper.warn)}`);
-  // 16 colors: the basic named colors, the same as the terminal theme
-  assert.deepEqual(rolesFor("hud", "16"), rolesFor("terminal", "16"));
+  // 16 colors: each role quantized to the nearest basic color; the terminal theme keeps its names
+  assert.equal(rolesFor("hud", "16").accent, String(to16(hud.accent)));
+  assert.equal(rolesFor("paper", "16").sel.split(";")[0], String(to16(tokens("paper").sel) + 10));
+  assert.notDeepEqual(rolesFor("hud", "16"), rolesFor("paper", "16"));
   assert.equal(rolesFor("terminal", "truecolor").accent, "36");
   // NO_COLOR / TERM=dumb: mono whatever the theme; "mono" is mono at any depth
   assert.equal(colorDepth({ NO_COLOR: "1", COLORTERM: "truecolor" }), "mono");

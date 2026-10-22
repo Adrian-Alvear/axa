@@ -156,8 +156,11 @@ built in:
   checks, `o` the web console, `X` close it, `q` leave (sessions keep running), `?` for all keys.
   `Ctrl-b Ctrl-b` sends a literal Ctrl-b.
 - **Settings and themes:** `Ctrl-b ,` changes them live, and they're saved in `~/.axa/ui.json`.
-  - **Theme:** `terminal` (default: your terminal's own colors), `hud` (the console's cyan look),
-    `light`, `contrast` and `mono`. `NO_COLOR` always means no colors.
+  - **Theme:** `terminal` (default: your terminal's own colors), or one of the console's themes:
+    `hud` (cyan), `graphite`, `paper` (light), `solar` and `contrast`; plus `mono`. They're exact on
+    truecolor terminals and quantized on 256- and 16-color ones. `NO_COLOR` always means no colors.
+  - **Sync with the web console:** with it on, a theme picked here or in the web console shows up in
+    both; turned off on either side, it's off for both, and each keeps its own theme.
   - **Prefix key:** Ctrl-b, Ctrl-a, Ctrl-g or Ctrl-\.
   - **Sidebar:** left or right, and its width.
   - **Bell** on or off, and whether new sessions start as Claude or a shell.
@@ -233,6 +236,11 @@ or run it yourself: `node console/server.mjs --open` → http://localhost:4747
 - **Satellites:** the tools (grey), skills (⚡ violet) and agent spawns (➜ amber) each node has called, sized by count, flashing on use, red on failure.
 - **Click a node** to see the prompt it was given and what it reported back.
 - **Session picker** follows your most recent session automatically.
+- **Themes:** AXA HUD (default), Graphite, Paper (light), Solarized and High contrast, from the header
+  picker or **Settings**. Every text color meets 4.5:1 contrast, embedded terminals included. Settings
+  also has *follow system* (Paper when your system is light, your chosen dark theme when it's dark), *sync with the terminal app*,
+  and compact or comfortable density. Status always uses the same glyph and word in the web console,
+  the terminal app and `axa status`.
 
 - **Sessions list:** every project session, sorted by what needs you: needs you, stuck, working, done,
   idle, ended. Each shows its status as a glyph and a word (never color alone), what it's doing or its
