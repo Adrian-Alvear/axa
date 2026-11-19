@@ -14,7 +14,10 @@ export function copyToClipboard(text) {
   process.stdout.write(`\x1b]52;c;${Buffer.from(text).toString("base64")}\x07`);
   const tool = has("clip.exe") ? ["clip.exe", []] : process.platform === "darwin" ? ["pbcopy", []] : has("wl-copy") ? ["wl-copy", []] : has("xclip") ? ["xclip", ["-selection", "clipboard"]] : null;
   if (!tool) return;
-  try { const c = spawn(tool[0], tool[1], { stdio: ["pipe", "ignore", "ignore"] }); c.on("error", () => {}); c.stdin.end(text); } catch {}
+  // clip.exe reads UTF-8 as the console code page ("2–3" became "2ΓÇô3") but takes UTF-16LE as is; no
+  // BOM, or the BOM itself ends up in the clipboard
+  const data = tool[0] === "clip.exe" ? Buffer.from(text, "utf16le") : text;
+  try { const c = spawn(tool[0], tool[1], { stdio: ["pipe", "ignore", "ignore"] }); c.on("error", () => {}); c.stdin.end(data); } catch {}
 }
 
 // Read the clipboard: { image: true } (saved to `file`), { text }, or null

@@ -45,28 +45,123 @@ const wrap = (text, w) => {
   return out;
 };
 
-// A chat message as lines: markdown cleaned up, line breaks and bullets kept (wrapped under their text)
-export function wrapMsg(text, w) {
+// Inline markdown to plain text: `code` kept without backticks (and left alone inside), links -> their
+// text, **bold** / __bold__ and *italic* / _italic_ markers dropped. snake_case, file globs (*.mjs) and
+// bullets are not emphasis and stay as they are.
+export function mdInline(s) {
+  const code = [];
+  s = String(s ?? "").replace(/`+([^`]*?)`+/g, (_, c) => `\u0000${code.push(c) - 1}\u0000`).replace(/`/g, "");
+  s = s.replace(/\[([^\]]+)\]\([^)\s]*\)/g, "$1").replace(/\*\*/g, "");
+  s = s.replace(/(^|[^\w])__(?=\S)(.+?)(?<=\S)__(?![\w])/g, "$1$2");
+  s = s.replace(/(^|[\s(\["'])([*_])(?=[^\s*_./\\])([^*_\n]*?[^\s*_])\2(?=$|[\s.,;:!?)\]"'])/g, "$1$3");
+  return s.replace(/\u0000(\d+)\u0000/g, (_, i) => code[i]);
+}
+
+// Split a string into pieces of at most w columns (a word longer than its column is cut, not lost)
+const hardSplit = (word, w) => {
+  const out = [];
+  let cur = "", cw = 0;
+  for (const ch of word) { const c = width(ch); if (cw + c > w && cur) { out.push(cur); cur = ""; cw = 0; } cur += ch; cw += c; }
+  if (cur) out.push(cur);
+  return out;
+};
+// Word-wrap plain text to w columns; the first line starts after `lead`, the rest after `hang`
+const wrapWords = (text, w, lead = "", hang = "") => {
+  const out = [];
+  let cur = lead;
+  const fresh = () => cur === lead || cur === hang;
+  for (const word of text.replace(/\s+/g, " ").trim().split(" ")) {
+    if (!word) continue;
+    const room = w - width(out.length ? hang : lead);
+    for (const piece of width(word) > room && room > 0 ? hardSplit(word, room) : [word]) {
+      if (!fresh() && width(cur) + 1 + width(piece) > w) { out.push(cur.trimEnd()); cur = hang; }
+      cur += (fresh() ? "" : " ") + piece;
+    }
+  }
+  out.push(cur.trimEnd());
+  return out;
+};
+
+// ---------- markdown tables ----------
+const TABLE_SEP = /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/;
+const isTableStart = (lines, i) => lines[i].includes("|") && lines[i + 1] != null && lines[i + 1].includes("|") && TABLE_SEP.test(lines[i + 1]);
+const tableCells = (l) => l.trim().replace(/^\|/, "").replace(/(?<!\\)\|$/, "").split(/(?<!\\)\|/).map((c) => mdInline(c.replace(/\\\|/g, "|")).replace(/\s+/g, " ").trim());
+// A GitHub table as [text, role] lines at most w wide: an aligned grid when the columns fit (shrinking
+// the widest first, none under 8), stacked cards (first cell as a title, then "header: value") otherwise
+export function tableLines(head, rows, w) {
+  const n = head.length, SEP = " │ ";
+  rows = rows.map((r) => Array.from({ length: n }, (_, i) => r[i] ?? ""));
+  const avail = w - 3 * (n - 1);
+  const cols = head.map((h, i) => Math.max(1, width(h), ...rows.map((r) => width(r[i]))));
+  const fits = cols.reduce((a, b) => a + b, 0) <= avail;
+  if (fits || (n <= 4 && avail >= 8 * n)) {
+    if (!fits) {
+      // take a column at a time off the widest (never under 8) until the row fits
+      let over = cols.reduce((a, b) => a + b, 0) - avail;
+      while (over > 0) { const top = Math.max(...cols); const i = cols.indexOf(top); cols[i]--; over--; }
+    }
+    // a column too narrow for its words (up to 12 wide) would chop them: cards read better
+    const longest = (i) => Math.min(12, Math.max(0, ...[head[i], ...rows.map((r) => r[i])].flatMap((c) => c.split(" ").map(width))));
+    if (!fits && cols.some((c, i) => c < longest(i))) return tableCards(head, rows, w);
+    const cellLines = (r) => r.map((c, i) => wrapWords(c, cols[i]));
+    const rowOut = (r) => {
+      const cl = cellLines(r), h = Math.max(...cl.map((x) => x.length));
+      return Array.from({ length: h }, (_, k) => cl.map((x, i) => (x[k] ?? "") + " ".repeat(cols[i] - width(x[k] ?? ""))).join(SEP).trimEnd());
+    };
+    const body = rows.map(rowOut), gap = body.some((b) => b.length > 1);
+    const out = rowOut(head).map((l) => [l, "head"]);
+    out.push([cols.map((c) => "─".repeat(c)).join("─┼─"), "dim"]);
+    body.forEach((b, k) => { if (k && gap) out.push(["", null]); for (const l of b) out.push([l, null]); });
+    return out;
+  }
+  return tableCards(head, rows, w);
+}
+function tableCards(head, rows, w) {
+  const n = head.length, out = [];
+  rows.forEach((r, k) => {
+    if (k) out.push(["", null]);
+    for (const l of wrapWords(r[0] || "—", w)) out.push([l, "head"]);
+    for (let i = 1; i < n; i++) {
+      if (!r[i]) continue;
+      const lead = `  ${head[i] || `#${i + 1}`}: `;
+      for (const l of wrapWords(r[i], w, lead, "    ")) out.push([l, null]);
+    }
+  });
+  return out;
+}
+
+// A chat message as [text, role] lines (role null: the message's own color; "head" for table headers
+// and card titles, "dim" for rules): markdown cleaned up, line breaks and bullets kept (wrapped under
+// their text), tables drawn as a grid or cards
+export function msgLines(text, w) {
   const outL = [];
+  const push = (t, role = null) => outL.push([t, role]);
+  const blank = () => { if (outL.length && outL.at(-1)[0] !== "") push(""); };
   let inCode = false;
-  for (let raw of String(text ?? "").replace(/\r/g, "").split("\n")) {
+  const lines = String(text ?? "").replace(/\r/g, "").split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    let raw = lines[i];
     if (/^\s*```/.test(raw)) { inCode = !inCode; continue; }
-    if (inCode) { outL.push("  " + cut(raw.replace(/\t/g, "  "), w - 2)); continue; }
-    raw = raw.replace(/\*\*|__|`/g, "").replace(/^#{1,6}\s*/, "").replace(/\[([^\]]+)\]\([^)]+\)/g, "$1");
-    if (!raw.trim()) { if (outL.length && outL.at(-1) !== "") outL.push(""); continue; }
+    if (inCode) { push("  " + cut(raw.replace(/\t/g, "  "), w - 2)); continue; }
+    if (isTableStart(lines, i)) {
+      const head = tableCells(raw), rows = [];
+      for (i += 2; i < lines.length && lines[i].trim() && lines[i].includes("|"); i++) rows.push(tableCells(lines[i]));
+      i--;
+      blank();
+      for (const l of tableLines(head, rows, w)) outL.push(l);
+      if (i + 1 < lines.length && lines[i + 1].trim()) push("");
+      continue;
+    }
+    raw = raw.replace(/^#{1,6}\s+/, "");
+    if (!raw.trim()) { blank(); continue; }
     const m = /^(\s*)([-*•]|\d+[.)])\s+(.*)$/.exec(raw);
     const lead = m ? `${m[1]}${/\d/.test(m[2]) ? m[2] : "•"} ` : "", hang = " ".repeat(width(lead));
-    const body = (m ? m[3] : raw).replace(/\s+/g, " ").trim();
-    let cur = lead;
-    for (const word of body.split(" ")) {
-      if (width(cur) + width(word) + 1 > w && cur.trim()) { outL.push(cur.trimEnd()); cur = hang + word; }
-      else cur += (cur.trim() && cur !== lead ? " " : "") + word;
-    }
-    outL.push(cur.trimEnd());
+    for (const l of wrapWords(mdInline(m ? m[3] : raw), w, lead, hang)) push(l);
   }
-  while (outL.at(-1) === "") outL.pop();
+  while (outL.length && outL.at(-1)[0] === "") outL.pop();
   return outL;
 }
+export const wrapMsg = (text, w) => msgLines(text, w).map(([t]) => t);
 
 // A message's whole text for copying: markdown cleaned like wrapMsg, but not wrapped
 export const msgText = (text) => wrapMsg(text, Infinity).join("\n");
@@ -448,7 +543,7 @@ export function controlRows(ctx, W, B) {
     if (m.role === "system") { for (const l of wrapMsg(`⚙ supervisor · ${m.text}`, iw - 6).map((l, i) => (i ? "  " + l : l))) convo.push([l, "dim", k]); continue; }
     convo.push(["", "", k]);
     convo.push([m.role === "you" ? "You" : `${I.axa} AXA`, m.role === "you" ? "you" : "claude", k]);
-    for (const l of wrapMsg(m.text, iw - 4)) convo.push([l, m.role === "you" ? "text" : "idle", k]);
+    for (const [l, role] of msgLines(m.text, iw - 4)) convo.push([l, role || (m.role === "you" ? "text" : "idle"), k]);
   }
   const room = chH - 5 - actRow.length - statRows.length;
   const maxScroll = Math.max(0, convo.length - room);
