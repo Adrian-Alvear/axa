@@ -1,0 +1,174 @@
+// The event log (~/.axa/events.jsonl, written by AXA's hooks in every session it starts) and what the
+// daemon learns from it: each session's status, its helper agents, and its runs (one per instruction).
+import { appendFileSync, chmodSync, closeSync, existsSync, mkdirSync, openSync, readSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { files, home } from "../paths.mjs";
+import { clip } from "./text.mjs";
+
+const HISTORY_BYTES = 4 * 1024 * 1024; // replayed on start and to new web clients
+const MAX_LOG_BYTES = 50 * 1024 * 1024; // past this, the log moves to events.1.jsonl (one old copy kept)
+const STUCK_MS = (Number(process.env.AXA_STUCK_MINUTES) || 20) * 60_000;
+const APPROVER_MS = 75_000; // longer than the approver hook's own timeout
+
+// The log holds prompts, commands and reports: only you can read it
+mkdirSync(home, { recursive: true, mode: 0o700 });
+if (!existsSync(files.log)) writeFileSync(files.log, "", { mode: 0o600 });
+try { chmodSync(home, 0o700); chmodSync(files.log, 0o600); } catch {}
+
+export function logEvent(ev) {
+  try { appendFileSync(files.log, JSON.stringify({ ts: Date.now(), ...ev }) + "\n"); } catch {}
+}
+export function readRange(start, end) {
+  if (end <= start) return "";
+  const fd = openSync(files.log, "r");
+  try { const buf = Buffer.alloc(end - start); readSync(fd, buf, 0, buf.length, start); return buf.toString("utf8"); } finally { closeSync(fd); }
+}
+
+// ---------- status per session ----------
+const status = new Map(); // terminal -> { status, doing, report, error, at, inflight, asking, session, helpers, ... }
+export function statusOf(id) {
+  const s = status.get(id);
+  if (!s) return null;
+  const out = { ...s, helpers: helpersOf(id) };
+  // AXA's approver answers within seconds; a request still open after that is on screen for you
+  if (s.status === "working" && s.asking && Date.now() - s.asking > APPROVER_MS) return { ...out, status: "waiting" };
+  if (s.status === "working" && s.inflight?.size && Date.now() - s.at > STUCK_MS) {
+    const [first] = s.inflight.values();
+    return { ...out, status: "stuck", stuck_minutes: Math.round((Date.now() - first.since) / 60_000) };
+  }
+  return out;
+}
+
+let onChat = () => {};
+export const onChatSeen = (fn) => (onChat = fn);
+
+function track(e) {
+  if (!e?.terminal) return;
+  // Only a session's own start (or /clear) names its chat, not a `claude -p` run inside it
+  if (e.session && e.event === "SessionStart" && e.role && e.source !== "compact") onChat(e.terminal, e.session);
+  const s = status.get(e.terminal) || { inflight: new Map() };
+  s.at = e.ts;
+  if (e.session && e.role) s.session = e.session;
+  switch (e.event) {
+    case "SessionStart": s.status = "ready"; s.inflight.clear(); break;
+    case "UserPromptSubmit": Object.assign(s, { status: "working", doing: "reading the instruction", tool: undefined, error: undefined, asking: null, stopAt: null, gateAt: null }); s.inflight.clear(); break;
+    case "PreToolUse":
+      if (e.agent_id) break; // a helper's step: tracked under its helper
+      Object.assign(s, { status: "working", doing: [e.tool, e.summary].filter(Boolean).join(" · "), tool: e.tool, skill: e.skill });
+      if (e.tool_use_id) s.inflight.set(e.tool_use_id, { tool: e.tool, since: e.ts });
+      break;
+    case "PostToolUse": if (s.status === "waiting") s.status = "working"; s.asking = null; s.inflight.delete(e.tool_use_id); break;
+    case "PostToolUseFailure": s.error = [e.tool, e.error].filter(Boolean).join(": "); s.asking = null; s.inflight.delete(e.tool_use_id); break;
+    // A permission request goes to AXA's approver first (hooks/approver.mjs); a session only waits on you
+    // when the approver escalates, or the prompt is still open after APPROVER_MS
+    case "PermissionRequest":
+      if (e.role === "worker") Object.assign(s, { status: "working", asking: e.ts, doing: `AXA reviewing · ${[e.tool, e.summary].filter(Boolean).join(" ")}` });
+      else Object.assign(s, { status: "waiting", doing: `needs approval · ${[e.tool, e.summary].filter(Boolean).join(" ")}` });
+      break;
+    case "AxaDecision":
+      s.asking = null;
+      if (e.decision === "escalate") Object.assign(s, { status: "waiting", doing: `needs your approval · ${e.reason}` });
+      else s.doing = `AXA ${e.decision === "allow" ? "approved" : "declined"} · ${e.reason}`;
+      break;
+    case "Notification": if (/permission/i.test(e.notification_type || e.message || "")) Object.assign(s, { status: "waiting", asking: null, doing: e.message }); break;
+    case "Stop":
+      // AXA's verify gate sent it back to check its work (the two hooks log in either order)
+      if (s.gateAt && Math.abs(e.ts - s.gateAt) < 10_000) { Object.assign(s, { gateAt: null, status: "working", doing: "verify gate: checking its work before reporting" }); break; }
+      Object.assign(s, { stopAt: e.ts, status: "done", doing: undefined, tool: undefined, skill: undefined, asking: null });
+      s.inflight.clear();
+      if (e.message) s.report = e.message;
+      break;
+    case "VerifyGate":
+      if (s.stopAt && e.ts - s.stopAt < 10_000) s.stopAt = null; else s.gateAt = e.ts;
+      Object.assign(s, { status: "working", doing: "verify gate: checking its work before reporting" });
+      break;
+    // You answered its prompt: declining stops the step and Claude waits for you
+    case "UserAnswer":
+      s.asking = null;
+      if (/^(?:no\b|continue without|cancel|deny|reject|don'?t)/i.test(e.answer || "")) { Object.assign(s, { status: "ready", doing: `you declined (${e.answer})` }); s.inflight.clear(); }
+      else Object.assign(s, { status: "working", doing: `you answered: ${e.answer}` });
+      break;
+  }
+  status.set(e.terminal, s);
+  trackHelpers(e);
+  trackRun(e, s);
+}
+
+// ---------- helper agents per session: spawned -> running -> done ----------
+const helpers = new Map(), spawnQueue = new Map(); // terminal -> [helper] / [pending Agent calls]
+function trackHelpers(e) {
+  const t = e.terminal, at = e.ts || Date.now();
+  if (e.event === "PreToolUse" && !e.agent_id && (e.tool === "Agent" || e.tool === "Task")) {
+    spawnQueue.set(t, [...(spawnQueue.get(t) || []), { desc: e.summary, type: e.subagent_type }].slice(-10));
+  } else if (e.event === "PreToolUse" && e.agent_id) {
+    const h = (helpers.get(t) || []).find((x) => x.id === e.agent_id);
+    if (h) { h.calls++; h.doing = [e.tool, e.summary].filter(Boolean).join(" · "); h.at = at; }
+  } else if (e.event === "SubagentStart") {
+    const sp = (spawnQueue.get(t) || []).shift();
+    helpers.set(t, [...(helpers.get(t) || []), { id: e.agent_id, type: String(e.agent_type || sp?.type || "helper"), desc: clip(sp?.desc || "", 120), status: "running", start: at, at, calls: 0 }].slice(-12));
+  } else if (e.event === "SubagentStop") {
+    const h = (helpers.get(t) || []).find((x) => x.id === e.agent_id);
+    if (h) Object.assign(h, { status: "done", end: at, at, doing: undefined, report: clip(e.message, 400) });
+  } else if (e.event === "UserPromptSubmit") {
+    // a new instruction: forget helpers that finished long ago
+    helpers.set(t, (helpers.get(t) || []).filter((h) => h.status === "running" || at - h.at < 30 * 60_000));
+  }
+}
+const helpersOf = (id) => (helpers.get(id) || []).map((h) => ({ ...h }));
+
+// ---------- runs: each instruction a session got, from the prompt to its result ----------
+const runs = [], openRuns = new Map();
+function trackRun(e, s) {
+  const r = openRuns.get(e.terminal);
+  if (e.event === "UserPromptSubmit") {
+    if (/^\s*<task-notification>/.test(e.prompt || "")) return;
+    if (r) { r.status = "replaced"; r.end = e.ts; }
+    const run = { id: `${e.terminal}-${e.ts}`, terminal: e.terminal, cwd: e.cwd, role: e.role, prompt: clip(e.prompt, 400), start: e.ts, steps: 0, helpers: 0, approvals: 0, declined: 0, escalated: 0, refused: 0, gate: 0, failures: 0, answers: [], status: "running" };
+    runs.push(run); openRuns.set(e.terminal, run);
+    if (runs.length > 1000) runs.splice(0, runs.length - 1000);
+    return;
+  }
+  if (!r) return;
+  switch (e.event) {
+    case "PreToolUse": if (!e.agent_id) { r.steps++; if (e.tool === "Agent" || e.tool === "Task") r.helpers++; } break;
+    case "PostToolUseFailure": r.failures++; break;
+    case "AxaDecision": if (e.decision === "allow") r.approvals++; else if (e.decision === "deny") r.declined++; else r.escalated++; break;
+    case "PolicyDecision": if (e.decision === "deny") r.refused++; break;
+    case "VerifyGate": r.gate++; break;
+    case "UserAnswer": r.answers.push(clip(e.answer, 80)); break;
+    case "Stop": if (s.status === "done") { Object.assign(r, { status: "done", end: e.ts, report: clip(e.message, 600) }); openRuns.delete(e.terminal); } break;
+  }
+}
+export const runsSince = (since, limit = 200) => runs.filter((r) => (r.end || r.start) >= since).slice(-limit).reverse();
+
+// ---------- tail the log ----------
+let offset = statSync(files.log).size, partial = "";
+const listeners = new Set(); // (line) => void, for the web console's live stream
+export const onLine = (fn) => { listeners.add(fn); return () => listeners.delete(fn); };
+export const historyLines = () => {
+  const start = Math.max(0, offset - HISTORY_BYTES);
+  const lines = readRange(start, offset).split("\n");
+  if (start > 0) lines.shift(); // the cut-off first line
+  return lines.filter((l) => l.trim());
+};
+// Rebuild statuses from recent history (sessions in tmux keep running across daemon restarts)
+for (const line of historyLines()) { try { track(JSON.parse(line)); } catch {} }
+
+export function startTail() {
+  setInterval(() => {
+    let size;
+    try { size = statSync(files.log).size; } catch { return; }
+    if (size < offset) offset = 0; // truncated or rotated
+    if (size === offset) return;
+    const lines = (partial + readRange(offset, size)).split("\n");
+    offset = size;
+    partial = lines.pop();
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      try { track(JSON.parse(line)); } catch {}
+      for (const fn of listeners) fn(line);
+    }
+    if (size > MAX_LOG_BYTES) {
+      try { renameSync(files.log, files.log.replace(/\.jsonl$/, ".1.jsonl")); writeFileSync(files.log, "", { mode: 0o600 }); offset = 0; partial = ""; } catch {}
+    }
+  }, 250);
+}

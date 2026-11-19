@@ -1,8 +1,8 @@
 {
-  "name": "axa-console",
+  "name": "axa",
   "private": true,
   "type": "module",
-  "description": "AXA console server: live agent map + embedded Claude Code terminals",
+  "description": "AXA: a hub for your Claude Code sessions, chats and agents",
   "dependencies": {
     "@xterm/addon-fit": "^0.10.0",
     "@xterm/addon-search": "^0.15.0",
@@ -15,5 +15,11 @@
   },
   "allowScripts": {
     "node-pty@1.1.0": true
+  },
+  "bin": {
+    "axa": "bin/axa"
+  },
+  "engines": {
+    "node": ">=18"
   }
 }

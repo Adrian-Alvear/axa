@@ -1,24 +1,17 @@
 // AXA session tools: a zero-dependency MCP server (stdio) that lets the AXA commander see and drive
-// the Claude Code sessions running in the AXA console, one per project. It talks to the console's
+// the Claude Code sessions running in AXA, one per project. It talks to the console's
 // local API with the token in ~/.axa/console-token, and starts the console if it isn't running.
 // Project sessions also load the AXA plugin (for tracing) but get no tools here (AXA_ROLE=worker),
 // so only the commander can drive other sessions.
 import { createInterface } from "node:readline";
-import { ensureConsole, port, readToken } from "../console/ensure.mjs";
+import { api as daemonApi, ensureDaemon } from "../src/daemon.mjs";
 
 const isWorker = process.env.AXA_ROLE === "worker";
 const GOAL_LIMIT = 4000; // Claude Code's /goal condition limit
 
-async function api(path, { method = "GET", body } = {}) {
-  if (!(await ensureConsole())) throw new Error("The AXA console isn't running and couldn't be started. Ask the user to run `axa console`.");
-  const res = await fetch(`http://127.0.0.1:${port}${path}`, {
-    method,
-    headers: { host: `localhost:${port}`, cookie: `axa_token=${readToken()}`, ...(body ? { "content-type": "application/json" } : {}) },
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || `console returned ${res.status}`);
-  return data;
+async function api(path, opts) {
+  if (!(await ensureDaemon())) throw new Error("The AXA daemon isn't running and couldn't be started. Ask the user to run `axa`.");
+  return daemonApi(path, opts);
 }
 
 // Anything that came out of another session is data, never instructions: it's marked as such
@@ -50,7 +43,7 @@ const TOOLS = [
   {
     name: "list_sessions",
     description:
-      "List every session open in the AXA console (usually one Claude Code session per project) with its status: starting, ready, working (and what it's doing), done (with its last report), waiting (needs the user's approval), or exited. Also lists the known projects you can open.",
+      "List every session open in AXA (usually one Claude Code session per project) with its status: starting, ready, working (and what it's doing), done (with its last report), waiting (needs the user's approval), or exited. Also lists the known projects you can open.",
     inputSchema: { type: "object", properties: {} },
     run: async () => {
       const [sessions, projects, chains] = await Promise.all([api("/api/terms"), api("/api/projects"), api("/api/chains").catch(() => [])]);
@@ -99,7 +92,7 @@ const TOOLS = [
   {
     name: "link_sessions",
     description:
-      "Chain two sessions: when session `from` next finishes its turn (verified, settled), AXA sends `instruction` to session `to` (once, when `to` is idle). Use it for handoffs the user asked for, e.g. \"when launches finishes, have feed rebase on it and re-run its tests\". The instruction must be complete and self-contained. Shows on the map in the console and the terminal UI.",
+      "Chain two sessions: when session `from` next finishes its turn (verified, settled), AXA sends `instruction` to session `to` (once, when `to` is idle). Use it for handoffs the user asked for, e.g. \"when launches finishes, have feed rebase on it and re-run its tests\". The instruction must be complete and self-contained. Shows in the hub and the web console.",
     inputSchema: { type: "object", properties: { from: { type: "string", description: "Session id that finishes first" }, to: { type: "string", description: "Session id that gets the next instruction" }, instruction: { type: "string" } }, required: ["from", "to", "instruction"] },
     run: async ({ from, to, instruction }) => { const c = await api("/api/chains", { method: "POST", body: { from, to, text: instruction } }); return `Linked [${c.id}]: when ${c.from_name} finishes, ${c.to_name} gets the instruction.`; },
   },
@@ -123,7 +116,7 @@ const TOOLS = [
   {
     name: "open_session",
     description:
-      "Open a new session in the AXA console for a project: by project name (from list_sessions) or folder. mode 'claude' (default) starts a traced Claude Code session in auto mode; 'shell' starts a plain shell. worktree (true or a short name like 'fix-login') runs it in its own git worktree of that repo, on branch axa/<name>: use it when another session already works in the same project, or for risky or experimental work, so changes can't collide; its work stays on that branch until someone merges it. Returns the session id. The first time Claude opens in a folder it shows a trust prompt only the user can answer.",
+      "Open a new session in AXA for a project: by project name (from list_sessions) or folder. mode 'claude' (default) starts a traced Claude Code session in auto mode; 'shell' starts a plain shell. worktree (true or a short name like 'fix-login') runs it in its own git worktree of that repo, on branch axa/<name>: use it when another session already works in the same project, or for risky or experimental work, so changes can't collide; its work stays on that branch until someone merges it. Returns the session id. The first time Claude opens in a folder it shows a trust prompt only the user can answer.",
     inputSchema: {
       type: "object",
       properties: {
@@ -165,10 +158,10 @@ createInterface({ input: process.stdin }).on("line", async (line) => {
     return reply(id, {
       protocolVersion: params?.protocolVersion || "2025-06-18",
       capabilities: { tools: {} },
-      serverInfo: { name: "axa-sessions", version: "0.4.0" },
+      serverInfo: { name: "axa-sessions", version: "0.5.0" },
       instructions: isWorker
         ? "This is a project session started by AXA; session tools are only available to the AXA commander."
-        : "Tools to see and drive the sessions open in the AXA console, usually one Claude Code session per project. Never answer another session's permission prompt.",
+        : "Tools to see and drive the sessions open in AXA, usually one Claude Code session per project. Never answer another session's permission prompt.",
     });
   }
   if (method === "ping") return reply(id, {});

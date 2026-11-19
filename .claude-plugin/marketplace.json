@@ -1,8 +1,8 @@
 {
   "name": "axa",
-  "description": "AXA: a customizable orchestrator + live agent console for Claude Code.",
+  "description": "AXA: a hub and commander for your Claude Code sessions.",
   "owner": { "name": "Adrian Alvear", "url": "https://github.com/Adrian-Alvear" },
   "plugins": [
-    { "name": "axa", "source": "./", "description": "Orchestrator skill, builder/reviewer/researcher agents, event hooks, and the live console." }
+    { "name": "axa", "source": "./", "description": "Orchestrator skill, builder/reviewer/researcher agents, event hooks, the terminal hub and the web console." }
   ]
 }

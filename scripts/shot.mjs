@@ -3,7 +3,7 @@
 // Zero dependencies: drives an installed Chrome/Chromium headless over the DevTools protocol
 // (needs Node 22+ for the built-in WebSocket).
 //   node scripts/shot.mjs [url] [outdir] [--wait=ms] [--eval=js]
-// url defaults to the AXA console on $AXA_PORT (4747), unlocked with the token in $AXA_HOME so the
+// url defaults to the AXA web console on $AXA_PORT (4747), unlocked with the token in $AXA_HOME so the
 // page opens with its cookie; outdir defaults to ./shots; the page gets --wait ms (default 3500) to
 // load its live data; --eval runs JavaScript in the page before the shot (e.g. to open a dialog). Writes desktop.png (1440x900) and phone.png (390x844, 2x, mobile).
 // Set AXA_CHROME to pick the browser binary.

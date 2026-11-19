@@ -1,5 +1,5 @@
 {
-  "description": "AXA: log every prompt, tool, skill and subagent event to ~/.axa/events.jsonl for the console",
+  "description": "AXA: log every prompt, tool, skill and subagent event to ~/.axa/events.jsonl for the AXA hub",
   "hooks": {
     "SessionStart": [
       {
