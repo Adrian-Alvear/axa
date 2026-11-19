@@ -8,7 +8,8 @@ import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { files, pluginRoot, port, srcDir } from "../paths.mjs";
-import { activity, historyLines, logEvent, onChatSeen, onLine, runsSince, startTail, statusOf } from "./events.mjs";
+import { activity, historyLines, logEvent, onChatSeen, onCommanderReply, onLine, runsSince, startTail, statusOf } from "./events.mjs";
+import * as V from "./voice.mjs";
 import * as S from "./sessions.mjs";
 import { addLink, listLinks, removeLink, startSupervisor } from "./supervisor.mjs";
 import { listAgents, listProjects, readRoster } from "./catalog.mjs";
@@ -33,6 +34,12 @@ const fromUser = (req) => (req.headers["sec-fetch-site"] === "same-origin" && re
 
 S.setStatusSource(statusOf);
 onChatSeen(S.noteChat);
+// AXA's voice: only the commander's own session, only when voice is on (re-read from ui.json each time)
+onCommanderReply((id, message) => {
+  if (S.listSessions().find((s) => s.id === id)?.mode !== "axa" || !V.settings().on) return;
+  const text = V.toSpeech(safe(message));
+  if (text) V.speak(text);
+});
 
 // ---------- http ----------
 const json = (res, code, body) => { res.writeHead(code, { "content-type": "application/json" }); res.end(JSON.stringify(body)); };
@@ -98,6 +105,14 @@ const routes = [
     if (r.ok && fromUser(req)) S.noteInput(m[1]);
     return [r.ok ? 200 : 409, r];
   }],
+  ["GET", /^\/api\/voice$/, async () => [200, await V.info()]],
+  ["POST", /^\/api\/voice\/stop$/, () => { V.stop(); return [200, {}]; }],
+  ["POST", /^\/api\/voice\/test$/, () => {
+    const b = V.detect();
+    if (!b.name) return [409, { error: b.why }];
+    V.speak("AXA voice check.");
+    return [200, { backend: b.name }];
+  }],
   // the terminal UI says when you type into a session (the supervisor waits until you stop)
   ["POST", /^\/api\/terms\/([\w-]+)\/typing$/, (m) => { S.noteInput(m[1]); return [200, {}]; }],
 ];
@@ -162,7 +177,7 @@ server.on("error", (err) => {
   if (err.code === "EADDRINUSE") { console.log(`AXA is already running on port ${port}`); process.exit(0); }
   throw err;
 });
-for (const sig of ["SIGINT", "SIGTERM"]) process.on(sig, () => { S.detachAll(); try { unlinkSync(files.pid); } catch {} process.exit(0); });
+for (const sig of ["SIGINT", "SIGTERM"]) process.on(sig, () => { V.stop(); S.detachAll(); try { unlinkSync(files.pid); } catch {} process.exit(0); });
 
 server.listen(port, "127.0.0.1", () => {
   writeFileSync(files.pid, String(process.pid));

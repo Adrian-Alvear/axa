@@ -21,7 +21,8 @@ import { pasteFile, readClipboard } from "./clipboard.mjs";
 
 const out = process.stdout;
 const PREFIXES = { "C-b": 0x02, "C-a": 0x01, "C-g": 0x07, "C-\\": 0x1c };
-const DEFAULTS = { theme: "axa", prefix: "C-b", bell: true, motion: "full" };
+const DEFAULTS = { theme: "axa", prefix: "C-b", bell: true, motion: "full", voice: "off", voiceName: "", voiceRate: 0 };
+const SPEEDS = { "-2": "slowest", "-1": "slow", 0: "normal", 1: "fast", 2: "fastest" };
 const MOTIONS = ["full", "reduced", "off"];
 const PANELS = ["control", "sessions", "chats", "agents", "projects"];
 const TITLES = { control: "Control", sessions: "Sessions", chats: "Chats", agents: "Agents", projects: "Projects" };
@@ -39,6 +40,9 @@ export async function runTui() {
   const envReduced = /^(1|true|yes)$/i.test(process.env.AXA_REDUCED_MOTION || "");
   const motionNow = () => { const m = MOTIONS.includes(cfg.motion) ? cfg.motion : "full"; return m === "full" && envReduced ? "reduced" : m; };
   setMotion(motionNow());
+  // voice: the daemon reads the commander's replies aloud; AXA_VOICE=1/0 forces it on/off
+  const voiceEnv = process.env.AXA_VOICE === "1" ? "on" : process.env.AXA_VOICE === "0" ? "off" : null;
+  const voiceOn = () => (voiceEnv || cfg.voice) === "on";
   const noColor = !!process.env.NO_COLOR || process.env.TERM === "dumb";
   const prefixByte = () => String.fromCharCode(PREFIXES[cfg.prefix] ?? 0x02);
   const keyName = () => cfg.prefix.replace("C-", "Ctrl-");
@@ -369,7 +373,7 @@ export async function runTui() {
       cmdScroll = ctl.cmdScroll;
       // one full-width status bar under it: mode · model · context · tokens · agents · sessions
       const c = commander();
-      rowsOut.push(c ? axaStatusLine(c, data.sessions, W, 1, { mode: ctl.cmdStatus.mode, on: "bar" })[0] : line([[" AXA is offline · press a to start it", "barDim"]], W, [], "bar"));
+      rowsOut.push(c ? axaStatusLine(c, data.sessions, W, 1, { mode: ctl.cmdStatus.mode, on: "bar", voice: voiceOn() })[0] : line([[" AXA is offline · press a to start it", "barDim"]], W, [], "bar"));
       return rowsOut;
     }
     if (W < 90) return listRows(panel, 1, y0, W, h);
@@ -600,13 +604,31 @@ export async function runTui() {
       if (s) { pendingSend = { id: s.id, text }; flash("the commander gets the task as soon as it's ready", 5000); openLive(data.sessions.find((x) => x.id === s.id) || s); }
     }, { lines: [{ text: clean(a.description), role: "dim" }] });
   }
-  function settings() {
+  const stopVoice = () => call("/api/voice/stop", { method: "POST" }).catch(() => {});
+  function toggleVoice() {
+    stopVoice();
+    if (voiceEnv) return flash(`voice is forced ${voiceEnv} by AXA_VOICE`);
+    cfg.voice = voiceOn() ? "off" : "on"; saveCfg();
+    flash(cfg.voice === "on" ? "voice on: AXA reads its replies aloud (Esc stops it)" : "voice off");
+  }
+  async function pickVoice(back) {
+    let v;
+    try { v = await call("/api/voice"); } catch (e) { flash(`couldn't ask the daemon: ${e.message}`); return back(); }
+    if (!v.backend) { flash(`no voice here: ${v.why}`, 6000); return back(); }
+    const opts = [{ label: "Default", hint: "the system's voice", value: "" }, ...v.voices.map((n) => ({ label: n, value: n }))];
+    pick(`Voice (${v.backend})`, opts, (o) => { cfg.voiceName = o.value; saveCfg(); back(); }, { selected: Math.max(0, opts.findIndex((o) => o.value === cfg.voiceName)) });
+  }
+  function settings(start = 0) {
     const opts = () => [
       { label: "Theme", hint: cfg.theme, value: "theme" },
       { label: "Prefix key", hint: keyName(), value: "prefix" },
       { label: "Icons", hint: cfg.icons === "nerd" ? "Nerd Font" : "plain Unicode", value: "icons" },
       { label: "Bell when a session needs you", hint: cfg.bell ? "on" : "off", value: "bell" },
       { label: "Motion (map animation)", hint: motionNow() + (envReduced && cfg.motion === "full" ? " (AXA_REDUCED_MOTION)" : ""), value: "motion" },
+      { label: "Voice (reads AXA's replies aloud)", hint: (voiceOn() ? "on" : "off") + (voiceEnv ? " (AXA_VOICE)" : ""), value: "voice" },
+      { label: "Voice name", hint: cfg.voiceName || "default", value: "voiceName" },
+      { label: "Voice speed", hint: SPEEDS[cfg.voiceRate] || "normal", value: "voiceRate" },
+      { label: "Test the voice", hint: "says \"AXA voice check.\"", value: "voiceTest" },
     ];
     const cycle = (arr, v) => arr[(arr.indexOf(v) + 1) % arr.length];
     const again = (selected) => pick("Settings (Enter changes)", opts(), (o) => {
@@ -615,10 +637,14 @@ export async function runTui() {
       if (o.value === "prefix") cfg.prefix = cycle(Object.keys(PREFIXES), cfg.prefix);
       if (o.value === "bell") cfg.bell = !cfg.bell;
       if (o.value === "motion") { cfg.motion = cycle(MOTIONS, MOTIONS.includes(cfg.motion) ? cfg.motion : "full"); setMotion(motionNow()); }
+      if (o.value === "voice") { if (voiceEnv) flash(`voice is forced ${voiceEnv} by AXA_VOICE`); else { cfg.voice = voiceOn() ? "off" : "on"; if (cfg.voice === "off") stopVoice(); } }
+      if (o.value === "voiceRate") cfg.voiceRate = cfg.voiceRate >= 2 ? -2 : (Math.round(Number(cfg.voiceRate)) || 0) + 1;
+      if (o.value === "voiceTest") call("/api/voice/test", { method: "POST" }).then(() => flash("speaking…"), (e) => flash(`no voice: ${e.message}`));
       saveCfg(); prevRows = [];
+      if (o.value === "voiceName") return pickVoice(() => again(opts().findIndex((x) => x.value === "voiceName")));
       again(opts().findIndex((x) => x.value === o.value));
     }, { selected, hint: `Enter changes · Esc done · saved in ${tilde(files.ui)}` });
-    again(0);
+    again(start);
   }
   function help() {
     const k = keyName();
@@ -630,6 +656,7 @@ export async function runTui() {
       { text: "  a   the AXA commander (opens it, or starts it)   n   new session (pick a folder)" },
       { text: "  /   filter the panel     y / x   answer the prompt in the yellow bar   !  go to it" },
       { text: "  o   web console          ,  settings             q   quit (sessions keep running)" },
+      { text: "  Control: m   voice on/off (AXA reads its replies aloud) · Esc stops it speaking" },
       { text: "" },
       { text: "Sessions panel", role: "head" },
       { text: "  Enter open live · d changes (diff) · g give a goal · v run checks · r rename · X close" },
@@ -649,6 +676,11 @@ export async function runTui() {
       { text: "  Ctrl+V or Alt+V   pastes an image from your clipboard if there is one (else its text)" },
       { text: "  On Control: press : then Alt+V (or Ctrl+V) to attach a clipboard image for the commander" },
       { text: "  Mouse: scroll goes to the session; drag selects and copies (Shift+drag: your terminal's own)" },
+      { text: "" },
+      { text: "Voice", role: "head" },
+      { text: "  AXA speaks the commander's finished replies (the short version) with your computer's own voices." },
+      { text: "  m on Control or , settings turns it on; pick the voice and speed there; AXA_VOICE=1/0 forces it." },
+      { text: "  To talk back, turn on Claude Code's hold-to-talk dictation (/config, \"voiceEnabled\") in the commander." },
       { text: "" },
       { text: `Settings: ${tilde(files.ui)}   ·   web console: axa web   ·   port ${port}`, role: "dim" },
     ]);
@@ -731,7 +763,9 @@ export async function runTui() {
         if (cur) openLive(cur); else openCommander();
         return true;
     }
+    if (k === ESC) stopVoice(); // Esc hushes AXA's voice
     if (zone === "chats" && k === ESC) { zone = "map"; return true; }
+    if (k === "m") { toggleVoice(); return true; }
     if (cur && { d: 1, g: 1, v: 1, r: 1, X: 1 }[k]) { ({ d: showDiff, g: giveGoal, v: runVerify, r: rename, X: closeSession })[k](cur); return true; }
     return false;
   }

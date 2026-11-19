@@ -65,6 +65,18 @@ Mission control for everything AXA runs, in one screen:
 
 It needs a window of about 100×26 or more; smaller, it shows the sessions list instead.
 
+### Voice
+
+AXA can read the commander's finished replies aloud, Jarvis-style, with your computer's own voices: `say` on
+macOS, Windows' built-in voices (System.Speech through `powershell.exe`) on Windows and WSL, `spd-say` or
+`espeak` on Linux. It's off by default: press `m` on Control (or turn on **Voice** in `,` settings, where you
+also pick the voice and speed and can test it). `AXA_VOICE=1` / `AXA_VOICE=0` forces it on or off. It says the
+short version (the first paragraph, code and tables replaced by "code on screen", paths and links by "a file
+path" / "a link") and ends with "The details are on screen." when there's more. `Esc` on Control stops it.
+The daemon does the speaking, so it works from the hub or the web console, and only the commander ever talks:
+never a worker session. To talk back, turn on Claude Code's own hold-to-talk dictation (`/config`,
+`"voiceEnabled": true`) in the commander's session.
+
 ## The other tabs
 
 | Panel | What's in it | Enter | Other keys |
@@ -165,4 +177,4 @@ cp roster.example.md ~/.axa/roster.md
 The roster holds the roles AXA uses (which agent, which model), house rules every agent follows,
 and your projects with notes. Settings for the hub are in `,` and saved in `~/.axa/ui.json`: theme (`axa`, the default on
 terminals with 24-bit color; `terminal`, your terminal's own 16 colors; `mono`), icons (Nerd Font
-glyphs if one is installed, else plain Unicode), prefix key and bell.
+glyphs if one is installed, else plain Unicode), prefix key, bell and voice (on/off, voice name, speed).

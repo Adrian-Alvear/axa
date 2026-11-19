@@ -40,6 +40,10 @@ export function statusOf(id) {
 
 let onChat = () => {};
 export const onChatSeen = (fn) => (onChat = fn);
+// The commander finished a turn (live events only, never the history replayed at start): its final reply
+let onReply = () => {};
+export const onCommanderReply = (fn) => (onReply = fn);
+const GATE_WAIT_MS = 1500; // the verify gate's event can land just after Stop and send it back to work
 
 // ---------- recent activity: the last events (for the hub's log) and events per minute (its chart) ----------
 const recent = []; // compact copies of the latest events
@@ -201,7 +205,13 @@ export function startTail() {
     partial = lines.pop();
     for (const line of lines) {
       if (!line.trim()) continue;
-      try { track(JSON.parse(line)); } catch {}
+      try {
+        const e = JSON.parse(line);
+        track(e);
+        if (e.event === "Stop" && e.role === "commander" && !e.agent_id && e.message && e.terminal) {
+          setTimeout(() => { const s = status.get(e.terminal); if (s?.status === "done" && s.stopAt === e.ts) onReply(e.terminal, e.message); }, GATE_WAIT_MS);
+        }
+      } catch {}
       for (const fn of listeners) fn(line);
     }
     if (size > MAX_LOG_BYTES) {
