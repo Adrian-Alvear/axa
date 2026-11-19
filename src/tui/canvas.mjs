@@ -45,6 +45,16 @@ export class Canvas {
   clear(col, row, n) {
     for (let c = Math.round(col); c < Math.round(col) + n; c++) if (c >= 0 && c < this.cols && row >= 0 && row < this.rows) { const i = row * this.cols + c; this.dots[i] = 0; this.text[i] = [" ", null]; }
   }
+  // a framed card of text cells: lines = [[text, sgr], ...]; style: round | heavy | double
+  box(col, row, w, h, sgr, lines = [], style = "round") {
+    const B = { round: "╭╮╰╯─│", heavy: "┏┓┗┛━┃", double: "╔╗╚╝═║" }[style];
+    col = Math.round(col); row = Math.round(row);
+    for (let r = 0; r < h; r++) this.clear(col, row + r, w);
+    this.put(col, row, B[0] + B[4].repeat(w - 2) + B[1], sgr);
+    for (let r = 1; r < h - 1; r++) { this.put(col, row + r, B[5], sgr); this.put(col + w - 1, row + r, B[5], sgr); }
+    this.put(col, row + h - 1, B[2] + B[4].repeat(w - 2) + B[3], sgr);
+    lines.forEach(([t, c], i) => { if (i < h - 2) this.put(col + 2, row + 1 + i, t, c); });
+  }
   render(base = "") {
     const out = [];
     const open = (sgr) => `\x1b[0${base ? ";" + base : ""}${sgr ? ";" + sgr : ""}m`;

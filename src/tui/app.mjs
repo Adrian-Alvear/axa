@@ -46,7 +46,7 @@ export async function runTui() {
   const sel = { control: 0, sessions: 0, chats: 0, agents: 0, projects: 0 }, scroll = { control: 0, sessions: 0, chats: 0, agents: 0, projects: 0 };
   const filter = { control: "", sessions: "", chats: "", agents: "", projects: "" };
   let act = null, ctlSel = null, focusInput = false, cmdInput = ""; // Control: activity, selected session, the commander box
-  let ctl = { mapHits: [], tableHits: [] };
+  let ctl = { mapHits: [], chatHits: [] }, zone = "map", chatSel = 0; // Control's focus: the map (sessions) or the recent chats
   let filtering = false; // typing into the focused panel's filter
   let pendingSend = null; // { id, text }: typed into a session as soon as it's ready (e.g. a commander just started)
   let prevStatus = null;
@@ -318,7 +318,7 @@ export async function runTui() {
   function footer() {
     if (screen === "live") return null; // a session keeps every row; notices show in its header
     if (toast && Date.now() < toast.until) return line([[` ${toast.text}`, "text"]], W, [], "bar");
-    const per = { control: focusInput ? [["⏎", "send to the commander"], ["Esc", "stop typing"]] : [["⏎", "open"], [":", "talk to AXA"], ["y/x", "answer"], ["d", "changes"], ["g", "goal"], ["X", "close"]], sessions: [["⏎", "open"], ["d", "changes"], ["g", "goal"], ["v", "checks"], ["r", "rename"], ["X", "close"]], chats: [["⏎", "resume"], ["/", "search"]], agents: [["⏎", "give a task"], ["/", "search"]], projects: [["⏎", "open"], ["n", "new"], ["w", "worktree"], ["s", "shell"]] }[PANELS[focus]];
+    const per = { control: focusInput ? [["⏎", "send to the commander"], ["Esc", "stop typing"]] : zone === "chats" ? [["⏎", "resume chat"], ["↑↓", "pick"], ["←", "back to the map"], [":", "talk to AXA"]] : [["⏎", "open"], ["↑↓", "pick session"], ["→", "chats"], [":", "talk to AXA"], ["y/x", "answer"], ["d", "changes"], ["X", "close"]], sessions: [["⏎", "open"], ["d", "changes"], ["g", "goal"], ["v", "checks"], ["r", "rename"], ["X", "close"]], chats: [["⏎", "resume"], ["/", "search"]], agents: [["⏎", "give a task"], ["/", "search"]], projects: [["⏎", "open"], ["n", "new"], ["w", "worktree"], ["s", "shell"]] }[PANELS[focus]];
     const segs = per.flatMap(([k, t]) => [[` ${k} `, "keycap"], [` ${t}  `, "barDim"]]);
     return line(segs, W, [[" Tab ", "keycap"], [" switch  ", "barDim"], [" a ", "keycap"], [" AXA  ", "barDim"], [" n ", "keycap"], [" new  ", "barDim"], [" ? ", "keycap"], [" help  ", "barDim"], [" q ", "keycap"], [" quit", "barDim"]], "bar");
   }
@@ -331,7 +331,7 @@ export async function runTui() {
     if (panel === "control") {
       if (W < 100 || h < 20) return [...listRows("sessions", 1, y0, W, h - 1), line([[" widen the window (100×26 or more) for the full control view", "dim"]], W)];
       const w = waitingOthers();
-      ctl = { sessions: data.sessions, act, selId: ctlSelected()?.id, focusInput, input: cmdInput, nameOf, question, yesOpt, noOpt, waiting: w[0], waitingCount: w.length, order: ctlOrder(), mapHits: [], tableHits: [], y0 };
+      ctl = { sessions: data.sessions, act, selId: ctlSelected()?.id, focusInput, input: cmdInput, nameOf, question, yesOpt, noOpt, waiting: w[0], waitingCount: w.length, order: ctlOrder(), chats: data.chats, zone, chatSel, mapHits: [], chatHits: [], y0, L: Math.round(W * 0.62) };
       return controlRows(ctl, W, h);
     }
     if (W < 90) return listRows(panel, 1, y0, W, h);
@@ -637,12 +637,19 @@ export async function runTui() {
     }
     const o = ctlOrder(), cur = ctlSelected(), i = Math.max(0, o.findIndex((s) => s.id === cur?.id));
     const go = (d) => { if (o.length) ctlSel = o[Math.max(0, Math.min(o.length - 1, i + d))].id; };
+    const nChats = Math.min(data.chats.length, 9);
     switch (k) {
       case ":": case "i": case "c": focusInput = true; return true;
-      case "\x1b[A": case "k": go(-1); return true;
-      case "\x1b[B": case "j": go(1); return true;
-      case "\r": case " ": if (cur) openLive(cur); else openCommander(); return true;
+      case "\x1b[C": case "l": zone = "chats"; return true;
+      case "\x1b[D": case "h": zone = "map"; return true;
+      case "\x1b[A": case "k": if (zone === "chats") chatSel = Math.max(0, chatSel - 1); else go(-1); return true;
+      case "\x1b[B": case "j": if (zone === "chats") chatSel = Math.min(Math.max(0, nChats - 1), chatSel + 1); else go(1); return true;
+      case "\r": case " ":
+        if (zone === "chats") { const c = data.chats[chatSel]; if (c) resumeChat(c); return true; }
+        if (cur) openLive(cur); else openCommander();
+        return true;
     }
+    if (zone === "chats" && k === ESC) { zone = "map"; return true; }
     if (cur && { d: 1, g: 1, v: 1, r: 1, X: 1 }[k]) { ({ d: showDiff, g: giveGoal, v: runVerify, r: rename, X: closeSession })[k](cur); return true; }
     return false;
   }
@@ -762,9 +769,16 @@ export async function runTui() {
       if (b !== 0 || up) return;
       const by = y - ctl.y0; // body row (0-based)
       const m = ctl.mapHits.find((h) => by - ctl.mapTop >= h.row0 && by - ctl.mapTop <= h.row1 && x - 2 >= h.col0 && x - 2 <= h.col1);
-      const t = ctl.tableHits.find((h) => by - ctl.tableTop === h.row);
-      const id = m?.id || t?.id;
+      const c = x <= Math.round(ctl.L * 0.55) && ctl.chatHits.find((h) => by - ctl.tableTop === h.row);
+      if (c) {
+        const again = Date.now() - lastClick.at < 450 && lastClick.i === `chat:${c.i}`;
+        zone = "chats"; chatSel = c.i; lastClick = { at: Date.now(), panel: "control", i: `chat:${c.i}` };
+        if (again && data.chats[c.i]) resumeChat(data.chats[c.i]);
+        return schedule();
+      }
+      const id = m?.id;
       if (!id) return;
+      zone = "map";
       if (id === "commander") return openCommander();
       const again = Date.now() - lastClick.at < 450 && lastClick.i === id;
       ctlSel = id; lastClick = { at: Date.now(), panel: "control", i: id };

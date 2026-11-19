@@ -69,69 +69,56 @@ function mapRows(ctx, cols, rows) {
   const cv = new Canvas(cols, rows);
   const S = (role) => sgrOf(role);
   const { sessions, selId } = ctx;
-  const cx = cv.W / 2, cy = cv.H / 2;
-  // blueprint grid
-  for (let y = 2; y < cv.H; y += 12) for (let x = 2; x < cv.W; x += 12) cv.set(x, y, S("frame"));
-  // orbits
-  const RX = cv.W * 0.33, RY = cv.H * 0.38;
-  cv.ring(cx, cy, RX * 0.45, RY * 0.45, S("frame"), 3);
-  cv.ring(cx, cy, RX, RY, S("frame"), 2);
-  cv.ring(cx, cy, RX * 1.12, RY * 1.12, S("frame"), 5);
-  // the core: AXA (the commander)
+  const ccol = cols / 2, crow = rows / 2; // the core, in cells
+  // a faint orbit behind everything
+  const RC = Math.max(14, cols * 0.34), RR = Math.max(3, rows / 2 - 3);
+  cv.ring(ccol * 2, crow * 4, RC * 2, RR * 4, S("frame"), 3);
+  cv.ring(ccol * 2, crow * 4, RC * 1.25, RR * 2.4, S("frame"), 5);
   const cmd = sessions.find((s) => s.mode === "axa" && s.alive);
   const coreRole = !cmd ? "dim" : cmd.status === "waiting" ? "wait" : cmd.status === "working" ? "work" : "accent";
-  const pulse = (Date.now() / 900) % 1;
-  cv.disc(cx, cy, 3, S(coreRole));
-  cv.ring(cx, cy, 7, 7, S(coreRole));
-  if (cmd?.status === "working") cv.ring(cx, cy, 9 + pulse * 6, 9 + pulse * 6, S("work"), 2);
-  else cv.ring(cx, cy, 11, 11, S("frame"), 2);
-  // sessions around it
   const ss = sessions.filter((s) => s.mode !== "axa" && s.alive);
-  const labels = [];
-  ss.forEach((s, i) => {
+  // where each session sits: evenly around the orbit, starting at the top
+  const nodes = ss.map((s, i) => {
     const a = -Math.PI / 2 + (2 * Math.PI * i) / Math.max(ss.length, 1) + (ss.length === 2 ? Math.PI / 2 : 0);
-    const nx = cx + RX * Math.cos(a), ny = cy + RY * Math.sin(a);
-    const [, , role] = look(s);
-    const live = s.status === "working" || s.status === "waiting";
-    // the link from the core
-    const dx = nx - cx, dy = ny - cy, d = Math.hypot(dx, dy) || 1;
-    const sx = cx + (dx / d) * 13, sy = cy + (dy / d) * 13, ex = nx - (dx / d) * 6, ey = ny - (dy / d) * 6;
-    cv.line(sx, sy, ex, ey, S(live ? role : "frame"), live ? {} : { on: 1, off: 2 });
-    if (s.status === "working") { const t = (Date.now() / 1400 + i * 0.37) % 1; cv.disc(sx + (ex - sx) * t, sy + (ey - sy) * t, 1, S("head")); }
-    // the node
-    cv.disc(nx, ny, 2, S(role));
-    cv.ring(nx, ny, 5, 5, S(s.id === selId ? "head" : role));
-    if (s.status === "waiting") cv.ring(nx, ny, 7 + pulse * 3, 7 + pulse * 3, S("wait"), 2);
-    // its helper agents, circling it
-    const hs = (s.helpers || []).filter((h) => h.status === "running");
-    hs.forEach((h, k) => { const b = Date.now() / 1200 + (2 * Math.PI * k) / hs.length; cv.disc(nx + 9 * Math.cos(b), ny + 9 * Math.sin(b) * 0.8, 1, S("violet")); });
-    labels.push({ s, col: nx / 2, row: ny / 4, right: nx >= cx, hs });
+    return { s, col: ccol + RC * Math.cos(a), row: crow + RR * Math.sin(a) };
   });
-  // labels on top (callouts next to each node)
-  for (const L of labels) {
-    const { s } = L, [chipText] = chipOf(s), sel = s.id === selId;
-    const name = `${sel ? "▸ " : ""}${clean(s.name)}`, sub = `${chipText.trim()}${s.usage?.tokens ? ` · ${fmtTok(s.usage.tokens)}` : ""}${L.hs.length ? ` · ${L.hs.length} agent${L.hs.length > 1 ? "s" : ""}` : ""}`;
-    const w = Math.max(width(name), width(sub)) + 2;
-    const col = L.right ? Math.min(cols - w, L.col + 5) : Math.max(0, L.col - 5 - w);
-    const row = Math.max(0, Math.min(rows - 2, Math.round(L.row) - 1));
-    cv.clear(col, row, w); cv.clear(col, row + 1, w);
-    cv.put(col + 1, row, name, S(sel ? "head" : s.status === "waiting" ? "wait" : "text"));
-    cv.put(col + 1, row + 1, sub, S(look(s)[2]));
-    ctx.mapHits.push({ col0: col, col1: col + w, row0: row, row1: row + 1, id: s.id });
+  // links: solid and lit while working or waiting, dotted when idle; a pulse runs along working ones
+  nodes.forEach(({ s, col, row }, i) => {
+    const role = look(s)[2], live = s.status === "working" || s.status === "waiting" || s.id === selId;
+    const x0 = ccol * 2, y0 = crow * 4, x1 = col * 2, y1 = row * 4;
+    cv.line(x0, y0, x1, y1, S(live ? (s.id === selId && !["working", "waiting"].includes(s.status) ? "head" : role) : "frame"), live ? {} : { on: 1, off: 2 });
+    if (live) cv.line(x0 + 1, y0, x1 + 1, y1, S(role)); // a second strand: a bolder line
+    if (s.status === "working") for (const off of [0, 0.5]) { const t = (Date.now() / 1600 + i * 0.29 + off) % 1; cv.disc(x0 + (x1 - x0) * t, y0 + (y1 - y0) * t, 1.5, S("head")); }
+  });
+  // the core: AXA, double-framed
+  const coreSub = !cmd ? "OFFLINE · a" : cmd.status === "working" ? `${spinner()} WORKING` : cmd.status === "waiting" ? "NEEDS YOU" : "STANDING BY";
+  const cw = Math.max(15, width(coreSub) + 4);
+  const mid = (t) => " ".repeat(Math.max(0, Math.floor((cw - 4 - width(t)) / 2))) + t;
+  cv.box(ccol - cw / 2, crow - 2, cw, 4, S(coreRole), [[mid(`${I.axa}  AXA`), S("title")], [mid(coreSub), S(coreRole)]], "double");
+  ctx.mapHits.push({ col0: ccol - cw / 2, col1: ccol + cw / 2, row0: crow - 2, row1: crow + 1, id: cmd?.id || "commander" });
+  // session cards
+  for (const { s, col, row } of nodes) {
+    const [g, , role] = look(s), sel = s.id === selId;
+    const name = `${g} ${clean(s.name)}`, sub = `${chipOf(s)[0].trim()}${s.usage?.tokens ? ` · ${fmtTok(s.usage.tokens)}` : ""}`;
+    const w = Math.min(28, Math.max(width(name), width(sub)) + 4);
+    const c0 = Math.max(0, Math.min(cols - w, col - w / 2)), r0 = Math.max(0, Math.min(rows - 4, row - 2));
+    cv.box(c0, r0, w, 4, S(sel ? "head" : role), [[cut(name, w - 4), S(sel ? "head" : "text")], [cut(sub, w - 4), S(role)]], sel ? "heavy" : "round");
+    ctx.mapHits.push({ col0: c0, col1: c0 + w, row0: r0, row1: r0 + 3, id: s.id });
+    // its agents, tagged under the card
+    const hs = (s.helpers || []).filter((h) => h.status === "running");
+    if (hs.length) {
+      const tag = `${spinner()} ${hs.map((h) => h.type.split(":").pop()).slice(0, 3).join(" · ")}${hs.length > 3 ? ` +${hs.length - 3}` : ""}`;
+      const tr = r0 + 4 < rows ? r0 + 4 : r0 - 1;
+      cv.clear(c0, tr, width(tag) + 2);
+      cv.put(c0 + 1, tr, tag, S("violet"));
+    }
   }
-  // the core's label
-  const coreTxt = "AXA", coreSub = !cmd ? "OFFLINE · press a" : cmd.status === "working" ? `${spinner()} WORKING` : cmd.status === "waiting" ? "NEEDS YOU" : "STANDING BY";
-  const ccol = Math.round(cx / 2), crow = Math.round(cy / 4);
-  cv.clear(ccol - Math.ceil(width(coreSub) / 2) - 1, crow + 3, width(coreSub) + 2);
-  cv.put(ccol - 1, crow + 2 < rows ? crow + 2 : crow, coreTxt, S("title"));
-  cv.put(ccol - Math.floor(width(coreSub) / 2), crow + 3, coreSub, S(coreRole));
-  ctx.mapHits.push({ col0: ccol - 6, col1: ccol + 6, row0: crow - 2, row1: crow + 3, id: cmd?.id || "commander" });
-  if (!ss.length) { const m = "no sessions yet · n starts one in a project"; cv.put(Math.floor((cols - width(m)) / 2), rows - 2, m, S("dim")); }
+  if (!ss.length) { const m = "no sessions yet · n starts one in a project"; cv.put(Math.floor((cols - width(m)) / 2), rows - 1, m, S("dim")); }
   return cv.render();
 }
 
 // ---------- the whole screen ----------
-// ctx: { sessions, act, selId, focusInput, input, nameOf, question, yesOpt, noOpt, waiting, mapHits, tableHits }
+// ctx: { sessions, chats, act, selId, zone, chatSel, focusInput, input, nameOf, question, yesOpt, noOpt, waiting, mapHits, chatHits }
 export function controlRows(ctx, W, B) {
   const { sessions, act } = ctx;
   const alive = sessions.filter((s) => s.alive);
@@ -196,23 +183,29 @@ export function controlRows(ctx, W, B) {
   out.push(...mapPanel.map((r, i) => r + (right[i] ?? " ".repeat(R))));
   ctx.mapTop = (topH ? topH : 0) + 1; // body row (0-based) where the map's canvas starts
 
-  // bottom: the sessions table and the log
-  const tb = [], tw2 = L - 2;
-  const cols = [["SESSION", 0.24], ["STATUS", 0.15], ["NOW", 0.37], ["BRANCH", 0.14], ["TOKENS", 0.10]];
-  const cw = cols.map(([, f]) => Math.floor(f * tw2));
-  cw[cw.length - 1] += tw2 - cw.reduce((a, b) => a + b, 0);
-  tb.push(cols.map(([h], k) => paint("dim", ` ${h}`.padEnd(cw[k]).slice(0, cw[k]))).join(""));
-  const rowsList = ctx.order;
-  const room = botH - 3;
-  const start = Math.max(0, Math.min(rowsList.findIndex((s) => s.id === ctx.selId) - room + 1, rowsList.length - room));
-  rowsList.slice(Math.max(0, start), Math.max(0, start) + room).forEach((s, k) => {
-    const [g, , role] = look(s), sel = s.id === ctx.selId;
-    const cells = [[` ${s.mode === "axa" ? I.axa : g} ${ctx.nameOf(s)}`, s.mode === "axa" ? "title" : "head"], [` ${chipOf(s)[0].trim()}`, role], [` ${clean(s.status === "waiting" && s.choices ? ctx.question(s.choices) : s.status === "done" ? s.last_report || "finished" : s.doing || "")}`, "dim"], [` ${s.git?.branch || "–"}`, "dim"], [` ${s.usage?.tokens ? fmtTok(s.usage.tokens) : "–"}`, "dim"]];
-    tb.push(cells.map(([t, r], c) => line([[t, r]], cw[c], [], sel ? "sel" : null)).join(""));
-    ctx.tableHits.push({ row: k, id: s.id });
+  // bottom: recent chats, the agents at work, and the log
+  const chW = Math.round(L * 0.55), agW = L - chW;
+  const cb2 = [], ciw = chW - 2;
+  const chats = ctx.chats.slice(0, botH - 2);
+  chats.forEach((c, k) => {
+    const sel = ctx.zone === "chats" && k === ctx.chatSel;
+    cb2.push(line([[` ${c.open_in ? "●" : I.chat} `, c.open_in ? "work" : "dim"], [clean(c.title), sel ? "head" : "text"]], ciw, [[`${c.cwd === process.env.HOME ? "~" : c.project} · ${ago(c.updated)}`, "dim"]], sel ? "sel" : null));
+    ctx.chatHits.push({ row: k, i: k });
   });
-  if (!rowsList.length) tb.push(line([["  nothing running · n starts a session · a the commander", "dim"]], tw2));
-  const tablePanel = panel("Sessions", L, botH, tb, { tag: "⏎ open · d diff · g goal · X close" });
+  if (!chats.length) cb2.push(line([["  no chats yet", "dim"]], ciw));
+  const chatPanel = panel("Recent chats", chW, botH, cb2, { tag: ctx.zone === "chats" ? "⏎ resume · ← map" : "→ to pick", on: ctx.zone === "chats" });
+  const ab2 = [], aiw = agW - 2;
+  const running = sessions.flatMap((s) => (s.helpers || []).map((h) => ({ s, h }))).filter(({ h }) => h.status === "running" || Date.now() - h.at < 10 * 60_000).sort((a, b) => (a.h.status === "running" ? 0 : 1) - (b.h.status === "running" ? 0 : 1) || b.h.at - a.h.at);
+  for (const { s, h } of running.slice(0, Math.floor((botH - 2) / 2))) {
+    const on = h.status === "running", mins = Math.max(0, Math.round(((h.end || Date.now()) - h.start) / 60_000));
+    ab2.push(line([[` ${on ? spinner() : I.done} `, on ? "violet" : "done"], [h.type.split(":").pop(), on ? "head" : "dim"], [`  in ${s.mode === "axa" ? "AXA" : clean(s.name)}`, "dim"]], aiw, [[`${h.calls || 0} steps · ${mins}m`, "dim"]]));
+    ab2.push(line([[`   ${clean(on ? h.doing || h.desc : h.report || h.desc) || "…"}`, on ? "text" : "dim"]], aiw));
+  }
+  if (!running.length) { ab2.push(line([["  no agents running", "dim"]], aiw)); ab2.push(line([["  helpers show up here as sessions start them", "dim"]], aiw)); }
+  const nRun = running.filter(({ h }) => h.status === "running").length;
+  const agentPanel = panel("Agents at work", agW, botH, ab2, { tag: nRun ? `${nRun} running` : "" });
+  const tablePanel = beside([chatPanel, chW], [agentPanel, agW]);
+  ctx.tableTop = B - botH + 1; // body row of the chats panel's first row
   const lb = [], lw = R - 2;
   const names = new Map(sessions.map((s) => [s.id, s.mode === "axa" ? "AXA" : clean(s.name)]));
   const evs = (act?.events || []).map((e) => [e, said(e)]).filter(([, d]) => d).slice(-(botH - 2));
@@ -223,6 +216,5 @@ export function controlRows(ctx, W, B) {
   if (!evs.length) lb.push(line([["  quiet: nothing has happened in the last hour", "dim"]], lw));
   const logPanel = panel("Log", R, botH, lb, { tag: "live" });
   out.push(...beside([tablePanel, L], [logPanel, R]));
-  ctx.tableTop = B - botH + 2; // body row of the table's first data row
   return out;
 }

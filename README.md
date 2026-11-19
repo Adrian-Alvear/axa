@@ -51,15 +51,17 @@ plugin (for the `axa` skill, agents and tracing hooks in your own sessions):
 
 Mission control for everything AXA runs, in one screen:
 
-- **Live map** in the middle: the AXA core (the commander) with every session on its orbit. Pulses run
-  along a session's link while it works, its helper agents circle it, and a session waiting on you
-  pulses amber. Click a node to select it, click again to open it.
+- **Live map** in the middle: the AXA core (the commander) in a double frame, every session as a card
+  on its orbit, framed in its status color. Links light up while a session works (with pulses running
+  along them) or waits on you; a session's running agents are tagged under its card. `↑`/`↓` or a click
+  picks a session, Enter (or a second click) opens it.
 - **Global status**: active, working, needs you, done today, in big digits. **Activity**: events per
   minute over the last hour.
 - **Requires approval**: the prompt a session is waiting on, with `x` decline / `y` approve.
 - **Commander**: what AXA last said, and a box to talk to it (`:` to type, Enter sends; it starts the
   commander if it isn't running).
-- **Sessions** table and a live **log** of what every session is doing, in plain words.
+- **Recent chats** (`→` to pick one, Enter resumes it), **Agents at work** (every running helper: its
+  session, what it's doing, steps, time) and a live **log** in plain words.
 
 It needs a window of about 100×26 or more; smaller, it shows the sessions list instead.
 
