@@ -28,6 +28,11 @@ export class Canvas {
     const n = Math.max(12, Math.ceil(2 * Math.PI * Math.max(rx, ry)));
     for (let k = 0; k < n; k += step) { const a = (2 * Math.PI * k) / n; this.set(cx + rx * Math.cos(a), cy + ry * Math.sin(a), sgr); }
   }
+  // part of a ring, from angle a0 to a1 (radians)
+  arc(cx, cy, r, a0, a1, sgr, step = 1) {
+    const n = Math.max(6, Math.ceil(Math.abs(a1 - a0) * r * 1.5));
+    for (let k = 0; k <= n; k += step) { const a = a0 + ((a1 - a0) * k) / n; this.set(cx + r * Math.cos(a), cy + r * Math.sin(a), sgr); }
+  }
   disc(cx, cy, r, sgr) {
     for (let y = -r; y <= r; y++) for (let x = -r * 1; x <= r; x++) if (x * x + y * y <= r * r) this.set(cx + x, cy + y, sgr);
   }

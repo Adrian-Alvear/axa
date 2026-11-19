@@ -18,9 +18,6 @@ export function panel(title, w, h, body, { tag = "", on = false } = {}) {
 // Columns of panels side by side: each [rows, width]
 const beside = (...cols) => cols[0][0].map((_, i) => cols.map(([rows, w]) => rows[i] ?? " ".repeat(w)).join(""));
 
-// Big digits, three rows tall
-const DIG = { 0: ["█▀█", "█ █", "▀▀▀"], 1: ["▀█ ", " █ ", "▀▀▀"], 2: ["▀▀█", "█▀▀", "▀▀▀"], 3: ["▀▀█", " ▀█", "▀▀▀"], 4: ["█ █", "▀▀█", "  ▀"], 5: ["█▀▀", "▀▀█", "▀▀▀"], 6: ["█▀▀", "█▀█", "▀▀▀"], 7: ["▀▀█", "  █", "  ▀"], 8: ["█▀█", "█▀█", "▀▀▀"], 9: ["█▀█", "▀▀█", "▀▀▀"] };
-const bigNum = (n) => [0, 1, 2].map((r) => String(n).split("").map((d) => DIG[d]?.[r] ?? "   ").join(" "));
 // A segmented bar: ▮▮▮▮▯▯▯
 const segBar = (frac, n, role) => paint(role, "▮".repeat(Math.round(frac * n))) + paint("frame", "▮".repeat(n - Math.round(frac * n)));
 
@@ -73,7 +70,6 @@ function mapRows(ctx, cols, rows) {
   // a faint orbit behind everything
   const RC = Math.max(14, cols * 0.34), RR = Math.max(3, rows / 2 - 3);
   cv.ring(ccol * 2, crow * 4, RC * 2, RR * 4, S("frame"), 3);
-  cv.ring(ccol * 2, crow * 4, RC * 1.25, RR * 2.4, S("frame"), 5);
   const cmd = sessions.find((s) => s.mode === "axa" && s.alive);
   const coreRole = !cmd ? "dim" : cmd.status === "waiting" ? "wait" : cmd.status === "working" ? "work" : "accent";
   const ss = sessions.filter((s) => s.mode !== "axa" && s.alive);
@@ -85,17 +81,28 @@ function mapRows(ctx, cols, rows) {
   // links: solid and lit while working or waiting, dotted when idle; a pulse runs along working ones
   nodes.forEach(({ s, col, row }, i) => {
     const role = look(s)[2], live = s.status === "working" || s.status === "waiting" || s.id === selId;
-    const x0 = ccol * 2, y0 = crow * 4, x1 = col * 2, y1 = row * 4;
+    const dx = col * 2 - ccol * 2, dy = row * 4 - crow * 4, d = Math.hypot(dx, dy) || 1;
+    const x0 = ccol * 2 + (dx / d) * 25, y0 = crow * 4 + (dy / d) * 21, x1 = col * 2, y1 = row * 4;
     cv.line(x0, y0, x1, y1, S(live ? (s.id === selId && !["working", "waiting"].includes(s.status) ? "head" : role) : "frame"), live ? {} : { on: 1, off: 2 });
     if (live) cv.line(x0 + 1, y0, x1 + 1, y1, S(role)); // a second strand: a bolder line
     if (s.status === "working") for (const off of [0, 0.5]) { const t = (Date.now() / 1600 + i * 0.29 + off) % 1; cv.disc(x0 + (x1 - x0) * t, y0 + (y1 - y0) * t, 1.5, S("head")); }
   });
-  // the core: AXA, double-framed
-  const coreSub = !cmd ? "OFFLINE · a" : cmd.status === "working" ? `${spinner()} WORKING` : cmd.status === "waiting" ? "NEEDS YOU" : "STANDING BY";
-  const cw = Math.max(15, width(coreSub) + 4);
-  const mid = (t) => " ".repeat(Math.max(0, Math.floor((cw - 4 - width(t)) / 2))) + t;
-  cv.box(ccol - cw / 2, crow - 2, cw, 4, S(coreRole), [[mid(`${I.axa}  AXA`), S("title")], [mid(coreSub), S(coreRole)]], "double");
-  ctx.mapHits.push({ col0: ccol - cw / 2, col1: ccol + cw / 2, row0: crow - 2, row1: crow + 1, id: cmd?.id || "commander" });
+  // the core: AXA inside a clean ring, a faint orbit with a turning sweep, dial ticks, and a ripple
+  // while the commander works
+  const X = ccol * 2, Y = crow * 4, t = Date.now() / 1000;
+  const coreSub = !cmd ? "OFFLINE" : cmd.status === "working" ? "WORKING" : cmd.status === "waiting" ? "NEEDS YOU" : "STANDING BY";
+  if (cmd?.status === "working" || cmd?.status === "waiting") { const r = 11 + ((t * 7) % 9); cv.ring(X, Y, r * 1.15, r, S(coreRole), 3); }
+  cv.ring(X, Y, 17, 14.5, S("frame"), 2);
+  if (cmd) { const a0 = t * 1.4; cv.arc(X, Y, 17, a0, a0 + 1.0, S(coreRole)); }
+  for (let k = 0; k < 16; k++) { const a = (k / 16) * 2 * Math.PI, big = k % 4 === 0; cv.line(X + 20.5 * Math.cos(a), Y + 17.5 * Math.sin(a), X + (big ? 23 : 21.5) * Math.cos(a), Y + (big ? 19.5 : 18.3) * Math.sin(a), S(big ? coreRole : "frame")); }
+  cv.ring(X, Y, 10.5, 8.5, S(coreRole));
+  const t1 = `${I.axa} AXA`;
+  cv.clear(Math.round(ccol - width(t1) / 2) - 1, Math.round(crow), width(t1) + 2);
+  cv.put(Math.round(ccol - width(t1) / 2), Math.round(crow), t1, S("title"));
+  const sr = Math.round(crow) + 2;
+  cv.clear(Math.round(ccol - width(coreSub) / 2) - 1, sr, width(coreSub) + 2);
+  cv.put(Math.round(ccol - width(coreSub) / 2), sr, coreSub, S(coreRole));
+  ctx.mapHits.push({ col0: ccol - 10, col1: ccol + 10, row0: crow - 4, row1: crow + 4, id: cmd?.id || "commander" });
   // session cards
   for (const { s, col, row } of nodes) {
     const [g, , role] = look(s), sel = s.id === selId;
@@ -124,21 +131,23 @@ export function controlRows(ctx, W, B) {
   const alive = sessions.filter((s) => s.alive);
   const cnt = (st) => alive.filter((s) => s.mode !== "axa" && s.status === st).length;
   const L = Math.round(W * 0.62), R = W - L;
-  const topH = B >= 30 ? 6 : 0, botH = Math.max(6, Math.min(12, Math.round(B * 0.27))), midH = B - topH - botH;
+  const topH = B >= 30 ? 5 : 0, botH = Math.max(6, Math.min(12, Math.round(B * 0.27))), midH = B - topH - botH;
   const out = [];
 
   // top: metrics and activity
   if (topH) {
-    const tiles = [["Active", alive.filter((s) => s.mode !== "axa").length, "accent"], ["Working", cnt("working"), "work"], ["Needs you", cnt("waiting") + cnt("stuck"), cnt("waiting") + cnt("stuck") ? "wait" : "dim"], ["Done today", act?.runs?.done ?? 0, "done"]];
-    const tw = Math.floor((L - 2) / 4);
-    const body = [0, 1, 2, 3].map((r) => tiles.map(([label, n, role], k) => {
-      const cellW = k === 3 ? L - 2 - tw * 3 : tw;
-      if (r < 3) return line([["  " + bigNum(n)[r], role]], cellW);
-      return line([[`  ${label.toUpperCase()}`, "dim"]], cellW);
-    }).join(""));
+    const nActive = alive.filter((s) => s.mode !== "axa").length, nNeeds = cnt("waiting") + cnt("stuck");
+    const tiles = [["Active", nActive, "accent", "sessions open"], ["Working", cnt("working"), "work", "busy right now"], ["Needs you", nNeeds, nNeeds ? "wait" : "dim", "waiting on you"], ["Done today", act?.runs?.done ?? 0, "done", `of ${act?.runs?.today ?? 0} runs`]];
+    const tw = Math.floor((L - 2) / 4), max = Math.max(1, nActive);
+    const cellW = (k) => (k === 3 ? L - 2 - tw * 3 : tw);
+    const body = [
+      tiles.map(([label, n, role], k) => line([[`  ${n}`, `1;${sgrOf(role)}`], [`  ${label.toUpperCase()}`, "dim"]], cellW(k))).join(""),
+      tiles.map(([, n, role], k) => "  " + segBar(Math.min(1, n / (k === 3 ? Math.max(1, act?.runs?.today ?? 0) : max)), Math.max(4, Math.min(14, cellW(k) - 6)), role) + " ".repeat(Math.max(0, cellW(k) - 2 - Math.max(4, Math.min(14, cellW(k) - 6))))).join(""),
+      tiles.map(([, , , sub], k) => line([[`  ${sub}`, "frame"]], cellW(k))).join(""),
+    ];
     const pm = act?.perMinute || Array(60).fill(0), peak = Math.max(...pm), total = pm.reduce((a, b) => a + b, 0);
-    const chart = areaChart(R - 4, 3, pm, { line: sgrOf("accent"), fill: sgrOf("frame") }).render();
-    const abody = [...chart.map((r) => " " + r + " "), line([["60m ago", "dim"]], R - 2, [[`peak ${peak}/min · ${total} events · now`, "dim"]])];
+    const chart = areaChart(R - 4, 2, pm, { line: sgrOf("accent"), fill: sgrOf("frame") }).render();
+    const abody = [...chart.map((r) => " " + r + " "), line([["60m ago", "frame"]], R - 2, [[`peak ${peak}/min · ${total} events · now`, "dim"]])];
     out.push(...beside([panel("Global status", L, topH, body, { tag: `${act?.runs?.today ?? 0} runs today` }), L], [panel("Activity", R, topH, abody, { tag: "events / min" }), R]));
   }
 

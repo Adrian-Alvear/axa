@@ -69,6 +69,14 @@ export function activity(minutes = 60, limit = 60) {
   };
 }
 
+// "list sessions (axa terminals)" rather than "mcp__plugin_axa_terminals__list_sessions · {}"
+function doingText(e) {
+  const m = /^mcp__(?:plugin_)?(.+?)__(.+)$/.exec(e.tool || "");
+  const tool = m ? `${m[2].replace(/_/g, " ")} (${m[1].replace(/_/g, " ")})` : e.tool;
+  const summary = e.summary && !/^\{\s*\}$/.test(e.summary) && !m ? e.summary : "";
+  return [e.skill ? `skill ${e.skill}` : tool, summary].filter(Boolean).join(" · ");
+}
+
 function track(e) {
   if (!e?.terminal) return;
   remember(e);
@@ -82,7 +90,7 @@ function track(e) {
     case "UserPromptSubmit": Object.assign(s, { status: "working", doing: "reading the instruction", tool: undefined, error: undefined, asking: null, stopAt: null, gateAt: null }); s.inflight.clear(); break;
     case "PreToolUse":
       if (e.agent_id) break; // a helper's step: tracked under its helper
-      Object.assign(s, { status: "working", doing: [e.tool, e.summary].filter(Boolean).join(" · "), tool: e.tool, skill: e.skill });
+      Object.assign(s, { status: "working", doing: doingText(e), tool: e.tool, skill: e.skill });
       if (e.tool_use_id) s.inflight.set(e.tool_use_id, { tool: e.tool, since: e.ts });
       break;
     case "PostToolUse": if (s.status === "waiting") s.status = "working"; s.asking = null; s.inflight.delete(e.tool_use_id); break;
@@ -130,7 +138,7 @@ function trackHelpers(e) {
     spawnQueue.set(t, [...(spawnQueue.get(t) || []), { desc: e.summary, type: e.subagent_type }].slice(-10));
   } else if (e.event === "PreToolUse" && e.agent_id) {
     const h = (helpers.get(t) || []).find((x) => x.id === e.agent_id);
-    if (h) { h.calls++; h.doing = [e.tool, e.summary].filter(Boolean).join(" · "); h.at = at; }
+    if (h) { h.calls++; h.doing = doingText(e); h.at = at; }
   } else if (e.event === "SubagentStart") {
     const sp = (spawnQueue.get(t) || []).shift();
     helpers.set(t, [...(helpers.get(t) || []), { id: e.agent_id, type: String(e.agent_type || sp?.type || "helper"), desc: clip(sp?.desc || "", 120), status: "running", start: at, at, calls: 0 }].slice(-12));
