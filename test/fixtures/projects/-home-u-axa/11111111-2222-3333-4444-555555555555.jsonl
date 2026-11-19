@@ -1,0 +1,8 @@
+{"type":"user","message":{"role":"user","content":"ship v7 in launches"},"uuid":"u1"}
+{"type":"assistant","message":{"id":"msg_1","role":"assistant","content":[{"type":"text","text":"On it."}]},"uuid":"a1"}
+{"type":"user","message":{"role":"user","content":"[AXA supervisor: automatic update from the console, not typed by the user] axa (c792c934) finished its turn; feed (abc) is waiting on you. Handle this under your supervisor rules: check each one, verify any claims, take the next step if it is within what the user asked, and end with a short report for the user."},"uuid":"u2"}
+{"type":"user","message":{"role":"user","content":"<task-notification>\n<task-id>bx1</task-id>\n<status>completed</status>\n<summary>Agent \"Design research\" completed</summary>\n</task-notification>"},"uuid":"u3"}
+{"type":"user","message":{"role":"user","content":"<task-notification>\n<task-id>bx2</task-id>\n<status>completed</status>\n</task-notification>"},"uuid":"u4"}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]},"uuid":"u5"}
+{"type":"user","message":{"role":"user","content":"<system-reminder>ignore me</system-reminder>"},"uuid":"u6"}
+{"type":"assistant","message":{"id":"msg_2","role":"assistant","content":[{"type":"text","text":"Both done."}]},"uuid":"a2"}

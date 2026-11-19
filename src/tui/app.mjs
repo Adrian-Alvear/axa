@@ -278,6 +278,7 @@ export async function runTui() {
         // newest at the bottom, like the chat itself
         const body = [];
         for (const m of msgs) {
+          if (m.role === "system") { for (const l of wrapText(clean(`⚙ supervisor · ${m.text}`), w - 3, "  ").slice(0, 3)) body.push(line([[l, "dim"]], w, [], "pv")); body.push(line([], w, [], "pv")); continue; }
           body.push(line([[` ${m.role === "you" ? I.you : I.claude} `, m.role], [m.role === "you" ? "You" : "Claude", m.role]], w, [], "pv"));
           const plain = m.text.replace(/```[\s\S]*?```/g, "[code]").replace(/\*\*|__|`/g, "").replace(/^#+\s*/gm, "").replace(/\n{2,}/g, "\n");
           for (const l of wrapText(clean(plain), w - 4, "   ").slice(0, m.role === "you" ? 6 : 8)) body.push(line([[l, m.role === "you" ? "text" : "dim"]], w, [], "pv"));

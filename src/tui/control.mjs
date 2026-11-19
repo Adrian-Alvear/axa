@@ -443,6 +443,8 @@ export function controlRows(ctx, W, B) {
   if (!cmd && !msgs.length) convo.push(["Offline. Type below (or press a) to start it.", "dim"]);
   else if (!msgs.length) convo.push([clean(cmd.last_report) || "Standing by. Tell me what you want done across your projects.", "text"]);
   for (const [k, m] of msgs.entries()) {
+    // a console note (supervisor update, background agent done): one dim line, no header
+    if (m.role === "system") { for (const l of wrapMsg(`⚙ supervisor · ${m.text}`, iw - 6).map((l, i) => (i ? "  " + l : l))) convo.push([l, "dim", k]); continue; }
     convo.push(["", "", k]);
     convo.push([m.role === "you" ? "You" : `${I.axa} AXA`, m.role === "you" ? "you" : "claude", k]);
     for (const l of wrapMsg(m.text, iw - 4)) convo.push([l, m.role === "you" ? "text" : "idle", k]);

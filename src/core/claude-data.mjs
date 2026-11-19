@@ -149,7 +149,20 @@ export function usageOf(chat, cwd, live) {
 }
 
 // ---------- a chat's last messages, for the hub's preview ----------
-// [{ role: "you" | "claude", text }] from the end of the transcript (tool calls and results left out)
+// [{ role: "you" | "claude" | "system", text }] from the end of the transcript (tool calls and results left out).
+// "system": what the console typed for the user (AXA supervisor notes) and background-agent completion notes
+export function systemNote(text) {
+  const t = String(text || "").trim();
+  if (t.startsWith("[AXA supervisor:")) {
+    const rest = t.slice(t.indexOf("]") + 1).trim(), cut = rest.indexOf(". Handle this under");
+    return (cut >= 0 ? rest.slice(0, cut) : rest).trim() || "automatic update";
+  }
+  if (t.startsWith("<task-notification>")) {
+    const sum = /<summary>([\s\S]*?)<\/summary>/.exec(t)?.[1]?.replace(/\s+/g, " ").trim();
+    return sum ? `a background agent finished: ${sum}` : "a background agent finished";
+  }
+  return null;
+}
 export function chatMessages(id, max = 12) {
   if (!CHAT_ID.test(String(id))) return null;
   let path = null;
@@ -165,6 +178,8 @@ export function chatMessages(id, max = 12) {
     if (o.isMeta || o.isSidechain || (o.type !== "user" && o.type !== "assistant")) continue;
     const c = o.message?.content;
     const text = typeof c === "string" ? c : Array.isArray(c) ? c.filter((p) => p?.type === "text").map((p) => p.text).join("\n") : "";
+    const note = o.type === "user" ? systemNote(text) : null;
+    if (note) { msgs.push({ role: "system", text: note.slice(0, 4000) }); continue; }
     if (!text.trim() || /^\s*<(command|local-command|system-reminder|bash-|task-notification)/.test(text)) continue;
     const role = o.type === "user" ? "you" : "claude";
     // a streamed reply repeats; keep the last version of each message
