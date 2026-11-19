@@ -46,6 +46,7 @@ export async function runTui() {
   const sel = { control: 0, sessions: 0, chats: 0, agents: 0, projects: 0 }, scroll = { control: 0, sessions: 0, chats: 0, agents: 0, projects: 0 };
   const filter = { control: "", sessions: "", chats: "", agents: "", projects: "" };
   let act = null, ctlSel = null, focusInput = false, cmdInput = ""; // Control: activity, selected session, the commander box
+  let cmdMsgs = [], cmdChat = null, cmdScroll = 0; // the commander's conversation, and how far you've scrolled it back
   let ctl = { mapHits: [], chatHits: [] }, zone = "map", chatSel = 0; // Control's focus: the map (sessions) or the recent chats
   let filtering = false; // typing into the focused panel's filter
   let pendingSend = null; // { id, text }: typed into a session as soon as it's ready (e.g. a commander just started)
@@ -318,7 +319,7 @@ export async function runTui() {
   function footer() {
     if (screen === "live") return null; // a session keeps every row; notices show in its header
     if (toast && Date.now() < toast.until) return line([[` ${toast.text}`, "text"]], W, [], "bar");
-    const per = { control: focusInput ? [["⏎", "send to the commander"], ["Esc", "stop typing"]] : zone === "chats" ? [["⏎", "resume chat"], ["↑↓", "pick"], ["←", "back to the map"], [":", "talk to AXA"]] : [["⏎", "open"], ["↑↓", "pick session"], ["→", "chats"], [":", "talk to AXA"], ["y/x", "answer"], ["d", "changes"], ["X", "close"]], sessions: [["⏎", "open"], ["d", "changes"], ["g", "goal"], ["v", "checks"], ["r", "rename"], ["X", "close"]], chats: [["⏎", "resume"], ["/", "search"]], agents: [["⏎", "give a task"], ["/", "search"]], projects: [["⏎", "open"], ["n", "new"], ["w", "worktree"], ["s", "shell"]] }[PANELS[focus]];
+    const per = { control: focusInput ? [["⏎", "send to the commander"], ["Esc", "stop typing"]] : zone === "chats" ? [["⏎", "resume chat"], ["↑↓", "pick"], ["←", "back to the map"], [":", "talk to AXA"]] : [["⏎", "open"], ["↑↓", "pick session"], ["→", "chats"], [":", "talk to AXA"], ["PgUp", "AXA's messages"], ["y/x", "answer"], ["d", "changes"]], sessions: [["⏎", "open"], ["d", "changes"], ["g", "goal"], ["v", "checks"], ["r", "rename"], ["X", "close"]], chats: [["⏎", "resume"], ["/", "search"]], agents: [["⏎", "give a task"], ["/", "search"]], projects: [["⏎", "open"], ["n", "new"], ["w", "worktree"], ["s", "shell"]] }[PANELS[focus]];
     const segs = per.flatMap(([k, t]) => [[` ${k} `, "keycap"], [` ${t}  `, "barDim"]]);
     return line(segs, W, [[" Tab ", "keycap"], [" switch  ", "barDim"], [" a ", "keycap"], [" AXA  ", "barDim"], [" n ", "keycap"], [" new  ", "barDim"], [" ? ", "keycap"], [" help  ", "barDim"], [" q ", "keycap"], [" quit", "barDim"]], "bar");
   }
@@ -331,8 +332,10 @@ export async function runTui() {
     if (panel === "control") {
       if (W < 100 || h < 20) return [...listRows("sessions", 1, y0, W, h - 1), line([[" widen the window (100×26 or more) for the full control view", "dim"]], W)];
       const w = waitingOthers();
-      ctl = { sessions: data.sessions, act, selId: ctlSelected()?.id, focusInput, input: cmdInput, nameOf, question, yesOpt, noOpt, waiting: w[0], waitingCount: w.length, order: ctlOrder(), chats: data.chats, zone, chatSel, mapHits: [], chatHits: [], y0, L: Math.round(W * 0.62) };
-      return controlRows(ctl, W, h);
+      ctl = { sessions: data.sessions, act, selId: ctlSelected()?.id, focusInput, input: cmdInput, nameOf, question, yesOpt, noOpt, waiting: w[0], waitingCount: w.length, order: ctlOrder(), chats: data.chats, zone, chatSel, mapHits: [], chatHits: [], y0, L: Math.round(W * 0.62), cmdMsgs, cmdScroll };
+      const rowsOut = controlRows(ctl, W, h);
+      cmdScroll = ctl.cmdScroll;
+      return rowsOut;
     }
     if (W < 90) return listRows(panel, 1, y0, W, h);
     const lw = Math.max(32, Math.min(56, Math.round(W * 0.36))), pw = W - lw - 1;
@@ -628,6 +631,8 @@ export async function runTui() {
   }
   function controlKey(k) {
     if (focusInput) {
+      if (k === "\x1b[5~") { cmdScroll += 8; return true; }
+      if (k === "\x1b[6~") { cmdScroll = Math.max(0, cmdScroll - 8); return true; }
       if (k === "\r") { const t = cmdInput.trim(); if (t) { sendToCommander(t); cmdInput = ""; } focusInput = false; return true; }
       if (k === ESC) { focusInput = false; return true; }
       if (k === "\x7f" || k === "\b") { cmdInput = [...cmdInput].slice(0, -1).join(""); return true; }
@@ -638,6 +643,9 @@ export async function runTui() {
     const o = ctlOrder(), cur = ctlSelected(), i = Math.max(0, o.findIndex((s) => s.id === cur?.id));
     const go = (d) => { if (o.length) ctlSel = o[Math.max(0, Math.min(o.length - 1, i + d))].id; };
     const nChats = Math.min(data.chats.length, 9);
+    if (k === "\x1b[5~") { cmdScroll += 8; return true; }
+    if (k === "\x1b[6~") { cmdScroll = Math.max(0, cmdScroll - 8); return true; }
+    if (k === "\x1b[F" || k === "\x1b[4~") { cmdScroll = 0; return true; }
     switch (k) {
       case ":": case "i": case "c": focusInput = true; return true;
       case "\x1b[C": case "l": zone = "chats"; return true;
@@ -766,8 +774,9 @@ export async function runTui() {
     }
     if (y === 2) { const t = tabHits.find((h) => x >= h.x0 && x <= h.x1); if (t && b === 0 && !up) { focus = t.i; schedule(); } return; }
     if (PANELS[focus] === "control" && ctl.y0) {
-      if (b !== 0 || up) return;
       const by = y - ctl.y0; // body row (0-based)
+      if ((b === 64 || b === 65) && x > ctl.L && by >= ctl.cmdTop && by < ctl.cmdBottom) { cmdScroll = Math.max(0, cmdScroll + (b === 64 ? 3 : -3)); return schedule(); }
+      if (b !== 0 || up) return;
       const m = ctl.mapHits.find((h) => by - ctl.mapTop >= h.row0 && by - ctl.mapTop <= h.row1 && x - 2 >= h.col0 && x - 2 <= h.col1);
       const c = x <= Math.round(ctl.L * 0.55) && ctl.chatHits.find((h) => by - ctl.tableTop === h.row);
       if (c) {
@@ -875,6 +884,22 @@ export async function runTui() {
   enter();
   draw();
   setInterval(pollSessions, 1000);
+  // the commander's conversation: refreshed while Control is open, and right after it finishes a turn
+  let cmdLast = "";
+  const pollCommander = async () => {
+    const c = commander();
+    if (!c?.chat) { if (!c) cmdMsgs = []; return; }
+    const key = `${c.chat}:${c.status}:${c.last_event_at}`;
+    if (key === cmdLast && cmdChat === c.chat) return;
+    try {
+      const m = await call(`/api/chats/${c.chat}/messages?limit=40`);
+      const grew = m.length !== cmdMsgs.length || m.at(-1)?.text !== cmdMsgs.at(-1)?.text;
+      cmdMsgs = m; cmdChat = c.chat; cmdLast = key;
+      if (grew) cmdScroll = 0; // a new message: back to the newest
+      schedule();
+    } catch {}
+  };
+  setInterval(() => { if (screen === "hub" && PANELS[focus] === "control") pollCommander(); }, 1500);
   const pollActivity = () => call("/api/activity?minutes=60&limit=80").then((a) => { act = a; schedule(); }, () => {});
   pollActivity();
   setInterval(() => { if (screen === "hub" && PANELS[focus] === "control") pollActivity(); }, 2000);

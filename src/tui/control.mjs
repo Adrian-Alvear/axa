@@ -34,6 +34,29 @@ const wrap = (text, w) => {
   return out;
 };
 
+// A chat message as lines: markdown cleaned up, line breaks and bullets kept (wrapped under their text)
+export function wrapMsg(text, w) {
+  const outL = [];
+  let inCode = false;
+  for (let raw of String(text ?? "").replace(/\r/g, "").split("\n")) {
+    if (/^\s*```/.test(raw)) { inCode = !inCode; continue; }
+    if (inCode) { outL.push("  " + cut(raw.replace(/\t/g, "  "), w - 2)); continue; }
+    raw = raw.replace(/\*\*|__|`/g, "").replace(/^#{1,6}\s*/, "").replace(/\[([^\]]+)\]\([^)]+\)/g, "$1");
+    if (!raw.trim()) { if (outL.length && outL.at(-1) !== "") outL.push(""); continue; }
+    const m = /^(\s*)([-*•]|\d+[.)])\s+(.*)$/.exec(raw);
+    const lead = m ? `${m[1]}${/\d/.test(m[2]) ? m[2] : "•"} ` : "", hang = " ".repeat(width(lead));
+    const body = (m ? m[3] : raw).replace(/\s+/g, " ").trim();
+    let cur = lead;
+    for (const word of body.split(" ")) {
+      if (width(cur) + width(word) + 1 > w && cur.trim()) { outL.push(cur.trimEnd()); cur = hang + word; }
+      else cur += (cur.trim() && cur !== lead ? " " : "") + word;
+    }
+    outL.push(cur.trimEnd());
+  }
+  while (outL.at(-1) === "") outL.pop();
+  return outL;
+}
+
 // ---------- what an event says, in plain words ----------
 const PLUMBING = /^(ToolSearch|TodoWrite|TaskCreate|TaskUpdate|TaskList|TaskGet|TaskOutput|EnterPlanMode|ExitPlanMode)$/;
 function said(e) {
@@ -155,7 +178,7 @@ export function controlRows(ctx, W, B) {
   const map = mapRows(ctx, L - 2, midH - 2);
   const mapPanel = panel("Live map", L, midH, map, { tag: `${alive.filter((s) => s.mode !== "axa").length} sessions · ${alive.reduce((n, s) => n + (s.helpers || []).filter((h) => h.status === "running").length, 0)} agents` });
   const w = ctx.waiting;
-  const apH = Math.min(midH - 6, w ? 13 : 6);
+  const apH = Math.min(midH - 6, w ? 13 : 5);
   const ab = [];
   const iw = R - 2;
   if (w) {
@@ -173,21 +196,36 @@ export function controlRows(ctx, W, B) {
     ab.push(line([["  ", ""], [cut(` x  ${no.label} `.padEnd(bw), bw), "keycap"], ["  ", ""], [cut(` y  ${yes.label} `.padEnd(bw), bw), "tabOn"]], iw));
   } else {
     ab.push(line([["  ✓ Nothing needs your approval.", "done"]], iw));
-    ab.push(line([[`  AXA's approver handled ${act?.runs?.approvals ?? 0} today; only one-way doors`, "dim"]], iw));
-    ab.push(line([["  (shipping, deploying, spending) come here.", "dim"]], iw));
+    ab.push(line([[`  ${act?.runs?.approvals ?? 0} handled by AXA today; one-way doors come here`, "dim"]], iw));
   }
   const apPanel = panel(w ? "Requires approval" : "Approvals", R, apH, ab, { tag: w ? `${ctx.waitingCount} waiting` : "", on: !!w });
-  // the commander: what it last said, and a box to talk to it
+  // the commander: the conversation (yours and AXA's messages), scrollable, and a box to talk to it
   const cmd = sessions.find((s) => s.mode === "axa" && s.alive);
   const chH = midH - apH, cb = [];
-  const cmdSaid = cmd ? clean(cmd.status === "working" ? cmd.doing : cmd.last_report || cmd.doing || "Standing by. Tell me what you want done across your projects.") : "Offline. Type below (or press a) to start it.";
-  cb.push(line([["  ", ""], [cmd ? `${I.axa} AXA` : `${I.axa} AXA`, "title"]], iw, [cmd ? chipOf(cmd) : [" OFF ", "chipOff"]]));
-  for (const l of wrap(cmdSaid, iw - 4).slice(-(chH - 6))) cb.push(line([["  " + l, cmd?.status === "working" ? "work" : "text"]], iw));
+  cb.push(line([["  ", ""], [`${I.axa} AXA`, "title"], [cmd?.status === "working" && cmd.doing ? `   ${spinner()} ${clean(cmd.doing)}` : "", "work"]], iw, [cmd ? chipOf(cmd) : [" OFF ", "chipOff"]]));
+  const convo = [];
+  const msgs = ctx.cmdMsgs || [];
+  if (!cmd && !msgs.length) convo.push(["Offline. Type below (or press a) to start it.", "dim"]);
+  else if (!msgs.length) convo.push([clean(cmd.last_report) || "Standing by. Tell me what you want done across your projects.", "text"]);
+  for (const m of msgs) {
+    convo.push(["", ""]);
+    convo.push([m.role === "you" ? "You" : `${I.axa} AXA`, m.role === "you" ? "you" : "claude"]);
+    for (const l of wrapMsg(m.text, iw - 4)) convo.push([l, m.role === "you" ? "text" : "idle"]);
+  }
+  const room = chH - 5;
+  const maxScroll = Math.max(0, convo.length - room);
+  ctx.cmdScroll = Math.min(ctx.cmdScroll || 0, maxScroll);
+  ctx.cmdMaxScroll = maxScroll;
+  const end = convo.length - ctx.cmdScroll, shown = convo.slice(Math.max(0, end - room), end);
+  for (const [t, role] of shown) cb.push(line([["  " + t, role]], iw));
   while (cb.length < chH - 4) cb.push(" ".repeat(iw));
   const prompt = ctx.focusInput ? ctx.input + "▏" : ctx.input || "Ask anything…  (press : to type)";
   cb.push(paint("frame", " " + "─".repeat(iw - 2) + " "));
   cb.push(line([[" › ", "accent"], [cut(prompt.slice(-(iw - 6)), iw - 4), ctx.focusInput || ctx.input ? "head" : "dim"]], iw));
-  const chPanel = panel("Commander", R, chH, cb, { on: ctx.focusInput, tag: "Enter sends" });
+  const above = Math.max(0, end - room);
+  const chPanel = panel("Commander", R, chH, cb, { on: ctx.focusInput, tag: ctx.cmdScroll ? `↓ ${ctx.cmdScroll} newer · PgDn` : above ? `↑ ${above} more · PgUp` : "Enter sends" });
+  ctx.cmdTop = (topH || 0) + apH; // body row where the commander panel starts
+  ctx.cmdBottom = ctx.cmdTop + chH;
   const right = [...apPanel, ...chPanel];
   out.push(...mapPanel.map((r, i) => r + (right[i] ?? " ".repeat(R))));
   ctx.mapTop = (topH ? topH : 0) + 1; // body row (0-based) where the map's canvas starts
