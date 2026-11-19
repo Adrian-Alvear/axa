@@ -3,7 +3,7 @@
 // commander on the right, the sessions table and the log underneath.
 import { Canvas, areaChart } from "./canvas.mjs";
 import { sliceAnsi } from "./ansi.mjs";
-import { I, ago, chipOf, clean, cut, fmtTok, line, look, paint, setMotion, sgrOf, spinner, width } from "./draw.mjs";
+import { I, ago, chipOf, clean, cut, fmtTok, line, look, paint, reviewBadge, setMotion, sgrOf, spinner, width } from "./draw.mjs";
 
 // a finished session leaves the map after this long idle (it stays open and in the Sessions tab)
 const MAP_IDLE_MS = 20 * 60_000;
@@ -121,6 +121,7 @@ function said(e) {
     case "UserAnswer": return [`you answered: ${clean(e.answer)}`, "accent"];
     case "SupervisorWake": return ["woke the commander", "accent"];
     case "ChainFired": return [`link fired → ${clean(e.to)}`, "accent"];
+    case "Review": return [`review: ${e.verdict} (${e.findings ?? 0} finding${e.findings === 1 ? "" : "s"})${e.raw_verdict && e.raw_verdict !== e.verdict ? `, reviewer said ${e.raw_verdict}` : ""}`, { approve: "done", warn: "waitSoft", block: "stuck" }[e.verdict] || "dim"];
   }
   return null;
 }
@@ -195,7 +196,7 @@ function mapRows(ctx, cols, rows) {
   // the commander's own agents: chips on an inner orbit, each linked to the core (placed in the gaps
   // between session cards, nudged until they don't overlap anything)
   const cards = nodes.map(({ s, col, row }) => {
-    const name = `${look(s)[0]} ${clean(s.name)}`, sub = `${chipOf(s)[0].trim()}${s.usage?.tokens ? ` · ${fmtTok(s.usage.tokens)}` : ""}`;
+    const name = `${look(s)[0]} ${clean(s.name)}`, sub = `${chipOf(s)[0].trim()}${s.usage?.tokens ? ` · ${fmtTok(s.usage.tokens)}` : ""}${reviewBadge(s) ? ` · ${reviewBadge(s)}` : ""}`;
     const w = Math.min(28, Math.max(width(name), width(sub)) + 4);
     return { c0: Math.max(0, Math.min(cols - w, col - w / 2)), r0: Math.max(0, Math.min(rows - 4, row - 2)), w, h: 5 };
   });
@@ -267,7 +268,7 @@ function mapRows(ctx, cols, rows) {
   // session cards: a pulse ring while one waits, a flicker while stuck, one green flash when it finishes
   for (const { s, col, row, cc, rc } of nodes) {
     const [g, , role] = look(s), sel = s.id === selId;
-    const name = `${g} ${clean(s.name)}`, sub = `${chipOf(s)[0].trim()}${s.usage?.tokens ? ` · ${fmtTok(s.usage.tokens)}` : ""}`;
+    const name = `${g} ${clean(s.name)}`, sub = `${chipOf(s)[0].trim()}${s.usage?.tokens ? ` · ${fmtTok(s.usage.tokens)}` : ""}${reviewBadge(s) ? ` · ${reviewBadge(s)}` : ""}`;
     const w = Math.min(28, Math.max(width(name), width(sub)) + 4);
     const c0 = Math.max(0, Math.min(cols - w, cc - w / 2)), r0 = Math.max(0, Math.min(rows - 4, rc - 2));
     const cx = (c0 + w / 2) * 2, cy = (r0 + 2) * 4;

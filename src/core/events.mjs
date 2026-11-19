@@ -47,7 +47,7 @@ const GATE_WAIT_MS = 1500; // the verify gate's event can land just after Stop a
 
 // ---------- recent activity: the last events (for the hub's log) and events per minute (its chart) ----------
 const recent = []; // compact copies of the latest events
-const KEEP = ["ts", "event", "terminal", "role", "tool", "summary", "skill", "agent_id", "agent_type", "subagent_type", "decision", "reason", "answer", "from", "to", "items"];
+const KEEP = ["ts", "event", "terminal", "role", "tool", "summary", "skill", "agent_id", "agent_type", "subagent_type", "decision", "reason", "answer", "from", "to", "items", "verdict", "raw_verdict", "findings", "round"];
 function remember(e) {
   const c = {};
   for (const k of KEEP) if (e[k] !== undefined) c[k] = typeof e[k] === "string" ? clip(e[k], 160) : e[k];
@@ -134,6 +134,8 @@ function track(e) {
   trackRun(e, s);
 }
 
+export const trackEvent = (e) => track({ ts: Date.now(), ...e }); // tests: feed an event as if logged
+
 // ---------- helper agents per session: spawned -> running -> done ----------
 const helpers = new Map(), spawnQueue = new Map(); // terminal -> [helper] / [pending Agent calls]
 function trackHelpers(e) {
@@ -158,19 +160,23 @@ const helpersOf = (id) => (helpers.get(id) || []).map((h) => ({ ...h }));
 
 // ---------- runs: each instruction a session got, from the prompt to its result ----------
 const runs = [], openRuns = new Map();
+const EDIT_TOOLS = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"]);
 function trackRun(e, s) {
   const r = openRuns.get(e.terminal);
   if (e.event === "UserPromptSubmit") {
     if (/^\s*<task-notification>/.test(e.prompt || "")) return;
     if (r) { r.status = "replaced"; r.end = e.ts; }
-    const run = { id: `${e.terminal}-${e.ts}`, terminal: e.terminal, cwd: e.cwd, role: e.role, prompt: clip(e.prompt, 400), start: e.ts, steps: 0, helpers: 0, approvals: 0, declined: 0, escalated: 0, refused: 0, gate: 0, failures: 0, answers: [], status: "running" };
+    const run = { id: `${e.terminal}-${e.ts}`, terminal: e.terminal, cwd: e.cwd, role: e.role, prompt: clip(e.prompt, 400), start: e.ts, steps: 0, helpers: 0, approvals: 0, declined: 0, escalated: 0, refused: 0, gate: 0, failures: 0, edits: 0, answers: [], status: "running" };
     runs.push(run); openRuns.set(e.terminal, run);
     if (runs.length > 1000) runs.splice(0, runs.length - 1000);
     return;
   }
   if (!r) return;
   switch (e.event) {
-    case "PreToolUse": if (!e.agent_id) { r.steps++; if (e.tool === "Agent" || e.tool === "Task") r.helpers++; } break;
+    case "PreToolUse":
+      if (!e.agent_id) { r.steps++; if (e.tool === "Agent" || e.tool === "Task") r.helpers++; }
+      if (EDIT_TOOLS.has(e.tool)) r.edits++; // a helper's edits count too: the turn changed code
+      break;
     case "PostToolUseFailure": r.failures++; break;
     case "AxaDecision": if (e.decision === "allow") r.approvals++; else if (e.decision === "deny") r.declined++; else r.escalated++; break;
     case "PolicyDecision": if (e.decision === "deny") r.refused++; break;
@@ -179,6 +185,8 @@ function trackRun(e, s) {
     case "Stop": if (s.status === "done") { Object.assign(r, { status: "done", end: e.ts, report: clip(e.message, 600) }); openRuns.delete(e.terminal); } break;
   }
 }
+// the session's latest run (open or just finished), for the reviewer
+export const lastRun = (terminal) => { for (let i = runs.length - 1; i >= 0; i--) if (runs[i].terminal === terminal) return runs[i]; return null; };
 export const runsSince = (since, limit = 200) => runs.filter((r) => (r.end || r.start) >= since).slice(-limit).reverse();
 
 // ---------- tail the log ----------

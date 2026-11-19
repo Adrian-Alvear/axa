@@ -132,6 +132,7 @@ src/
     sessions.mjs       sessions in tmux: start, resume, read the screen, type, answer, close
     events.mjs         status of each session from the hook events; helper agents; run history
     supervisor.mjs     wakes the commander when a session finishes, gets stuck or needs you; links
+    reviewer.mjs       the independent reviewer: runs it, reads its verdict, confirms block findings
     claude-data.mjs    your past chats and token usage, read from ~/.claude/projects
     catalog.mjs        projects and agents
     git.mjs            branch and changes, diffs, worktrees
@@ -140,7 +141,7 @@ src/
   web/index.html     the web console
 mcp/                 the commander's session tools (list, read, send, goal, open, close, link)
 hooks/               event log, permission policy, approver, verify gate
-agents/ skills/      axa:builder / reviewer / researcher; the axa, verify and web skills
+agents/ skills/      axa:builder / reviewer / researcher, the review gate's prompt; the axa, verify and web skills
 ```
 
 - **Sessions survive everything.** Each runs in tmux on AXA's own socket (`tmux -L axa-4747`; your
@@ -162,11 +163,41 @@ agents/ skills/      axa:builder / reviewer / researcher; the axa, verify and we
   writing to `~/.axa` or answering prompts. Details: `hooks/policy.mjs`, tests in `test/`.
 - **"Done" means checked.** If a session edits code and tries to finish without running a check,
   AXA's verify gate sends it back once. `"verifyGate": "off"` in `~/.axa/policy.json` turns it off.
+- **An independent review before "done".** See [Independent review](#independent-review).
 - **AXA wakes itself.** When a session finishes, gets stuck or needs you, the daemon tells the
   commander (only when it's idle and you aren't typing in it), so it can check the work and report.
   `AXA_SUPERVISOR=0` turns it off.
 - **Budgets.** `{ "default": { "budget": { "tokens": 5000000 } } }` in `~/.axa/policy.json`: a
   session over budget is flagged and gets no more work from the commander.
+
+## Independent review
+
+When a project session finishes a turn that changed code (it edited files, or git moved), the daemon
+runs a separate reviewer before the commander hears about it: a headless `claude -p` in the project
+folder, on `claude-opus-5-5` at high effort, with its own prompt (`agents/reviewer-gate.md`). It is
+read-only (`AXA_ROLE=reviewer` in `hooks/policy.mjs`): it reads files, looks at git diff/status/log and
+runs the project's own checks (tests, type-check, build). It never edits, pushes or goes on the web.
+
+- **What it checks:** that the diff does what was asked (checked against the instruction, not the
+  session's report), that the checks pass, and what's around the change: side effects and unrelated
+  files, edge cases, security, leftover debug or temp code, docs and README that are now wrong, missing
+  tests.
+- **The evidence rule:** every finding needs a file and line, a snippet quoted from the file, and how to
+  see or reproduce it. Without evidence it isn't reported, and when unsure it's a warning, never a
+  block. The answer must be one strict JSON verdict (`approve`, `warn` or `block`); anything else counts
+  as a failed review.
+- **Blocks are double-checked.** Before a block counts, the daemon itself looks for each serious
+  finding's quoted snippet in that file near that line. Findings it can't find are dropped, and with
+  none left the block becomes a warning. A confirmed block goes back to the session to fix (at most two
+  rounds per instruction); the third time, the commander gets the findings instead.
+- **Where you see it:** a badge on the session (`… reviewing`, `✓ reviewed`, `⚠ review`, `✗ blocked`)
+  on the Control map and in the Sessions list, `review: …` in the log, the verdict line in the
+  commander's update, and the findings in `list_sessions`. If the reviewer times out (10 minutes) or
+  fails, AXA carries on as before and says the turn wasn't reviewed.
+- **Settings** in `~/.axa/policy.json`, for all projects or one:
+  `{ "default": { "reviewer": { "model": "claude-opus-5-5", "effort": "high" } }, "projects": { "notes": { "reviewer": { "mode": "off" } } } }`.
+  **Turn it off** with `"reviewer": { "mode": "off" }`, or `AXA_REVIEWER=0` in the daemon's environment.
+  Each review is a real, billed model run.
 
 ## Make it yours
 

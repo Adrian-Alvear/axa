@@ -25,6 +25,14 @@ const gitLine = (g) => [`branch ${g.branch}`, g.files ? `${g.files} file${g.file
 const fmtTokens = (n) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${Math.round(n / 1e3)}k` : String(n));
 
 // One line per session for the commander: what it is, its status, what it's doing or last said
+// the independent reviewer's verdict on its last turn, with the findings (file:line, problem, evidence)
+function reviewText(r) {
+  if (r.verdict === "reviewing") return "review: an independent reviewer is checking its last turn";
+  const head = `review: ${r.verdict}${r.raw_verdict && r.raw_verdict !== r.verdict ? ` (reviewer said ${r.raw_verdict}; unconfirmed findings dropped)` : ""}${r.round ? `, block round ${r.round}` : ""} — ${r.summary || ""}`;
+  const checks = (r.checks || []).map((c) => `${c.ok ? "pass" : "FAIL"}: ${c.cmd}`).join("; ");
+  const fs = (r.findings || []).map((f, i) => `  ${i + 1}. [${f.severity}] ${f.file}:${f.line} ${f.problem} | quote: ${String(f.quote).replace(/\s+/g, " ").slice(0, 160)} | evidence: ${f.evidence}`);
+  return [head, checks && `checks: ${checks}`, ...fs].filter(Boolean).join("\n");
+}
 function describe(s) {
   const flag = s.status === "waiting" ? " — NEEDS THE USER'S APPROVAL" : s.status === "stuck" ? ` — STUCK for ${s.stuck_minutes ?? "?"}m, may need the user` : "";
   const head = `[${s.id}] ${s.name} (${s.mode}) · ${s.status}${flag} · idle ${s.idle_seconds}s · ${s.cwd}`;
@@ -35,6 +43,7 @@ function describe(s) {
   if (s.usage) said.push(`usage: ${fmtTokens(s.usage.tokens)} tokens${s.usage.budget ? ` of a ${fmtTokens(s.usage.budget)} budget${s.usage.over_budget ? " — OVER BUDGET: give it no more work" : ""}` : ""}`);
   if (s.choices) said.push(`prompt on screen (only the user may answer it): ${s.choices.question.replace(/\s+/g, " ").slice(-300)} → ${s.choices.options.map((o) => `${o.n}. ${o.label}`).join(" | ")}`);
   if (s.error) said.push(`last error: ${s.error}`);
+  if (s.review) said.push(reviewText(s.review));
   if (s.last_report) said.push(`last report: ${s.last_report.replace(/\s+/g, " ").slice(0, 600)}`);
   return said.length ? `${head}\n${untrusted(said.join("\n"))}` : head;
 }

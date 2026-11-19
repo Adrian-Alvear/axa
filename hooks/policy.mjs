@@ -6,7 +6,8 @@
 //     .git internals or secret files, reading secret files
 //   - everything else: no opinion, so Claude Code's own permission mode decides (it may ask)
 // Acts in AXA project sessions (AXA_ROLE=worker) and, with its own narrower rules, in AXA's commander
-// (AXA_ROLE=commander, see "the commander" below); never in your own sessions. Every decision is
+// (AXA_ROLE=commander, see "the commander" below) and its independent reviewer (AXA_ROLE=reviewer,
+// read-only, see "the reviewer"); never in your own sessions. Every decision is
 // logged to ~/.axa/events.jsonl. Per-project settings live in ~/.axa/policy.json (see README).
 // Never throws; prints nothing when it has no opinion. The approver imports its helpers
 // (localReversible, heredocWrite, commanderRead...), so the hook only runs when this is the script.
@@ -39,11 +40,12 @@ if (isMain) {
   process.stdin.on("end", () => {
     try {
       const role = process.env.AXA_ROLE;
-      if (role !== "worker" && role !== "commander") return process.exit(0);
+      if (role !== "worker" && role !== "commander" && role !== "reviewer") return process.exit(0);
       const e = JSON.parse(raw);
       const ctx = context(e);
-      if (ctx.settings.mode === "off") return process.exit(0);
-      const verdict = (role === "commander" ? decideCommander : decide)(e.tool_name, e.tool_input || {}, ctx);
+      // the reviewer stays read-only even when the project's policy is off
+      if (ctx.settings.mode === "off" && role !== "reviewer") return process.exit(0);
+      const verdict = (role === "commander" ? decideCommander : role === "reviewer" ? decideReviewer : decide)(e.tool_name, e.tool_input || {}, ctx);
       if (!verdict) return process.exit(0);
       log(e, verdict);
       process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: verdict.decision, permissionDecisionReason: `AXA policy: ${verdict.reason}` } }));
@@ -390,6 +392,83 @@ function safeGit(rest, ctx) {
       });
     }
   }
+  return false;
+}
+
+// ---------- the reviewer (AXA_ROLE=reviewer) ----------
+// The daemon's independent reviewer (src/core/reviewer.mjs) checks a worker's finished turn. It never
+// edits, never goes on the web, never takes a one-way door; its shell is read-only plus the project's
+// own checks (tests, type-check, build). Unlike the worker's rules this one denies rather than leaving
+// a call to Claude Code: a headless review has nobody to ask.
+const RO = "the independent reviewer is read-only";
+const REVIEW_GIT = new Set(["status", "diff", "log", "show", "blame", "ls-files", "rev-parse", "shortlog"]);
+const REVIEW_SCRIPTS = /^(?:test|build|lint|typecheck|type-check|check|tsc)(?::[\w:-]+)?$/;
+export function decideReviewer(tool, input, ctx) {
+  const target = input.file_path || input.notebook_path || input.path;
+  if (target && inside(pathOf(target, ctx), real(home))) return deny(AXA_PRIVATE);
+  switch (tool) {
+    case "Edit": case "Write": case "MultiEdit": case "NotebookEdit": return deny(`${RO}: it never edits files; describe the problem instead`);
+    case "WebFetch": case "WebSearch": return deny(`${RO}: it works from the project, not the web`);
+    case "Agent": case "Task": return deny(`${RO}: it doesn't start helpers`);
+    case "Read": {
+      const p = pathOf(input.file_path || "", ctx);
+      if (isSecret(p)) return deny(`reading a secret file (${basename(p)}) isn't allowed`);
+      return inside(p, ctx.root) ? allow("the reviewer reading inside the project") : deny(`${RO}: only inside the project`);
+    }
+    case "Glob": case "Grep": case "LS":
+      return inside(pathOf(input.path || ".", ctx), ctx.root) ? allow("the reviewer searching inside the project") : deny(`${RO}: only inside the project`);
+    case "TodoWrite": case "ToolSearch": return allow("planning tool");
+    case "Bash": return reviewerBash(String(input.command || ""), ctx);
+  }
+  return deny(`${RO}: ${tool} isn't one of its tools`);
+}
+function reviewerBash(cmd, ctx) {
+  const danger = dangerousShell(cmd);
+  if (danger) return deny(`blocked: ${danger}`);
+  if (AXA_CONTROLS.test(cmd) || reachesAxaTmux(cmd) || (home !== join(homedir(), ".axa") && cmd.includes(home))) return deny(AXA_PRIVATE);
+  if (oneWayDoor("Bash", { command: cmd }, { cwd: ctx.cwd })) return deny(`${RO}: never a one-way door`);
+  const no = deny(`${RO}: its shell runs read-only commands and the project's checks only (${cmd.slice(0, 80)})`);
+  if (/[`$]|<\(|>\(|<<|&>/.test(cmd) || escapes(cmd)) return no;
+  const segments = split(cmd);
+  if (!segments) return no;
+  let cwds = [ctx.cwd];
+  for (const words of segments) {
+    if (words[0] === "cd") {
+      if (words.length !== 2) return no;
+      const next = cwds.map((cwd) => pathOf(words[1], { ...ctx, cwd }));
+      if (!next.every((p) => inside(p, ctx.root))) return no;
+      cwds = [...new Set([...cwds, ...next])];
+      continue;
+    }
+    if (!cwds.every((cwd) => reviewerSegment(words, { ...ctx, cwd }))) return no;
+  }
+  return allow("the reviewer's read-only command or project check");
+}
+function reviewerSegment(words, ctx) {
+  // no writes at all: redirections only to /dev/null or another stream
+  const args = [];
+  for (let i = 0; i < words.length; i++) {
+    const m = /^([0-9]?>>?|<)(.*)$/.exec(words[i]);
+    if (!m) { args.push(words[i]); continue; }
+    const t = m[2] || words[++i];
+    if (!(t === "&1" || t === "&2" || t === "/dev/null" || (m[1] === "<" && t && inside(pathOf(t, ctx), ctx.root) && !isSecret(pathOf(t, ctx))))) return false;
+  }
+  const [cmd, ...rest] = args;
+  if (!cmd || /=/.test(cmd) || cmd.includes("/") || writeTargets(args).length) return false;
+  const inProject = (list) => list.every((a) => inside(pathOf(a, ctx), ctx.root) && !isSecret(pathOf(a, ctx)));
+  if (cmd === "git") return REVIEW_GIT.has(rest[0]) && !gitRisky(rest) && safeSegment(args, ctx);
+  if (READ_ONLY.has(cmd) || cmd === "find") return safeSegment(args, ctx);
+  // node --test [files], node --check <files>: no other options (--import/--require would preload code)
+  if (cmd === "node") return (rest[0] === "--test" || (rest[0] === "--check" && rest.length > 1)) && !rest.slice(1).some((a) => a.startsWith("-")) && inProject(rest.slice(1));
+  if (PKG.has(cmd)) {
+    const script = ["run", "run-script"].includes(rest[0]) ? rest[1] : rest[0];
+    return (["test", "t"].includes(rest[0]) || (["run", "run-script"].includes(rest[0]) && REVIEW_SCRIPTS.test(script || ""))) && !rest.some((a) => /^-(?:g|-global)$/.test(a));
+  }
+  if (cmd === "npx") return rest[0] === "tsc" && !rest.some((a) => a === "-y" || a === "--yes" || /^--(?:outDir|outFile|declarationDir)/.test(a));
+  if (cmd === "pytest") return true;
+  if (cmd === "python" || cmd === "python3") return rest[0] === "-m" && ["pytest", "unittest", "mypy", "ruff"].includes(rest[1]);
+  if (cmd === "cargo") return ["test", "check", "clippy"].includes(rest[0]);
+  if (cmd === "go") return ["test", "vet"].includes(rest[0]);
   return false;
 }
 

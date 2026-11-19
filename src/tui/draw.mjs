@@ -59,6 +59,9 @@ const LOOK = () => ({ waiting: [I.wait, "needs you", "wait", "chipWait"], stuck:
 export const look = (s) => (s.mode === "shell" && ["starting", "ready"].includes(s.status) ? [I.shell, "shell", "idle", "chipIdle"] : LOOK()[s.status] || ["?", s.status, "idle", "chipIdle"]);
 // a status chip: " NEEDS YOU "
 export const chipOf = (s) => { const [, word, , role] = look(s); return [` ${word.toUpperCase()} `, role]; };
+// the independent reviewer's verdict on a session's last turn, as a small badge
+const REVIEW_BADGE = { reviewing: "… reviewing", approve: "✓ reviewed", warn: "⚠ review", block: "✗ blocked", error: "? unreviewed" };
+export const reviewBadge = (s) => REVIEW_BADGE[s?.review?.verdict] || "";
 export const URGENCY = ["waiting", "stuck", "working", "done", "ready", "starting", "exited"];
 
 // ---------- text ----------

@@ -13,7 +13,7 @@ import { fileURLToPath } from "node:url";
 import { files, inHome, openUrl, pluginRoot, port, tilde, webUrl } from "../paths.mjs";
 import { api } from "../daemon.mjs";
 import { SOCKET, TMUX_CONF, tmuxEnv } from "../core/tmux-client.mjs";
-import { ESC, I, THEME_NAMES, nerdFontInstalled, URGENCY, ago, chipOf, clean, cut, fmtTok, gitText, line, look, pad, paint, selLine, setIcons, setMotion, setTheme, spinner, truecolor, width } from "./draw.mjs";
+import { ESC, I, THEME_NAMES, nerdFontInstalled, URGENCY, ago, chipOf, clean, cut, fmtTok, gitText, line, look, pad, paint, reviewBadge, selLine, setIcons, setMotion, setTheme, spinner, truecolor, width } from "./draw.mjs";
 import { sliceAnsi } from "./ansi.mjs";
 import { LiveView } from "./live.mjs";
 import { agentDetail, agentName, axaStatusLine, controlRows, msgText, selectedText } from "./control.mjs";
@@ -127,7 +127,8 @@ export async function runTui() {
       const s = it.s, [g, , role] = look(s), cmd = s.mode === "axa";
       const icon = cmd ? I.axa : s.status === "working" || s.status === "starting" ? g : s.mode === "shell" ? I.shell : I.session;
       const sub = cmd ? "the commander" : `${where(s.worktree?.repo || s.cwd)}${s.git ? `  ${I.branch} ${s.git.branch}${s.git.files ? ` +${s.git.added} -${s.git.removed}` : ""}` : ""}`;
-      return [[[[`${icon} `, cmd ? "title" : role], [nameOf(s), cmd ? "title" : "head"]], [chipOf(s)]], [[["  " + sub, "dim"]], [[s.usage?.tokens ? `${fmtTok(s.usage.tokens)}` : "", "dim"]]]];
+      const rb = reviewBadge(s), rbRole = { approve: "done", warn: "waitSoft", block: "stuck" }[s.review?.verdict] || "dim";
+      return [[[[`${icon} `, cmd ? "title" : role], [nameOf(s), cmd ? "title" : "head"]], [chipOf(s)]], [[["  " + sub, "dim"]], [[rb ? `${rb}  ` : "", rbRole], [s.usage?.tokens ? `${fmtTok(s.usage.tokens)}` : "", "dim"]]]];
     }
     if (it.kind === "chat") {
       const c = it.c;
