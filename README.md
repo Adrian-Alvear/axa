@@ -10,21 +10,25 @@ across projects, and it opens a session per project, hands each one its work, ch
 and reports back.
 
 ```
- ◆ AXA  hub                                                        ⚠ 1 needs you · 2 working  09:41
- ⚠ feed needs you: Do you want to proceed?                    y Yes   x No   ! go there
-╭─ 1 Sessions (3) ─────────────────────────╮╭─ 2 Chats (24) ───────────────────────────────────╮
-│ ◆ AXA commander                  ○ ready ││ ● Fix the phone layout                 feed · 2m │
-│   ready: open it and tell it what you…   ││   Onerec DEV02 proxy routes               ~ · 1h │
-│ ⚠ feed  ~/feed               ⚠ needs you ││   Conformance scenarios V1 sync check     ~ · 3d │
-│   Do you want to proceed?                │╰──────────────────────────────────────────────────╯
-│ ● launches  ~/launches         ● working │╭─ 3 Agents (6) ───────────────────────────────────╮
-│   Edit · src/app.tsx   ⎇ v7 3f +40 -2    ││ ● axa:builder  Code builder…       1 running · axa │
-╰──────────────────────────────────────────╯│   axa:reviewer  Code reviewer…              axa │
-╭─ 4 Projects (3) ─────────────────────────╮│   Explore  Fast read-only search…      built-in │
-│ ▣ feed      ⎇ main                1 open ││   Plan  Designs an implementation plan…  built-in │
-│ ▣ launches  ⎇ v7 3f +40 -2        1 open │╰──────────────────────────────────────────────────╯
- Tab panels  ⏎ open · d diff · g goal · r rename · X close  │  n new  a AXA  / filter  ? help  q quit
+ ◆ AXA                                                       ⚠ 1 NEEDS YOU   ⠹ 2 WORKING   09:41
+ 1 ▸ Sessions 3   2 ≡ Chats 24   3 ◇ Agents 6   4 ▣ Projects 3
+▌◆ AXA commander                READY │   ▸  feed                                       NEEDS YOU
+▌  the commander                      │   ~/feed   ⎇ main 3f +40 -2   Σ 120k tokens
+                                      │
+ ▸ feed                     NEEDS YOU │   Do you want to make this edit to app.tsx?
+   ~/feed  ⎇ main +40 -2         120k │    y  Yes     x  No
+                                      │
+ ⠹ launches                   WORKING │   AGENTS
+   ~/launches  ⎇ v7 +12 -3        48k │   ⠹ axa:builder  Edit · src/app.tsx              12 steps
+                                      │   SCREEN ──────────────────────────────────────────────
+                                      │   (the session's live screen, in color)
+ ⏎ open  d changes  g goal  v checks  r rename  X close       Tab switch  a AXA  n new  ? help  q quit
 ```
+
+Tabs across the top, the list on the left, and a live preview of whatever is selected on the right:
+a session's actual screen (in color) with its prompt, agents and changes; a chat's last messages; an
+agent's instructions; a project's sessions and chats. Below 90 columns the preview hides and the list
+takes the whole width.
 
 ## Install
 
@@ -49,7 +53,7 @@ plugin (for the `axa` skill, agents and tracing hooks in your own sessions):
 |---|---|---|---|
 | **1 Sessions** | The AXA commander, then every session AXA runs, by what needs you: needs you, stuck, working, done, ready. Each shows what it's doing or last said, its branch and changes, tokens, and helper agents at work. | open it live | `d` changes · `g` give a goal · `v` run checks · `r` rename · `X` close |
 | **2 Chats** | Every past Claude Code conversation, newest first, with its title (your `/rename`, else Claude's). `●` = open in a session right now. | resume it (or jump to it) | `/` filter |
-| **3 Agents** | The agents Claude can use: AXA's, yours (`~/.claude/agents`), each project's (`.claude/agents`), and Claude's built-ins. `●` = running somewhere now. | details | `u` give it a task (the commander runs it) |
+| **3 Agents** | The agents Claude can use: AXA's, yours (`~/.claude/agents`), each project's (`.claude/agents`), and Claude's built-ins, with how many are running now. | give it a task (the commander runs it) | `/` filter |
 | **4 Projects** | Your repos (from the roster, `~/projects`, and git repos in `~`). | its session, or a new one | `n` new · `w` new in its own worktree · `s` shell |
 
 Everywhere: `Tab` / `1`-`4` switch panels, `a` the commander, `n` new session, `/` filter, `y` / `x`
@@ -130,5 +134,6 @@ cp roster.example.md ~/.axa/roster.md
 ```
 
 The roster holds the roles AXA uses (which agent, which model), house rules every agent follows,
-and your projects with notes. Settings for the hub (theme, prefix key, bell) are in `,` and saved in
-`~/.axa/ui.json`.
+and your projects with notes. Settings for the hub are in `,` and saved in `~/.axa/ui.json`: theme (`axa`, the default on
+terminals with 24-bit color; `terminal`, your terminal's own 16 colors; `mono`), icons (Nerd Font
+glyphs if one is installed, else plain Unicode), prefix key and bell.

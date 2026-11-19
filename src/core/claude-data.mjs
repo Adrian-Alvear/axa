@@ -142,3 +142,30 @@ export function usageOf(chat, cwd, live) {
   const tokens = tot.input + tot.output, budget = budgetFor(cwd);
   return { tokens, input: tot.input, cached: tot.cached, output: tot.output, budget: budget || undefined, over_budget: budget > 0 && tokens > budget };
 }
+
+// ---------- a chat's last messages, for the hub's preview ----------
+// [{ role: "you" | "claude", text }] from the end of the transcript (tool calls and results left out)
+export function chatMessages(id, max = 12) {
+  if (!CHAT_ID.test(String(id))) return null;
+  let path = null;
+  try { for (const d of readdirSync(projectsDir())) { const p = join(projectsDir(), d, `${id}.jsonl`); if (existsSync(p)) { path = p; break; } } } catch {}
+  if (!path) return null;
+  const size = statSync(path).size, SLICE = 512 * 1024;
+  const lines = readSlice(path, Math.max(0, size - SLICE), Math.min(size, SLICE)).split("\n");
+  if (size > SLICE) lines.shift();
+  const msgs = [];
+  for (const line of lines) {
+    if (!line.includes('"message"')) continue;
+    let o; try { o = JSON.parse(line); } catch { continue; }
+    if (o.isMeta || o.isSidechain || (o.type !== "user" && o.type !== "assistant")) continue;
+    const c = o.message?.content;
+    const text = typeof c === "string" ? c : Array.isArray(c) ? c.filter((p) => p?.type === "text").map((p) => p.text).join("\n") : "";
+    if (!text.trim() || /^\s*<(command|local-command|system-reminder|bash-|task-notification)/.test(text)) continue;
+    const role = o.type === "user" ? "you" : "claude";
+    // a streamed reply repeats; keep the last version of each message
+    const key = o.message?.id;
+    if (key && msgs.length && msgs.at(-1).key === key) msgs[msgs.length - 1].text = text;
+    else msgs.push({ role, text: text.slice(0, 4000), key });
+  }
+  return msgs.slice(-max).map(({ role, text }) => ({ role, text }));
+}

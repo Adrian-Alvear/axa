@@ -4,7 +4,7 @@
 // past chats, the agents you have, and your projects. Nothing starts until you pick something. Opening a
 // session shows it live, full screen, under a one-line AXA header; Ctrl-b h (the prefix key, then h)
 // brings you back to the hub, and the session keeps running.
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -13,14 +13,14 @@ import { fileURLToPath } from "node:url";
 import { files, inHome, openUrl, pluginRoot, port, tilde, webUrl } from "../paths.mjs";
 import { api } from "../daemon.mjs";
 import { SOCKET, TMUX_CONF, tmuxEnv } from "../core/tmux-client.mjs";
-import { ESC, URGENCY, ago, clean, cut, fmtTok, gitText, line, look, pad, paint, selLine, setTheme, width } from "./draw.mjs";
+import { ESC, I, THEME_NAMES, nerdFontInstalled, URGENCY, ago, chipOf, clean, cut, fmtTok, gitText, line, look, pad, paint, selLine, setIcons, setTheme, spinner, truecolor, width } from "./draw.mjs";
 import { sliceAnsi } from "./ansi.mjs";
 import { LiveView } from "./live.mjs";
 import { pasteFile, readClipboard } from "./clipboard.mjs";
 
 const out = process.stdout;
 const PREFIXES = { "C-b": 0x02, "C-a": 0x01, "C-g": 0x07, "C-\\": 0x1c };
-const DEFAULTS = { theme: "terminal", prefix: "C-b", bell: true };
+const DEFAULTS = { theme: "axa", prefix: "C-b", bell: true };
 const PANELS = ["sessions", "chats", "agents", "projects"];
 const TITLES = { sessions: "Sessions", chats: "Chats", agents: "Agents", projects: "Projects" };
 
@@ -29,7 +29,10 @@ export async function runTui() {
   let cfg = { ...DEFAULTS };
   try { cfg = { ...DEFAULTS, ...JSON.parse(readFileSync(files.ui, "utf8")) }; } catch {}
   const saveCfg = () => { try { writeFileSync(files.ui, JSON.stringify(cfg, null, 2) + "\n", { mode: 0o600 }); chmodSync(files.ui, 0o600); } catch {} };
-  setTheme(cfg.theme);
+  // settings from v1 (theme "terminal"/"hud") move to the v2 look once; after that your choice sticks
+  if (cfg.version !== 2 || !cfg.icons) { cfg = { ...cfg, theme: "axa", icons: nerdFontInstalled() ? "nerd" : "plain", version: 2 }; saveCfg(); }
+  setTheme(cfg.theme === "axa" && !truecolor() && !process.env.AXA_TRUECOLOR ? "terminal" : cfg.theme);
+  setIcons(cfg.icons);
   const noColor = !!process.env.NO_COLOR || process.env.TERM === "dumb";
   const prefixByte = () => String.fromCharCode(PREFIXES[cfg.prefix] ?? 0x02);
   const keyName = () => cfg.prefix.replace("C-", "Ctrl-");
@@ -85,131 +88,249 @@ export async function runTui() {
     schedule();
   }
 
-  // ---------- hub panels: items and how each one draws ----------
+  // ---------- the hub: tabs, a list on the left, a live preview of the selection on the right ----------
   const match = (text, q) => !q || text.toLowerCase().includes(q.toLowerCase());
-  const runningOf = (agent) => data.sessions.flatMap((s) => s.helpers || []).filter((h) => h.status === "running" && (h.type === agent.name || h.type.split(":").pop() === agent.name.split(":").pop())).length;
+  const sameAgent = (type, name) => type === name || type.split(":").pop() === name.split(":").pop();
+  const busyOf = (a) => data.sessions.flatMap((s) => (s.helpers || []).filter((h) => h.status === "running" && sameAgent(h.type, a.name)).map((h) => ({ s, h })));
+  const chatWhere = (c) => (c.cwd === homedir() ? "~" : c.project);
   function items(panel) {
     const q = filter[panel];
     if (panel === "sessions") {
-      const cmd = commander();
-      const list = orderedSessions().filter((s) => s.alive || s.mode !== "axa");
-      const rows = [...(cmd ? [] : [{ kind: "commander-off" }]), ...list.map((s) => ({ kind: "session", s }))];
-      return rows.filter((r) => r.kind !== "session" || match(`${nameOf(r.s)} ${r.s.cwd} ${r.s.doing || ""}`, q));
+      const list = orderedSessions().filter((s) => s.alive || s.mode !== "axa").filter((s) => match(`${nameOf(s)} ${s.cwd} ${s.doing || ""}`, q));
+      return [...(commander() || q ? [] : [{ kind: "commander-off" }]), ...list.map((s) => ({ kind: "session", s }))];
     }
     if (panel === "chats") return data.chats.filter((c) => match(`${c.title} ${c.project} ${c.cwd}`, q)).map((c) => ({ kind: "chat", c }));
     if (panel === "agents") return data.agents.filter((a) => match(`${a.name} ${a.source} ${a.description}`, q)).map((a) => ({ kind: "agent", a }));
     return [...data.projects.filter((p) => match(`${p.name} ${p.path}`, q)).map((p) => ({ kind: "project", p })), ...(q ? [] : [{ kind: "home" }])];
   }
-  // Each item: an array of [segments, rightSegments] lines
-  function itemLines(it, w) {
-    if (it.kind === "commander-off") return [[[["◇ ", "dim"], ["AXA commander", "head"]], [["not running", "dim"]]], [[["  Enter starts it: it runs your sessions for you", "dim"]], []]];
+  const counts = () => ({ sessions: data.sessions.filter((s) => s.alive).length, chats: data.chats.length, agents: data.agents.length, projects: data.projects.length });
+
+  // a list entry: two lines, [left segments, right segments] each
+  function entry(it) {
+    if (it.kind === "commander-off") return [[[[`${I.axa} `, "dim"], ["AXA commander", "dim"]], [[" OFF ", "chipOff"]]], [[["  Enter starts it", "dim"]], []]];
     if (it.kind === "session") {
-      const s = it.s, [g, word, role] = look(s), cmd = s.mode === "axa";
-      const ctx = cmd ? "" : `  ${where(s.worktree?.repo || s.cwd)}${s.worktree ? ` (${s.worktree.branch})` : ""}`;
-      const first = [[[`${cmd ? "◆" : g} `, cmd ? "title" : role], [nameOf(s), cmd ? "title" : s.status === "waiting" ? "wait" : "head"], [ctx, "dim"]], [[`${g} ${word}`, role]]];
-      const said = s.status === "waiting" && s.choices ? question(s.choices) : clean(s.status === "done" ? s.last_report || "finished" : s.doing || (cmd ? "ready: open it and tell it what you want" : s.mode === "shell" ? "shell" : s.last_report || ""));
-      const helpers = (s.helpers || []).filter((h) => h.status === "running");
-      const meta = [gitText(s.git), s.usage?.tokens ? `${fmtTok(s.usage.tokens)} tok${s.usage.over_budget ? " over budget" : ""}` : "", helpers.length ? `● ${helpers.length} agent${helpers.length > 1 ? "s" : ""}` : ""].filter(Boolean).join(" · ");
-      return [first, [[["  " + said, s.status === "waiting" ? "waitSoft" : "dim"]], meta && width(said) + width(meta) + 6 < w ? [[meta + " ", "dim"]] : []]];
+      const s = it.s, [g, , role] = look(s), cmd = s.mode === "axa";
+      const icon = cmd ? I.axa : s.status === "working" || s.status === "starting" ? g : s.mode === "shell" ? I.shell : I.session;
+      const sub = cmd ? "the commander" : `${where(s.worktree?.repo || s.cwd)}${s.git ? `  ${I.branch} ${s.git.branch}${s.git.files ? ` +${s.git.added} -${s.git.removed}` : ""}` : ""}`;
+      return [[[[`${icon} `, cmd ? "title" : role], [nameOf(s), cmd ? "title" : "head"]], [chipOf(s)]], [[["  " + sub, "dim"]], [[s.usage?.tokens ? `${fmtTok(s.usage.tokens)}` : "", "dim"]]]];
     }
     if (it.kind === "chat") {
       const c = it.c;
-      return [[[[c.open_in ? "● " : "  ", "work"], [clean(c.title), "head"]], [[`${c.project === "adrianwsl" || c.cwd === homedir() ? "~" : c.project} · ${ago(c.updated)} `, "dim"]]]];
+      return [[[[`${c.open_in ? I.open : I.chat} `, c.open_in ? "work" : "dim"], [clean(c.title), "head"]], []], [[[`  ${chatWhere(c)}${c.branch && c.branch !== "HEAD" ? `  ${I.branch} ${c.branch}` : ""}`, "dim"]], [[ago(c.updated), "dim"]]]];
     }
     if (it.kind === "agent") {
-      const a = it.a, n = runningOf(a);
-      return [[[[n ? "● " : "  ", "work"], [a.name, "head"], [`  ${clean(a.description)}`, "dim"]], [[`${n ? `${n} running · ` : ""}${a.source} `, n ? "work" : "dim"]]]];
+      const a = it.a, n = busyOf(a).length;
+      return [[[[`${n ? spinner() : I.agent} `, n ? "work" : a.source === "axa" ? "accent" : "violet"], [a.name, "head"]], [[n ? ` ${n} RUNNING ` : "", "chipWork"]]], [[["  " + clean(a.description), "dim"]], []]];
     }
     if (it.kind === "project") {
       const p = it.p;
-      return [[[["▣ ", "accent"], [p.name, "head"], [`  ${gitText(p.git)}`, "dim"]], [[p.sessions ? `${p.sessions} open ` : "", "work"]]]];
+      return [[[[`${I.project} `, "accent"], [p.name, "head"]], [[p.sessions ? ` ${p.sessions} OPEN ` : "", "chipIdle"]]], [[[`  ${where(p.path)}  ${gitText(p.git)}`, "dim"]], []]];
     }
-    return [[[["~ ", "accent"], ["Home folder", "head"], ["  a session in ~", "dim"]], []]];
+    return [[[[`${I.home} `, "accent"], ["Home folder", "head"]], []], [[["  a session in ~", "dim"]], []]];
   }
-
-  // ---------- drawing ----------
-  let timer = null, prevRows = [], hits = [];
-  const schedule = () => { if (!timer && !quitting) timer = setTimeout(() => { timer = null; draw(); }, 16); };
-  // a framed panel: rows exactly w wide; registers click targets
-  function panelBox(panel, x, y, w, h) {
-    const on = PANELS[focus] === panel && screen === "hub" && !overlay;
-    const list = items(panel), fr = on ? "frameOn" : "frame";
-    const count = list.filter((i) => i.kind !== "commander-off" && i.kind !== "home").length;
-    const ftxt = filter[panel] || (on && filtering) ? `  /${filter[panel]}${on && filtering ? "▏" : ""}` : "";
-    const label = ` ${PANELS.indexOf(panel) + 1} ${TITLES[panel]} ${count ? `(${count})` : ""}${ftxt} `;
-    const rows = [paint(fr, "╭─") + paint(on ? "title" : "head", cut(label, w - 4)) + paint(fr, "─".repeat(Math.max(0, w - 3 - width(cut(label, w - 4)))) + "╮")];
-    const iw = w - 2, ih = h - 2;
+  function listRows(panel, x, y0, w, h) {
+    const list = items(panel), rows = [];
     sel[panel] = Math.max(0, Math.min(sel[panel], list.length - 1));
-    // scroll so the selected item is fully visible
-    const heights = list.map((it) => itemLines(it, iw - 1).length);
-    const top = (i) => heights.slice(0, i).reduce((a, b) => a + b, 0);
-    if (top(sel[panel]) < scroll[panel]) scroll[panel] = top(sel[panel]);
-    if (top(sel[panel]) + (heights[sel[panel]] || 1) > scroll[panel] + ih) scroll[panel] = top(sel[panel]) + (heights[sel[panel]] || 1) - ih;
-    scroll[panel] = Math.max(0, Math.min(scroll[panel], Math.max(0, top(list.length) - ih)));
-    const body = [];
-    list.forEach((it, i) => {
-      const isSel = i === sel[panel];
-      for (const [segs, right] of itemLines(it, iw - 1)) {
-        const txt = isSel ? selLine([[" ", ""], ...segs], iw, right, on ? "sel" : "selDim") : line([[" ", ""], ...segs], iw, right);
-        body.push({ txt, i });
+    const per = 3, fit = Math.max(1, Math.floor((h + 1) / per)); // two lines and a gap per entry
+    if (sel[panel] < scroll[panel]) scroll[panel] = sel[panel];
+    if (sel[panel] >= scroll[panel] + fit) scroll[panel] = sel[panel] - fit + 1;
+    scroll[panel] = Math.max(0, Math.min(scroll[panel], Math.max(0, list.length - fit)));
+    for (let i = scroll[panel]; i < list.length && rows.length + 2 <= h; i++) {
+      const isSel = i === sel[panel], on = isSel ? (screen === "hub" && !overlay ? "sel" : "selDim") : null;
+      for (const [segs, right] of entry(list[i])) {
+        rows.push(paint(isSel ? "frameOn" : "", isSel ? "▌" : " ") + line(segs, w - 1, right, on));
+        hits.push({ x0: x, x1: x + w - 1, y: y0 + rows.length - 1, panel, i });
       }
-    });
-    const shown = body.slice(scroll[panel], scroll[panel] + ih);
-    if (!list.length) shown.push({ txt: line([[" " + (filter[panel] ? "nothing matches" : { sessions: "nothing running: n starts a session, a the commander", chats: "no chats yet", agents: "no agents found", projects: "no projects found: add them in ~/.axa/roster.md" }[panel]), "dim"]], iw) });
-    for (let r = 0; r < ih; r++) {
-      const b = shown[r];
-      rows.push(paint(fr, "│") + (b ? b.txt : " ".repeat(iw)) + paint(fr, "│"));
-      hits.push({ x0: x, x1: x + w - 1, y: y + 1 + r, panel, i: b?.i });
+      if (rows.length < h) rows.push(" ".repeat(w));
     }
-    const more = top(list.length) > scroll[panel] + ih ? ` ↓ ${list.length - 1 - sel[panel]} more ` : "";
-    rows.push(paint(fr, "╰" + "─".repeat(Math.max(0, w - 3 - width(more)))) + paint("dim", more) + paint(fr, "─╯"));
-    hits.push({ x0: x, x1: x + w - 1, y, panel }, { x0: x, x1: x + w - 1, y: y + h - 1, panel });
+    if (!list.length) {
+      const msg = filter[panel] ? "nothing matches" : { sessions: "nothing running yet", chats: "no chats yet", agents: "no agents found", projects: "no projects found" }[panel];
+      rows.push(line([[`  ${msg}`, "dim"]], w));
+      if (!filter[panel] && panel === "sessions") rows.push(line([["  n starts a session · a the commander", "dim"]], w));
+    }
+    const more = list.length - scroll[panel] - fit;
+    while (rows.length < h) rows.push(" ".repeat(w));
+    if (more > 0) rows[h - 1] = line([[`  ↓ ${more} more`, "dim"]], w);
+    if (scroll[panel] > 0) rows[0] = line([[`  ↑ ${scroll[panel]} more`, "dim"]], w);
     return rows;
   }
+
+  // ---------- preview ----------
+  const wrapText = (text, w, indent = "") => {
+    const outL = [];
+    for (const para of String(text ?? "").replace(/\r/g, "").split("\n")) {
+      let cur = indent;
+      for (const word of para.split(/(\s+)/)) {
+        if (!word) continue;
+        if (width(cur + word) > w && cur.trim()) { outL.push(cur.trimEnd()); cur = indent + word.trimStart(); }
+        else cur += word;
+      }
+      outL.push(cur.trimEnd());
+    }
+    return outL;
+  };
+  // the session's screen, with its colors, straight from tmux (refreshed while it's selected)
+  const shots = new Map(); // id -> { at, lines }
+  function screenOf(id) {
+    const c = shots.get(id);
+    if (c && Date.now() - c.at < 400) return c.lines;
+    const r = spawnSync("tmux", ["-L", SOCKET, "capture-pane", "-p", "-e", "-t", `=axa-${id}:`], { encoding: "utf8", env: tmuxEnv(), timeout: 2000 });
+    const lines = r.status === 0 ? r.stdout.replace(/\n+$/, "").split("\n") : c?.lines || [];
+    shots.set(id, { at: Date.now(), lines });
+    return lines;
+  }
+  const chatCache = new Map(); // id -> { updated, msgs, loading }
+  function messagesOf(c) {
+    const m = chatCache.get(c.id);
+    if (m && m.updated === c.updated) return m.msgs;
+    if (!m?.loading) {
+      chatCache.set(c.id, { ...m, loading: true });
+      call(`/api/chats/${c.id}/messages?limit=16`).then((msgs) => { chatCache.set(c.id, { updated: c.updated, msgs }); schedule(); }, () => chatCache.set(c.id, { updated: c.updated, msgs: [] }));
+    }
+    return m?.msgs || null;
+  }
+  function previewRows(it, w, h) {
+    const P = []; // [segs, right, role-on]
+    const head = (icon, iconRole, title, chip) => { P.push([[], [], "pvHead"]); P.push([[[`  ${icon}  `, iconRole], [title, "pvHead"]], chip ? [chip, ["  ", ""]] : [], "pvHead"]); };
+    const meta = (text) => { P.push([[[`  ${text}`, "barDim"]], [], "pvHead"]); P.push([[], [], "pvHead"]); };
+    const gap = () => P.push([[], [], "pv"]);
+    const label = (text) => P.push([[[`  ${text.toUpperCase()}`, "accent"]], [], "pv"]);
+    const para = (text, role = "text", indent = "  ") => { for (const l of wrapText(text, w - 3, indent)) P.push([[[l, role]], [], "pv"]); };
+    const rule = (text = "") => P.push([[[`  ${text ? text.toUpperCase() + " " : ""}`, "dim"], ["─".repeat(w), "frame"]], [], "pv"]);
+    let tail = null; // rows (already rendered) that fill the rest from the bottom up
+    if (!it) { head(I.search, "dim", "Nothing selected"); }
+    else if (it.kind === "commander-off" || (it.kind === "session" && it.s.mode === "axa" && !it.s.alive)) {
+      head(I.axa, "title", "AXA commander", [" OFF ", "chipOff"]);
+      gap();
+      para("One Claude session that runs the others. Tell it what you want across projects (\"keep going on v7 in launches, and have feed fix its phone layout\"): it opens a session per project, hands each its work, checks the results and reports back.");
+      gap(); para("Routine approvals are handled for you; only one-way doors (shipping, deploying, spending) wait for you here.", "dim");
+      gap(); P.push([[["  ", ""], [" Enter ", "keycap"], [" start it", "dim"]], [], "pv"]);
+    } else if (it.kind === "session") {
+      const s = it.s;
+      head(s.mode === "axa" ? I.axa : s.mode === "shell" ? I.shell : I.session, s.mode === "axa" ? "title" : look(s)[2], nameOf(s), chipOf(s));
+      meta([where(s.cwd), gitText(s.git), s.usage?.tokens ? `${I.tokens} ${fmtTok(s.usage.tokens)} tokens${s.usage.budget ? ` of ${fmtTok(s.usage.budget)}` : ""}` : "", s.worktree ? `${I.worktree} worktree` : ""].filter(Boolean).join("   "));
+      gap();
+      if (s.status === "waiting" && s.choices) {
+        para(question(s.choices), "wait");
+        P.push([[["  ", ""], [" y ", "keycap"], [` ${cut(yesOpt(s.choices).label, 30)}   `, "waitSoft"], [" x ", "keycap"], [` ${cut(noOpt(s.choices).label, 30)}`, "waitSoft"]], [], "pv"]);
+        gap();
+      } else if (s.status === "done" && s.last_report) { label("Last report"); for (const l of wrapText(clean(s.last_report), w - 2, " ").slice(0, 4)) P.push([[[l, "text"]], [], "pv"]); gap(); }
+      else if (s.doing) { P.push([[[` ${look(s)[0]} `, look(s)[2]], [clean(s.doing), "text"]], [], "pv"]); gap(); }
+      const hs = (s.helpers || []).filter((x) => x.status === "running" || Date.now() - x.at < 10 * 60_000);
+      if (hs.length) {
+        label("Agents");
+        for (const x of hs.slice(-4)) P.push([[[` ${x.status === "running" ? spinner() : I.done} `, x.status === "running" ? "work" : "done"], [x.type, "head"], [`  ${clean(x.doing || x.desc || "")}`, "dim"]], [[x.calls ? `${x.calls} steps` : "", "dim"]], "pv"]);
+        gap();
+      }
+      rule("screen");
+      tail = s.alive ? screenOf(s.id) : [paint("dim", " this session has ended")];
+    } else if (it.kind === "chat") {
+      const c = it.c;
+      head(I.chat, "accent", clean(c.title), c.open_in ? [" OPEN ", "chipWork"] : null);
+      meta([chatWhere(c) === "~" ? "~" : where(c.cwd), c.branch && c.branch !== "HEAD" ? `${I.branch} ${c.branch}` : "", `updated ${ago(c.updated)}${ago(c.updated) === "now" ? "" : " ago"}`].filter(Boolean).join("   "));
+      gap();
+      const msgs = messagesOf(c);
+      if (!msgs) para("loading…", "dim");
+      else if (!msgs.length) para("no messages to show", "dim");
+      else {
+        // newest at the bottom, like the chat itself
+        const body = [];
+        for (const m of msgs) {
+          body.push(line([[` ${m.role === "you" ? I.you : I.claude} `, m.role], [m.role === "you" ? "You" : "Claude", m.role]], w, [], "pv"));
+          const plain = m.text.replace(/```[\s\S]*?```/g, "[code]").replace(/\*\*|__|`/g, "").replace(/^#+\s*/gm, "").replace(/\n{2,}/g, "\n");
+          for (const l of wrapText(clean(plain), w - 4, "   ").slice(0, m.role === "you" ? 6 : 8)) body.push(line([[l, m.role === "you" ? "text" : "dim"]], w, [], "pv"));
+          body.push(line([], w, [], "pv"));
+        }
+        tail = body;
+      }
+    } else if (it.kind === "agent") {
+      const a = it.a, busy = busyOf(a);
+      head(I.agent, a.source === "axa" ? "accent" : "violet", a.name, busy.length ? [` ${busy.length} RUNNING `, "chipWork"] : [` ${a.source.toUpperCase()} `, "chipIdle"]);
+      meta([`model ${a.model}`, `tools ${a.tools}`, a.file || ""].filter(Boolean).join("   "));
+      gap(); para(clean(a.description) || "(no description)");
+      if (busy.length) { gap(); label("Running now"); for (const { s, h: x } of busy) P.push([[[` ${spinner()} `, "work"], [nameOf(s), "head"], [`  ${clean(x.doing || x.desc || "")}`, "dim"]], [], "pv"]); }
+      gap(); P.push([[["  ", ""], [" Enter ", "keycap"], [" give it a task (the commander runs it with this agent)", "dim"]], [], "pv"]);
+      if (a.prompt) { gap(); rule("instructions"); para(a.prompt, "dim"); }
+    } else if (it.kind === "project" || it.kind === "home") {
+      const p = it.kind === "home" ? { name: "Home folder", path: homedir(), git: null } : it.p;
+      head(it.kind === "home" ? I.home : I.project, "accent", p.name, p.sessions ? [` ${p.sessions} OPEN `, "chipIdle"] : null);
+      meta([where(p.path), gitText(p.git)].filter(Boolean).join("   "));
+      gap();
+      const inP = (cwd) => cwd === p.path || (it.kind !== "home" && cwd.startsWith(p.path + "/"));
+      const ss = data.sessions.filter((s) => s.alive && s.mode !== "axa" && inP(s.worktree?.repo || s.cwd));
+      label("Sessions");
+      if (!ss.length) para("none open", "dim", "   ");
+      for (const s of ss) P.push([[[`  ${look(s)[0]} `, look(s)[2]], [nameOf(s), "head"], [`  ${clean(s.doing || "")}`, "dim"]], [chipOf(s)], "pv"]);
+      gap();
+      const cs = data.chats.filter((c) => inP(c.cwd)).slice(0, 6);
+      label("Recent chats");
+      if (!cs.length) para("none yet", "dim", "   ");
+      for (const c of cs) P.push([[[`  ${I.chat} `, "dim"], [clean(c.title), "text"]], [[ago(c.updated), "dim"]], "pv"]);
+      const ag = data.agents.filter((a) => a.project === p.name);
+      if (ag.length) { gap(); label("Agents"); for (const a of ag) P.push([[[`  ${I.agent} `, "violet"], [a.name, "head"], [`  ${clean(a.description)}`, "dim"]], [], "pv"]); }
+      gap(); P.push([[["  ", ""], [" Enter ", "keycap"], [" open  ", "dim"], [" n ", "keycap"], [" new  ", "dim"], [" w ", "keycap"], [" worktree  ", "dim"], [" s ", "keycap"], [" shell", "dim"]], [], "pv"]);
+    }
+    const rows = P.map(([segs, right, on]) => line(segs, w, right, on));
+    if (tail) {
+      const room = Math.max(0, h - rows.length);
+      // a session's screen is cut to the preview's width (keeping its colors); other tails are rendered
+      const t = tail.slice(-room).map((l) => (it.kind === "session" ? sliceAnsi(" " + l, 0, w) : l));
+      rows.push(...t);
+    }
+    rows.length = Math.min(rows.length, h);
+    while (rows.length < h) rows.push(line([], w, [], "pv"));
+    return rows;
+  }
+
+  // ---------- the frame ----------
+  let timer = null, prevRows = [], hits = [], tabHits = [];
+  const schedule = () => { if (!timer && !quitting) timer = setTimeout(() => { timer = null; draw(); }, 16); };
   function titleBar() {
-    const n = (st) => data.sessions.filter((s) => s.status === st).length, needs = n("waiting") + n("stuck");
-    const state = needs ? [`⚠ ${needs} need${needs > 1 ? "" : "s"} you`, "wait"] : ["✓ nothing needs you", "done"];
+    const n = (st) => data.sessions.filter((s) => s.status === st).length, needs = n("waiting") + n("stuck"), work = n("working");
     const clock = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
-    const right = [state, [n("working") ? ` · ${n("working")} working` : "", "work"], [`  ${clock} `, "dim"]];
-    if (screen === "hub") return line([[" ◆ AXA", "title"], ["  hub", "head"], [err ? `   ${err}` : "", "stuck"]], W, right);
-    // live: where you are and how to get back
+    const right = [[needs ? ` ${I.wait} ${needs} NEED${needs > 1 ? "" : "S"} YOU ` : "", "chipWait"], [needs && work ? " " : "", "bar"], [work ? ` ${spinner()} ${work} WORKING ` : "", "chipWork"], [!needs && !work ? `${I.done} all quiet` : "", "barDim"], [`   ${clock}`, "barDim"]];
+    if (screen === "hub") return line([[` ${I.axa} AXA`, "barTitle"], [err ? `   ${err}` : "", "stuck"]], W, right, "bar");
     const s = data.sessions.find((x) => x.id === live?.id) || { name: "?", status: "exited", mode: "claude" };
-    const [g, word, role] = look(s);
-    const bits = [gitText(s.git), s.usage?.tokens ? `${fmtTok(s.usage.tokens)} tok` : ""].filter(Boolean).join(" · ");
-    return line([[" ◆ AXA", "title"], [" ‹ hub ", "key"], ["│ ", "frame"], [`${g} `, role], [nameOf(s), "head"], [` · ${word}`, role], [bits ? ` · ${bits}` : "", "dim"]], W, [[prefix ? " waiting for a key… " : `${keyName()} h hub · n/p switch · ? keys `, prefix ? "bar" : "dim"]]);
+    const bits = [gitText(s.git), s.usage?.tokens ? `${I.tokens} ${fmtTok(s.usage.tokens)}` : ""].filter(Boolean).join("  ");
+    return line([[` ${I.axa} AXA `, "barTitle"], [" ‹ hub ", "keycap"], ["  ", "bar"], [nameOf(s), "head"], ["  ", "bar"], chipOf(s), [bits ? `  ${bits}` : "", "barDim"]], W, prefix ? [[" waiting for a key… ", "chipWait"]] : toast && Date.now() < toast.until ? [[` ${toast.text} `, "chipIdle"]] : [[` ${keyName()} h `, "keycap"], [" hub  ", "barDim"], [` ${keyName()} n `, "keycap"], [" next  ", "barDim"], [` ${keyName()} ? `, "keycap"], [" keys", "barDim"]], "bar");
+  }
+  function tabBar() {
+    const c = counts();
+    let o = "", used = 0;
+    tabHits = [];
+    for (const [i, p] of PANELS.entries()) {
+      const icon = { sessions: I.session, chats: I.chat, agents: I.agent, projects: I.project }[p];
+      const t = ` ${i + 1} ${icon} ${TITLES[p]} ${c[p]} `;
+      tabHits.push({ x0: used + 1, x1: used + width(t), i });
+      o += paint(i === focus ? "tabOn" : "tabOff", t) + paint("bar", " ");
+      used += width(t) + 1;
+    }
+    const f = filter[PANELS[focus]], ftxt = filtering || f ? ` ${I.search} ${f}${filtering ? "▏" : ""} ` : "";
+    return o + line([[ftxt, filtering ? "chipWork" : "chipIdle"]], Math.max(0, W - used), [], "bar");
   }
   function alertBar(a) {
     const yes = yesOpt(a.choices), no = noOpt(a.choices), k = screen === "live" ? `${keyName()} ` : "";
-    return line([[" ⚠ ", "wait"], [nameOf(a), "wait"], [` needs you: ${question(a.choices)}`, "waitSoft"]], W, [[`${k}y `, "key"], [cut(yes.label, 18), "waitSoft"], [`  ${k}x `, "key"], [cut(no.label, 18), "waitSoft"], [`  ${k}! `, "key"], ["go there ", "waitSoft"]]);
+    return line([[` ${I.wait} NEEDS YOU `, "chipWait"], [`  ${nameOf(a)}`, "wait"], [`  ${question(a.choices)}`, "waitSoft"]], W, [[` ${k}y `, "keycap"], [` ${cut(yes.label, 20)}  `, "waitSoft"], [` ${k}x `, "keycap"], [` ${cut(no.label, 20)}  `, "waitSoft"], [` ${k}! `, "keycap"], [" go there", "waitSoft"]]);
   }
   function footer() {
-    if (toast && Date.now() < toast.until) return paint("bar", pad(` ${toast.text}`, W));
-    if (screen === "live") return null;
-    const per = { sessions: "⏎ open · d diff · g goal · r rename · X close", chats: "⏎ resume", agents: "⏎ details · u use it", projects: "⏎ open · n new · w worktree · s shell" }[PANELS[focus]];
-    return line([[" Tab", "key"], [" panels  ", "dim"], [per, "dim"], ["  │  ", "frame"], ["n", "key"], [" new  ", "dim"], ["a", "key"], [" AXA  ", "dim"], ["/", "key"], [" filter  ", "dim"], ["?", "key"], [" help  ", "dim"], ["q", "key"], [" quit", "dim"]], W);
+    if (screen === "live") return null; // a session keeps every row; notices show in its header
+    if (toast && Date.now() < toast.until) return line([[` ${toast.text}`, "text"]], W, [], "bar");
+    const per = { sessions: [["⏎", "open"], ["d", "changes"], ["g", "goal"], ["v", "checks"], ["r", "rename"], ["X", "close"]], chats: [["⏎", "resume"], ["/", "search"]], agents: [["⏎", "give a task"], ["/", "search"]], projects: [["⏎", "open"], ["n", "new"], ["w", "worktree"], ["s", "shell"]] }[PANELS[focus]];
+    const segs = per.flatMap(([k, t]) => [[` ${k} `, "keycap"], [` ${t}  `, "barDim"]]);
+    return line(segs, W, [[" Tab ", "keycap"], [" switch  ", "barDim"], [" a ", "keycap"], [" AXA  ", "barDim"], [" n ", "keycap"], [" new  ", "barDim"], [" ? ", "keycap"], [" help  ", "barDim"], [" q ", "keycap"], [" quit", "barDim"]], "bar");
   }
   function hubBody(y0, h) {
     hits = [];
-    const rows = Array(h).fill(" ".repeat(W));
-    if (W >= 96 && h >= 12) {
-      const lw = Math.floor(W * 0.46), rw = W - lw;
-      const sh = Math.max(6, Math.round(h * 0.58)), ch = Math.max(6, Math.round(h * 0.62));
-      const L = [...panelBox("sessions", 1, y0, lw, sh), ...panelBox("projects", 1, y0 + sh, lw, h - sh)];
-      const R = [...panelBox("chats", lw + 1, y0, rw, ch), ...panelBox("agents", lw + 1, y0 + ch, rw, h - ch)];
-      for (let i = 0; i < h; i++) rows[i] = (L[i] || " ".repeat(lw)) + (R[i] || " ".repeat(rw));
-    } else {
-      // narrow: stacked, the focused panel gets the most room
-      const minH = 4, rest = h - minH * 3, order = PANELS;
-      let y = 0;
-      for (const p of order) {
-        const ph = p === PANELS[focus] ? Math.max(minH, rest) : minH;
-        for (const r of panelBox(p, 1, y0 + y, W, ph)) rows[y++] = r;
-      }
-    }
-    return rows;
+    const panel = PANELS[focus];
+    if (W < 90) return listRows(panel, 1, y0, W, h);
+    const lw = Math.max(32, Math.min(56, Math.round(W * 0.36))), pw = W - lw - 1;
+    const L = listRows(panel, 1, y0, lw, h);
+    const R = previewRows(items(panel)[sel[panel]], pw, h);
+    return L.map((l, i) => l + paint("frame", "│") + R[i]);
   }
   function frame() {
     const rows = [titleBar()];
+    if (screen === "hub") rows.push(tabBar());
     const alert = waitingOthers()[0];
     if (alert) rows.push(alertBar(alert));
     const foot = footer();
@@ -405,21 +526,6 @@ export async function runTui() {
     child.on("close", (code) => { if (part) ov.lines.push({ text: part }); ov.title = `${nameOf(s)} · checks · ${code === 0 ? "all pass" : "something failed"}`; schedule(); });
     ov.onClose = () => { try { child.kill(); } catch {} };
   }
-  function agentDetails(a) {
-    const n = runningOf(a);
-    const busy = data.sessions.flatMap((s) => (s.helpers || []).filter((h) => h.status === "running" && (h.type === a.name || h.type.split(":").pop() === a.name.split(":").pop())).map((h) => ({ s, h })));
-    const lines = [
-      { text: clean(a.description) || "(no description)" },
-      { text: "" },
-      { text: `source   ${a.source}${a.file ? `  (${a.file})` : ""}`, role: "dim" },
-      { text: `model    ${a.model}`, role: "dim" },
-      { text: `tools    ${a.tools}`, role: "dim" },
-      { text: "" },
-      ...(n ? [{ text: `Running now (${n})`, role: "head" }, ...busy.map(({ s, h }) => ({ text: `● in ${nameOf(s)}: ${clean(h.desc || h.doing || "")}`, role: "work" })), { text: "" }] : []),
-      { text: "u: give it a task (the AXA commander runs it with this agent)", role: "accent" },
-    ];
-    viewer(a.name, lines, { size: "small", hint: "u use it · Esc closes", onKey: (k) => { if (k === "u") { closeOverlay(); useAgent(a); return true; } return false; } });
-  }
   function useAgent(a) {
     ask(`Task for ${a.name}`, async (task) => {
       const text = `Use the ${a.name} agent (subagent_type "${a.name}") for this task: ${task}`;
@@ -433,11 +539,13 @@ export async function runTui() {
     const opts = () => [
       { label: "Theme", hint: cfg.theme, value: "theme" },
       { label: "Prefix key", hint: keyName(), value: "prefix" },
+      { label: "Icons", hint: cfg.icons === "nerd" ? "Nerd Font" : "plain Unicode", value: "icons" },
       { label: "Bell when a session needs you", hint: cfg.bell ? "on" : "off", value: "bell" },
     ];
     const cycle = (arr, v) => arr[(arr.indexOf(v) + 1) % arr.length];
     const again = (selected) => pick("Settings (Enter changes)", opts(), (o) => {
-      if (o.value === "theme") { cfg.theme = cycle(["terminal", "hud", "mono"], cfg.theme); setTheme(cfg.theme); }
+      if (o.value === "theme") { cfg.theme = cycle(THEME_NAMES, cfg.theme); setTheme(cfg.theme); }
+      if (o.value === "icons") { cfg.icons = cfg.icons === "nerd" ? "plain" : "nerd"; setIcons(cfg.icons); }
       if (o.value === "prefix") cfg.prefix = cycle(Object.keys(PREFIXES), cfg.prefix);
       if (o.value === "bell") cfg.bell = !cfg.bell;
       saveCfg(); prevRows = [];
@@ -459,8 +567,8 @@ export async function runTui() {
       { text: "  Enter open live · d changes (diff) · g give a goal · v run checks · r rename · X close" },
       { text: "Chats panel", role: "head" },
       { text: "  Enter resume the chat in a live session (● = already open: it jumps there)" },
-      { text: "Agents panel", role: "head" },
-      { text: "  Enter details · u give it a task (the commander runs it with that agent)" },
+      { text: "Agents", role: "head" },
+      { text: "  Enter give it a task (the commander runs it with that agent); the preview shows its instructions" },
       { text: "Projects panel", role: "head" },
       { text: "  Enter open its session (or start one) · n new · w new in its own worktree · s shell" },
       { text: "" },
@@ -534,7 +642,7 @@ export async function runTui() {
         if (it.kind === "commander-off") return openCommander();
         if (it.kind === "session") return openLive(it.s);
         if (it.kind === "chat") return resumeChat(it.c);
-        if (it.kind === "agent") return agentDetails(it.a);
+        if (it.kind === "agent") return useAgent(it.a);
         if (it.kind === "project") { const open = data.sessions.find((s) => s.alive && s.mode !== "axa" && (s.worktree?.repo || s.cwd) === it.p.path); return open ? openLive(open) : newSession(it.p); }
         if (it.kind === "home") return newSession({ name: "home", path: homedir() });
         return;
@@ -604,6 +712,7 @@ export async function runTui() {
       if (live && y > live.top && !live.dead) live.mouse(b, x, y - live.top, up);
       return;
     }
+    if (y === 2) { const t = tabHits.find((h) => x >= h.x0 && x <= h.x1); if (t && b === 0 && !up) { focus = t.i; schedule(); } return; }
     const hit = hits.find((h) => y === h.y && x >= h.x0 && x <= h.x1);
     if (!hit) return;
     const p = PANELS.indexOf(hit.panel);
@@ -696,4 +805,8 @@ export async function runTui() {
   setInterval(pollSessions, 1000);
   setInterval(() => { if (screen === "hub" && !overlay) pollHub(); }, 5000);
   setInterval(schedule, 15000); // the clock
+  // spinners turn while something works
+  setInterval(() => { if (data.sessions.some((s) => s.status === "working" || s.status === "starting") || data.sessions.some((s) => (s.helpers || []).some((h) => h.status === "running"))) schedule(); }, 120);
+  // a selected session's preview follows its screen
+  setInterval(() => { if (screen === "hub" && !overlay && PANELS[focus] === "sessions") schedule(); }, 500);
 }

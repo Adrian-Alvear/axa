@@ -12,7 +12,8 @@ import { historyLines, logEvent, onChatSeen, onLine, runsSince, startTail, statu
 import * as S from "./sessions.mjs";
 import { addLink, listLinks, removeLink, startSupervisor } from "./supervisor.mjs";
 import { listAgents, listProjects, readRoster } from "./catalog.mjs";
-import { findChat, listChats } from "./claude-data.mjs";
+import { chatMessages, findChat, listChats } from "./claude-data.mjs";
+import { safe } from "./text.mjs";
 
 if (!existsSync(files.token)) writeFileSync(files.token, randomBytes(24).toString("hex"), { mode: 0o600 });
 const token = readFileSync(files.token, "utf8").trim();
@@ -72,6 +73,7 @@ const routes = [
   ["GET", /^\/api\/projects$/, () => [200, listProjects()]],
   ["GET", /^\/api\/chats$/, (m, req, u) => [200, listChats({ limit: Math.min(500, Number(u.searchParams.get("limit")) || 50), q: u.searchParams.get("q") || "" })]],
   ["GET", /^\/api\/agents$/, () => [200, listAgents()]],
+  ["GET", /^\/api\/chats\/([0-9a-f-]+)\/messages$/, (m, req, u) => { const r = chatMessages(m[1], Math.min(50, Number(u.searchParams.get("limit")) || 12)); return r ? [200, r.map((x) => ({ ...x, text: safe(x.text) }))] : [404, { error: "no such chat" }]; }],
   ["GET", /^\/roster$/, () => [200, readRoster()]],
   ["GET", /^\/api\/runs$/, (m, req, u) => [200, runsSince(Number(u.searchParams.get("since")) || 0, Math.min(500, Number(u.searchParams.get("limit")) || 200))]],
   ["GET", /^\/api\/chains$/, () => [200, listLinks()]],
@@ -107,7 +109,7 @@ function hub(chatLimit) {
     sessions,
     chats: listChats({ limit: chatLimit }).map((c) => ({ ...c, open_in: open.get(c.id) || null })),
     projects: listProjects().map((p) => ({ ...p, sessions: sessions.filter((s) => s.alive && (s.worktree?.repo || s.cwd) === p.path).length })),
-    agents: listAgents().map(({ prompt, ...a }) => a),
+    agents: listAgents(),
     links: listLinks(),
     tmux: S.hasTmux,
   };
