@@ -81,7 +81,7 @@ function doingText(e) {
   return [e.skill ? `skill ${e.skill}` : tool, summary].filter(Boolean).join(" · ");
 }
 
-function track(e) {
+function track(e, live = false) {
   if (!e?.terminal) return;
   remember(e);
   // Only a session's own start (or /clear) names its chat, not a `claude -p` run inside it
@@ -131,10 +131,13 @@ function track(e) {
   }
   status.set(e.terminal, s);
   trackHelpers(e);
-  trackRun(e, s);
+  trackRun(e, s, live);
 }
 
-export const trackEvent = (e) => track({ ts: Date.now(), ...e }); // tests: feed an event as if logged
+export const trackEvent = (e) => track({ ts: Date.now(), ...e }, true); // tests: feed a live event, as if logged
+// A live run started (never the history replayed at start): the supervisor records git's HEAD then
+let onStart = () => {};
+export const onRunStart = (fn) => (onStart = fn);
 
 // ---------- helper agents per session: spawned -> running -> done ----------
 const helpers = new Map(), spawnQueue = new Map(); // terminal -> [helper] / [pending Agent calls]
@@ -161,14 +164,15 @@ const helpersOf = (id) => (helpers.get(id) || []).map((h) => ({ ...h }));
 // ---------- runs: each instruction a session got, from the prompt to its result ----------
 const runs = [], openRuns = new Map();
 const EDIT_TOOLS = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"]);
-function trackRun(e, s) {
+function trackRun(e, s, live) {
   const r = openRuns.get(e.terminal);
   if (e.event === "UserPromptSubmit") {
     if (/^\s*<task-notification>/.test(e.prompt || "")) return;
     if (r) { r.status = "replaced"; r.end = e.ts; }
-    const run = { id: `${e.terminal}-${e.ts}`, terminal: e.terminal, cwd: e.cwd, role: e.role, prompt: clip(e.prompt, 400), start: e.ts, steps: 0, helpers: 0, approvals: 0, declined: 0, escalated: 0, refused: 0, gate: 0, failures: 0, edits: 0, answers: [], status: "running" };
+    const run = { id: `${e.terminal}-${e.ts}`, terminal: e.terminal, cwd: e.cwd, role: e.role, prompt: clip(e.prompt, 400), instruction: clip(e.prompt, 4000), start: e.ts, steps: 0, helpers: 0, approvals: 0, declined: 0, escalated: 0, refused: 0, gate: 0, failures: 0, edits: 0, answers: [], status: "running" };
     runs.push(run); openRuns.set(e.terminal, run);
     if (runs.length > 1000) runs.splice(0, runs.length - 1000);
+    if (live) try { onStart(run); } catch {}
     return;
   }
   if (!r) return;
@@ -215,7 +219,7 @@ export function startTail() {
       if (!line.trim()) continue;
       try {
         const e = JSON.parse(line);
-        track(e);
+        track(e, true);
         if (e.event === "Stop" && e.role === "commander" && !e.agent_id && e.message && e.terminal) {
           setTimeout(() => { const s = status.get(e.terminal); if (s?.status === "done" && s.stopAt === e.ts) onReply(e.terminal, e.message); }, GATE_WAIT_MS);
         }

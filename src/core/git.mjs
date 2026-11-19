@@ -46,8 +46,10 @@ export function gitInfo(cwd) {
 // ---------- diff: uncommitted changes against the last commit, cleaned like any other session output ----------
 // Each file is redacted on its own, and very large ones are left out, so nothing is cut blind
 const DIFF_FILE_MAX = 60 * 1024, DIFF_MAX = 400 * 1024;
-export async function diffOf(cwd) {
-  const base = (await git(cwd, ["rev-parse", "--verify", "-q", "HEAD"])) ? ["diff", "HEAD"] : ["diff", "--cached"];
+// since: a commit (a turn's start): the working tree against it, so commits made since count too
+export async function diffOf(cwd, since) {
+  const ok = since && /^[0-9a-f]{7,64}$/.test(since) && (await git(cwd, ["rev-parse", "--verify", "-q", `${since}^{commit}`]));
+  const base = ok ? ["diff", since] : (await git(cwd, ["rev-parse", "--verify", "-q", "HEAD"])) ? ["diff", "HEAD"] : ["diff", "--cached"];
   const raw = await git(cwd, [...base, "--no-color", "--no-ext-diff", ...NO_SECRETS], 8 << 20);
   if (raw == null) return { diff: "", untracked: [], error: "Couldn't read the changes: not a git repository, or the diff is too large to show here." };
   let diff = "", truncated = false;
@@ -56,8 +58,16 @@ export async function diffOf(cwd) {
     diff += file.length > DIFF_FILE_MAX ? `${file.split("\n")[0]}\n(large change left out: ${Math.round(file.length / 1024)} KB, open the session to see it)\n` : safe(file);
   }
   const untracked = ((await git(cwd, ["ls-files", "--others", "--exclude-standard", ...NO_SECRETS])) || "").split("\n").filter(Boolean);
-  return { diff, truncated, untracked: untracked.slice(0, 200).map(safe), untracked_total: untracked.length };
+  const out = { diff, truncated, untracked: untracked.slice(0, 200).map(safe), untracked_total: untracked.length };
+  if (ok) {
+    const head = ((await git(cwd, ["rev-parse", "HEAD"])) || "").trim();
+    const log = (await git(cwd, ["log", "--no-color", "--format=%h %s", "-n", "50", `${since}..HEAD`])) || "";
+    Object.assign(out, { since, head, commits: log.split("\n").filter(Boolean).map(safe) });
+  }
+  return out;
 }
+// The commit a folder is on now (null: not a repository, or no commits yet)
+export const headOf = (cwd) => { const r = gitSync(cwd, "rev-parse", "--verify", "-q", "HEAD"); return r.status === 0 ? r.stdout.trim() || null : null; };
 
 // Keep a folder out of the repo's git status, locally (.git/info/exclude; nothing is committed)
 export function excludeLocally(repo, pattern) {

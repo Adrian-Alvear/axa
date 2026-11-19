@@ -181,7 +181,10 @@ runs the project's own checks (tests, type-check, build). It never edits, pushes
 - **What it checks:** that the diff does what was asked (checked against the instruction, not the
   session's report), that the checks pass, and what's around the change: side effects and unrelated
   files, edge cases, security, leftover debug or temp code, docs and README that are now wrong, missing
-  tests.
+  tests. It sees the whole turn: AXA records the commit the turn started from and gives it the diff
+  from there (commits made during the turn and uncommitted edits) with the list of those commits. If
+  the instruction cites a task spec in a Claude scratchpad or `~/.axa/tasks/`, AXA reads that file and
+  includes it, since the reviewer itself can't read outside the project.
 - **The evidence rule:** every finding needs a file and line, a snippet quoted from the file, and how to
   see or reproduce it. Without evidence it isn't reported, and when unsure it's a warning, never a
   block. The answer must be one strict JSON verdict (`approve`, `warn` or `block`); anything else counts

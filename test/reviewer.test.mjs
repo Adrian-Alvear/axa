@@ -279,3 +279,111 @@ test("end to end with a fake reviewer: two block rounds to the worker, the third
   try { await turn("one more change"); } finally { delete process.env.FAKE_REVIEW_MODE; }
   assert.match(toCommander().at(-1).text, /review: \? error .*not reviewed/);
 });
+
+// ---------- the whole turn: commits included; cited task specs ----------
+const { diffOf } = await import("../src/core/git.mjs");
+const gitIn = (cwd, ...a) => spawnSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...a], { cwd, encoding: "utf8" });
+function repo() {
+  const dir = project();
+  gitIn(dir, "init", "-q"); gitIn(dir, "add", "."); gitIn(dir, "commit", "-qm", "init");
+  return dir;
+}
+
+test("diffOf(cwd, since): commits made since the start and uncommitted edits, plus new files", async () => {
+  const dir = repo(), start = gitIn(dir, "rev-parse", "HEAD").stdout.trim();
+  writeFileSync(join(dir, "src/b.js"), "export const committed = 1;\n");
+  gitIn(dir, "add", "."); gitIn(dir, "commit", "-qm", "add b");
+  appendFileSync(join(dir, "src/a.js"), "\n// uncommitted edit\n");
+  writeFileSync(join(dir, "new.txt"), "x");
+  const d = await diffOf(dir, start);
+  assert.match(d.diff, /committed = 1/, "the committed work");
+  assert.match(d.diff, /uncommitted edit/, "and the uncommitted work");
+  assert.deepEqual(d.untracked, ["new.txt"]);
+  assert.equal(d.since, start);
+  assert.equal(d.head, gitIn(dir, "rev-parse", "HEAD").stdout.trim());
+  assert.equal(d.commits.length, 1);
+  assert.match(d.commits[0], /^[0-9a-f]+ add b$/);
+  // without a start (or with one git doesn't know): today's behaviour, uncommitted only
+  for (const since of [undefined, "0123456789abcdef0123456789abcdef01234567", "HEAD; echo x"]) {
+    const old = await diffOf(dir, since);
+    assert.doesNotMatch(old.diff, /committed = 1/, String(since));
+    assert.match(old.diff, /uncommitted edit/);
+    assert.equal(old.since, undefined);
+  }
+});
+
+test("reviewPrompt: the commit range, the turn's commits, committed and uncommitted work", () => {
+  const p = R.reviewPrompt({ goal: "g", report: "r", diff: "diff --git a/x b/x", since: "aaaaaaaaaaaaaaaa1111", head: "bbbbbbbbbbbbbbbb2222", commits: ["1234abc add b", "5678def fix c"] });
+  assert.match(p, /aaaaaaaaaaaa\.\.bbbbbbbbbbbb/);
+  assert.match(p, /Commits made during the turn \(2\):\n- 1234abc add b\n- 5678def fix c/);
+  assert.match(p, /includes both the committed and the uncommitted work/);
+  assert.match(R.reviewPrompt({ goal: "g", diff: "d", since: "aaaaaaaa", head: "aaaaaaaa", commits: [] }), /No commits were made during the turn/);
+  assert.match(R.reviewPrompt({ goal: "g", diff: "d" }), /start(ed)? from is unknown: uncommitted changes against HEAD only/);
+});
+
+test("citedSpecs: a scratchpad or AXA task spec is read; anything else isn't", () => {
+  const scratch = join(realpathSync(mkdtempSync("/tmp/claude-axatest-")), "-home-u", "sess", "scratchpad");
+  mkdirSync(scratch, { recursive: true });
+  try {
+    writeFileSync(join(scratch, "task.md"), "# Task\nDo the thing.\n");
+    writeFileSync(join(scratch, "big.md"), "y".repeat(40 * 1024));
+    const tasks = join(axaHome, "tasks");
+    mkdirSync(tasks, { recursive: true });
+    writeFileSync(join(tasks, "t1.md"), "task one");
+    const other = join(base, "elsewhere.md"); writeFileSync(other, "not a spec");
+    spawnSync("ln", ["-s", "/etc/hostname", join(scratch, "link.md")]);
+
+    const got = R.citedSpecs(`Implement ${join(scratch, "task.md")} (read it first). Also see /etc/passwd, ${other}, ${join(scratch, "link.md")} and ${join(scratch, "missing.md")}.`);
+    assert.deepEqual(got.map((s) => s.path), [join(scratch, "task.md")]);
+    assert.match(got[0].text, /Do the thing/);
+    assert.equal(got[0].truncated, false);
+
+    const t = R.citedSpecs(`spec: ${join(tasks, "t1.md")}`);
+    assert.deepEqual(t.map((s) => s.text), ["task one"]);
+    const big = R.citedSpecs(`${join(scratch, "big.md")}`)[0];
+    assert.equal(big.truncated, true);
+    assert.equal(big.text.length, 30 * 1024);
+    // three at most, each once
+    for (const n of [1, 2, 3, 4]) writeFileSync(join(scratch, `s${n}.md`), `spec ${n}`);
+    const many = R.citedSpecs([1, 1, 2, 3, 4].map((n) => join(scratch, `s${n}.md`)).join(" "));
+    assert.deepEqual(many.map((s) => s.text), ["spec 1", "spec 2", "spec 3"]);
+    // the prompt carries it
+    assert.match(R.reviewPrompt({ goal: "g", diff: "d", specs: got }), /## The task spec the instruction cites: .*task\.md[\s\S]*<spec>\n# Task\nDo the thing\./);
+  } finally { rmSync(join(scratch, "..", "..", ".."), { recursive: true, force: true }); }
+});
+
+test("end to end: a turn that commits its work is reviewed on the whole range, with its cited spec", async () => {
+  const dir = repo();
+  const scratch = join(realpathSync(mkdtempSync("/tmp/claude-axatest-")), "p", "scratchpad");
+  mkdirSync(scratch, { recursive: true });
+  writeFileSync(join(scratch, "spec.md"), "SPEC: f must return x unchanged.");
+  const callLog = join(base, "calls-range.jsonl");
+  process.env.FAKE_REVIEW_LOG = callLog;
+  process.env.FAKE_REVIEW = verdict({ verdict: "approve", summary: "ok", checks: [], findings: [] });
+  const sent = [];
+  deps.send = async (id, text) => { sent.push({ id, text }); return { ok: true }; };
+  deps.lastInputAt = () => 0;
+  deps.log = () => {};
+  const list = (status) => [{ id: "w9", name: "range", mode: "claude", alive: true, status, cwd: dir, last_report: "committed it" }, { id: "c1", name: "axa", mode: "axa", alive: true, status: "ready" }];
+  const tick = async (status) => { const l = list(status); trackReviews(l); supervise(l); await reviewsSettled(); await new Promise((r) => setTimeout(r, 5)); };
+  try {
+    await tick("ready");
+    trackEvent({ event: "UserPromptSubmit", terminal: "w9", role: "worker", cwd: dir, prompt: `Implement ${join(scratch, "spec.md")} and also read /etc/passwd` });
+    assert.equal(lastRun("w9").head_start, gitIn(dir, "rev-parse", "HEAD").stdout.trim(), "HEAD recorded when the turn starts");
+    await tick("working");
+    // the worker commits its change (through Bash: no Edit event) and leaves the tree clean
+    writeFileSync(join(dir, "src/a.js"), "module.exports = (x) => x;\n");
+    gitIn(dir, "commit", "-qam", "make f return x");
+    trackEvent({ event: "Stop", terminal: "w9", role: "worker", message: "committed it" });
+    await tick("done"); await tick("done"); await tick("done");
+    const calls = readFileSync(callLog, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    assert.equal(calls.length, 1, "the committed turn was reviewed");
+    const p = calls[0].prompt;
+    assert.match(p, /<diff>\n[\s\S]*module\.exports = \(x\) => x;[\s\S]*<\/diff>/, "a non-empty diff with the committed change");
+    assert.match(p, /Commits made during the turn \(1\):\n- [0-9a-f]+ make f return x/);
+    assert.match(p, /[0-9a-f]{12}\.\.[0-9a-f]{12}/);
+    assert.match(p, /<spec>\nSPEC: f must return x unchanged\.\n<\/spec>/, "the cited scratchpad spec is inlined");
+    assert.doesNotMatch(p, /root:x:0:0/, "/etc/passwd isn't");
+    assert.match(sent.at(-1).text, /range \(w9\) finished its turn · review: ✓ approve/);
+  } finally { rmSync(join(scratch, "..", ".."), { recursive: true, force: true }); }
+});

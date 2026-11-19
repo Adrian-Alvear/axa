@@ -13,9 +13,9 @@ import { chmodSync, readFileSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { files } from "../paths.mjs";
 import { lastInputAt, listSessions, sendText } from "./sessions.mjs";
-import { lastRun, logEvent } from "./events.mjs";
-import { diffOf } from "./git.mjs";
-import { BLOCK_PREFIX, blockMessage, confirmBlock, gitState, nextStep, reviewOf, reviewPrompt, reviewSettings, runReviewer, setReview, shouldReview, verdictLine } from "./reviewer.mjs";
+import { lastRun, logEvent, onRunStart } from "./events.mjs";
+import { diffOf, headOf } from "./git.mjs";
+import { BLOCK_PREFIX, blockMessage, citedSpecs, confirmBlock, gitState, nextStep, reviewOf, reviewPrompt, reviewSettings, runReviewer, setReview, shouldReview, verdictLine } from "./reviewer.mjs";
 import { clip } from "./text.mjs";
 
 const SUPERVISE = process.env.AXA_SUPERVISOR !== "0";
@@ -84,15 +84,19 @@ function gateDone(p, s) {
   p.gate = "reviewing"; reviewing.add(s.id);
   setReview(s.id, { verdict: "reviewing", at: Date.now(), run: run.id });
   const fix = String(run.prompt || "").startsWith(BLOCK_PREFIX) && rounds.has(s.id);
-  const goal = fix ? rounds.get(s.id).goal : run.prompt;
+  const goal = fix ? rounds.get(s.id).goal : run.instruction || run.prompt;
+  // the whole instruction's work: from where its first turn started (a fix round continues it)
+  const since = (fix && rounds.get(s.id).head) || run.head_start || null;
   const job = (async () => {
     let raw;
     try {
-      const d = await diff(s.cwd);
-      raw = await review({ cwd: s.cwd, settings, prompt: reviewPrompt({ goal, report: s.last_report || run.report, diff: d.diff, untracked: d.untracked || [], truncated: d.truncated, round: fix ? rounds.get(s.id).blocks : 0 }) });
+      const d = await diff(s.cwd, since);
+      raw = await review({ cwd: s.cwd, settings, prompt: reviewPrompt({ goal, report: s.last_report || run.report, diff: d.diff, untracked: d.untracked || [], truncated: d.truncated, since: d.since, head: d.head, commits: d.commits || [], specs: citedSpecs(goal), round: fix ? rounds.get(s.id).blocks : 0 }) });
     } catch (e) { raw = { verdict: "error", summary: `the reviewer failed: ${e.message}`, checks: [], findings: [] }; }
     const r = confirmBlock(raw, s.cwd);
     const step = nextStep(rounds, s.id, run, r.verdict, settings.rounds);
+    const st = rounds.get(s.id);
+    if (st && !st.head) st.head = since;
     const out = { verdict: r.verdict, raw_verdict: raw.verdict, summary: r.summary, checks: r.checks, findings: r.findings, dropped: r.dropped?.length || 0, at: Date.now(), run: run.id, round: step.round, exhausted: step.exhausted };
     setReview(s.id, out); run.review = out; reviewing.delete(s.id);
     log({ event: "Review", terminal: s.id, role: "console", verdict: r.verdict, raw_verdict: raw.verdict, findings: r.findings.length, round: step.round, summary: r.summary, model: settings.model });
@@ -112,11 +116,18 @@ function gateDone(p, s) {
 const jobs = new Set();
 export const reviewsSettled = () => Promise.all([...jobs]); // tests: wait for running reviews
 // Fingerprint git when a run starts, and forget a review once the session took a new instruction
+// (at the run's start when the daemon sees it live; else on the next tick, as a fallback)
+function noteStart(run, cwd) {
+  if (!run || run.git_start !== undefined || !cwd) return;
+  run.git_start = gitState(cwd);
+  run.head_start = run.git_start ? headOf(cwd) : null;
+}
+onRunStart((run) => noteStart(run, run.cwd));
 export function trackReviews(list) {
   for (const s of list) {
     if (s.mode !== "claude") continue;
     const run = lastRun(s.id);
-    if (run?.status === "running" && run.git_start === undefined) run.git_start = gitState(s.cwd);
+    if (run?.status === "running") noteStart(run, s.cwd);
     const rv = reviewOf(s.id);
     if (rv && rv.verdict !== "reviewing" && run && run.id !== rv.run && !String(run.prompt || "").startsWith(BLOCK_PREFIX)) setReview(s.id, null);
   }
