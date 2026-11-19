@@ -68,6 +68,36 @@ export function wrapMsg(text, w) {
   return outL;
 }
 
+// A message's whole text for copying: markdown cleaned like wrapMsg, but not wrapped
+export const msgText = (text) => wrapMsg(text, Infinity).join("\n");
+
+// ---------- select to copy in the commander ----------
+// lines: [{ row, col0, text }] (screen rows/cols, col0 = where the text starts); sel: { startRow, startCol,
+// endRow, endCol } in the same coordinates, either direction. selRange(l, sel) is the [from, to) of l's
+// characters that are selected (null when none); selectedText(lines, sel) the selected text.
+const orderSel = (s) => (s.endRow < s.startRow || (s.endRow === s.startRow && s.endCol < s.startCol) ? { startRow: s.endRow, startCol: s.endCol, endRow: s.startRow, endCol: s.startCol } : s);
+const colIdx = (chars, c) => { let w = 0; for (let i = 0; i < chars.length; i++) { w += width(chars[i]); if (c < w) return i; } return chars.length; };
+export function selRange(l, sel) {
+  if (!sel) return null;
+  const s = orderSel(sel), chars = [...l.text];
+  if (l.row < s.startRow || l.row > s.endRow) return null;
+  const from = l.row === s.startRow ? colIdx(chars, Math.max(0, s.startCol - l.col0)) : 0;
+  const to = l.row === s.endRow ? (s.endCol < l.col0 ? 0 : Math.min(chars.length, colIdx(chars, s.endCol - l.col0) + 1)) : chars.length;
+  return to > from ? [from, to] : null;
+}
+export function selectedText(lines, sel) {
+  if (!sel) return "";
+  const s = orderSel(sel), out = [];
+  for (const l of [...lines].sort((a, b) => a.row - b.row)) {
+    if (l.row < s.startRow || l.row > s.endRow) continue;
+    const r = selRange(l, s);
+    out.push(r ? [...l.text].slice(r[0], r[1]).join("").trimEnd() : "");
+  }
+  while (out.length && !out[0]) out.shift();
+  while (out.length && !out.at(-1)) out.pop();
+  return out.join("\n");
+}
+
 // ---------- what an event says, in plain words ----------
 const PLUMBING = /^(ToolSearch|TodoWrite|TaskCreate|TaskUpdate|TaskList|TaskGet|TaskOutput|EnterPlanMode|ExitPlanMode)$/;
 function said(e) {
@@ -412,17 +442,25 @@ export function controlRows(ctx, W, B) {
   const msgs = ctx.cmdMsgs || [];
   if (!cmd && !msgs.length) convo.push(["Offline. Type below (or press a) to start it.", "dim"]);
   else if (!msgs.length) convo.push([clean(cmd.last_report) || "Standing by. Tell me what you want done across your projects.", "text"]);
-  for (const m of msgs) {
-    convo.push(["", ""]);
-    convo.push([m.role === "you" ? "You" : `${I.axa} AXA`, m.role === "you" ? "you" : "claude"]);
-    for (const l of wrapMsg(m.text, iw - 4)) convo.push([l, m.role === "you" ? "text" : "idle"]);
+  for (const [k, m] of msgs.entries()) {
+    convo.push(["", "", k]);
+    convo.push([m.role === "you" ? "You" : `${I.axa} AXA`, m.role === "you" ? "you" : "claude", k]);
+    for (const l of wrapMsg(m.text, iw - 4)) convo.push([l, m.role === "you" ? "text" : "idle", k]);
   }
   const room = chH - 5 - actRow.length - statRows.length;
   const maxScroll = Math.max(0, convo.length - room);
   ctx.cmdScroll = Math.min(ctx.cmdScroll || 0, maxScroll);
   ctx.cmdMaxScroll = maxScroll;
   const end = convo.length - ctx.cmdScroll, shown = convo.slice(Math.max(0, end - room), end);
-  for (const [t, role] of shown) cb.push(line([["  " + t, role]], iw));
+  // what's on screen, so a drag can be mapped to text (body rows; columns 1-based like mouse x)
+  ctx.cmdText = [];
+  const cmdTop = (topH || 0) + apH;
+  for (const [t, role, msg = -1] of shown) {
+    const l = { row: cmdTop + 1 + cb.length, col0: midL + 4, text: t, msg };
+    ctx.cmdText.push(l);
+    const r = selRange(l, ctx.cmdSel), ch = [...t];
+    cb.push(line(r ? [["  " + ch.slice(0, r[0]).join(""), role], [ch.slice(r[0], r[1]).join(""), "sel"], [ch.slice(r[1]).join(""), role]] : [["  " + t, role]], iw));
+  }
   while (cb.length < chH - 4 - actRow.length - statRows.length) cb.push(" ".repeat(iw));
   cb.push(...actRow);
   const prompt = ctx.focusInput ? ctx.input + "▏" : ctx.input || "Ask anything…  (press : to type)";

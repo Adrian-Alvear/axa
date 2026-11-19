@@ -8,6 +8,8 @@ const has = (c) => spawnSync("which", [c], { stdio: "ignore" }).status === 0;
 const wsl = () => has("powershell.exe") && has("wslpath");
 
 export function copyToClipboard(text) {
+  // tests: AXA_CLIPBOARD_FILE takes the text instead of the real clipboard
+  if (process.env.AXA_CLIPBOARD_FILE) { try { writeFileSync(process.env.AXA_CLIPBOARD_FILE, text); } catch {} return; }
   // OSC 52: Windows Terminal, iTerm2, kitty, WezTerm... copy for us
   process.stdout.write(`\x1b]52;c;${Buffer.from(text).toString("base64")}\x07`);
   const tool = has("clip.exe") ? ["clip.exe", []] : process.platform === "darwin" ? ["pbcopy", []] : has("wl-copy") ? ["wl-copy", []] : has("xclip") ? ["xclip", ["-selection", "clipboard"]] : null;

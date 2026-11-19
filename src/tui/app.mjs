@@ -16,8 +16,8 @@ import { SOCKET, TMUX_CONF, tmuxEnv } from "../core/tmux-client.mjs";
 import { ESC, I, THEME_NAMES, nerdFontInstalled, URGENCY, ago, chipOf, clean, cut, fmtTok, gitText, line, look, pad, paint, selLine, setIcons, setMotion, setTheme, spinner, truecolor, width } from "./draw.mjs";
 import { sliceAnsi } from "./ansi.mjs";
 import { LiveView } from "./live.mjs";
-import { agentDetail, agentName, axaStatusLine, controlRows } from "./control.mjs";
-import { pasteFile, readClipboard } from "./clipboard.mjs";
+import { agentDetail, agentName, axaStatusLine, controlRows, msgText, selectedText } from "./control.mjs";
+import { copyToClipboard, pasteFile, readClipboard } from "./clipboard.mjs";
 
 const out = process.stdout;
 const PREFIXES = { "C-b": 0x02, "C-a": 0x01, "C-g": 0x07, "C-\\": 0x1c };
@@ -56,6 +56,8 @@ export async function runTui() {
   const filter = { control: "", sessions: "", chats: "", agents: "", projects: "" };
   let act = null, ctlSel = null, focusInput = false, cmdInput = ""; // Control: activity, selected session, the commander box
   let cmdMsgs = [], cmdChat = null, cmdScroll = 0; // the commander's conversation, and how far you've scrolled it back
+  // a drag over the commander's text: { startRow, startCol, endRow, endCol, scroll, dragged, done } (screen rows/cols)
+  let cmdSel = null;
   let ctl = { mapHits: [], chatHits: [] }, zone = "map", chatSel = 0, ctlAgent = null; // Control's focus: the map (sessions) or the recent chats
   let filtering = false; // typing into the focused panel's filter
   let pendingSend = null; // { id, text }: typed into a session as soon as it's ready (e.g. a commander just started)
@@ -355,7 +357,7 @@ export async function runTui() {
   function footer() {
     if (screen === "live") return null; // a session keeps every row; notices show in its header
     if (toast && Date.now() < toast.until) return line([[` ${toast.text}`, "text"]], W, [], "bar");
-    const per = { control: focusInput ? [["⏎", "send to the commander"], ["Esc", "stop typing"]] : zone === "chats" ? [["⏎", "resume chat"], ["↑↓", "pick"], ["←", "back to the map"], [":", "talk to AXA"]] : [["⏎", "open"], ["↑↓", "pick session"], ["→", "chats"], [":", "talk to AXA"], ["PgUp", "AXA's messages"], ["y/x", "answer"], ["d", "changes"]], sessions: [["⏎", "open"], ["d", "changes"], ["g", "goal"], ["v", "checks"], ["r", "rename"], ["X", "close"]], chats: [["⏎", "resume"], ["/", "search"]], agents: [["⏎", "give a task"], ["/", "search"]], projects: [["⏎", "open"], ["n", "new"], ["w", "worktree"], ["s", "shell"]] }[PANELS[focus]];
+    const per = { control: focusInput ? [["⏎", "send to the commander"], ["Esc", "stop typing"]] : zone === "chats" ? [["⏎", "resume chat"], ["↑↓", "pick"], ["←", "back to the map"], [":", "talk to AXA"]] : [["⏎", "open"], ["↑↓", "pick session"], ["→", "chats"], [":", "talk to AXA"], ["PgUp", "AXA's messages"], ["y/x", "answer"], ["d", "changes"], ...(W >= 170 ? [["drag", "copy"]] : [])], sessions: [["⏎", "open"], ["d", "changes"], ["g", "goal"], ["v", "checks"], ["r", "rename"], ["X", "close"]], chats: [["⏎", "resume"], ["/", "search"]], agents: [["⏎", "give a task"], ["/", "search"]], projects: [["⏎", "open"], ["n", "new"], ["w", "worktree"], ["s", "shell"]] }[PANELS[focus]];
     const segs = per.flatMap(([k, t]) => [[` ${k} `, "keycap"], [` ${t}  `, "barDim"]]);
     return line(segs, W, [[" Tab ", "keycap"], [" switch  ", "barDim"], [" a ", "keycap"], [" AXA  ", "barDim"], [" n ", "keycap"], [" new  ", "barDim"], [" ? ", "keycap"], [" help  ", "barDim"], [" q ", "keycap"], [" quit", "barDim"]], "bar");
   }
@@ -368,9 +370,10 @@ export async function runTui() {
     if (panel === "control") {
       if (W < 100 || h < 20) return [...listRows("sessions", 1, y0, W, h - 1), line([[" widen the window (100×26 or more) for the full control view", "dim"]], W)];
       const w = waitingOthers();
-      ctl = { motion: motionNow(), sessions: data.sessions, act, selId: ctlSelected()?.id, focusInput, input: cmdInput, nameOf, question, yesOpt, noOpt, waiting: w[0], waitingCount: w.length, order: ctlOrder(), chats: data.chats, zone, chatSel, agentSel: ctlAgent, cmdStatus: commanderStatus(), mapHits: [], chatHits: [], y0, L: Math.round(W * 0.62), cmdMsgs, cmdScroll };
+      ctl = { motion: motionNow(), sessions: data.sessions, act, selId: ctlSelected()?.id, focusInput, input: cmdInput, nameOf, question, yesOpt, noOpt, waiting: w[0], waitingCount: w.length, order: ctlOrder(), chats: data.chats, zone, chatSel, agentSel: ctlAgent, cmdStatus: commanderStatus(), mapHits: [], chatHits: [], y0, L: Math.round(W * 0.62), cmdMsgs, cmdScroll, cmdSel: cmdSel?.dragged && cmdSel.scroll === cmdScroll ? cmdSel : null };
       const rowsOut = controlRows(ctl, W, h - 1);
       cmdScroll = ctl.cmdScroll;
+      if (cmdSel && cmdSel.scroll !== cmdScroll) cmdSel = null; // the conversation scrolled: the selection goes
       // one full-width status bar under it: mode · model · context · tokens · agents · sessions
       const c = commander();
       rowsOut.push(c ? axaStatusLine(c, data.sessions, W, 1, { mode: ctl.cmdStatus.mode, on: "bar", voice: voiceOn() })[0] : line([[" AXA is offline · press a to start it", "barDim"]], W, [], "bar"));
@@ -657,6 +660,8 @@ export async function runTui() {
       { text: "  /   filter the panel     y / x   answer the prompt in the yellow bar   !  go to it" },
       { text: "  o   web console          ,  settings             q   quit (sessions keep running)" },
       { text: "  Control: m   voice on/off (AXA reads its replies aloud) · Esc stops it speaking" },
+      { text: "  Control: drag over the commander's text to copy it · double-click a message to copy all of it" },
+      { text: "           (Shift+drag uses your terminal's own selection instead)" },
       { text: "" },
       { text: "Sessions panel", role: "head" },
       { text: "  Enter open live · d changes (diff) · g give a goal · v run checks · r rename · X close" },
@@ -870,6 +875,34 @@ export async function runTui() {
     return keys;
   }
   let lastClick = { at: 0, panel: null, i: -1 }, lastTyping = 0;
+  // the commander's text: press starts a selection, a drag (32) extends it, release copies it;
+  // a double-click on a message copies the whole message. true when the event was ours.
+  function cmdMouse(b, x, by, up) {
+    const lines = ctl.cmdText || [];
+    if (b === 32 && cmdSel && !cmdSel.done) { cmdSel.endRow = by; cmdSel.endCol = x; cmdSel.dragged = true; return true; }
+    if (b === 0 && up && cmdSel && !cmdSel.done) {
+      const text = cmdSel.dragged ? selectedText(lines, cmdSel) : "";
+      if (!text) { cmdSel = null; return true; }
+      copyToClipboard(text);
+      const n = [...text].length;
+      flash(`copied ${n} character${n === 1 ? "" : "s"}`);
+      const mine = (cmdSel.done = Date.now());
+      setTimeout(() => { if (cmdSel?.done === mine) { cmdSel = null; schedule(); } }, 1000); // the highlight lingers a moment
+      return true;
+    }
+    if (b !== 0 || up) return false;
+    cmdSel = null;
+    const inText = x > (ctl.midL ?? ctl.L) + 1 && by >= ctl.cmdTop && by < ctl.cmdBottom && lines.length && by >= lines[0].row && by <= lines.at(-1).row;
+    if (!inText) return false;
+    const l = lines.find((t) => t.row === by);
+    if (l && l.msg >= 0 && cmdMsgs[l.msg]) {
+      const again = Date.now() - lastClick.at < 450 && lastClick.i === `msg:${l.msg}`;
+      lastClick = { at: again ? 0 : Date.now(), panel: "control", i: `msg:${l.msg}` };
+      if (again) { const t = msgText(cmdMsgs[l.msg].text); if (t) { copyToClipboard(t); flash("copied the message"); } return true; }
+    }
+    cmdSel = { startRow: by, startCol: x, endRow: by, endCol: x, scroll: cmdScroll, dragged: false, done: 0 };
+    return true;
+  }
   function onMouse(b, x, y, up) {
     if (overlay) {
       if (b === 64) overlay.scroll = (overlay.scroll || 0) - 3; else if (b === 65) overlay.scroll = (overlay.scroll || 0) + 3;
@@ -883,7 +916,8 @@ export async function runTui() {
     if (y === 2) { const t = tabHits.find((h) => x >= h.x0 && x <= h.x1); if (t && b === 0 && !up) { focus = t.i; schedule(); } return; }
     if (PANELS[focus] === "control" && ctl.y0) {
       const by = y - ctl.y0; // body row (0-based)
-      if ((b === 64 || b === 65) && x > (ctl.midL ?? ctl.L) && by >= ctl.cmdTop && by < ctl.cmdBottom) { cmdScroll = Math.max(0, cmdScroll + (b === 64 ? 3 : -3)); return schedule(); }
+      if ((b === 64 || b === 65) && x > (ctl.midL ?? ctl.L) && by >= ctl.cmdTop && by < ctl.cmdBottom) { cmdScroll = Math.max(0, cmdScroll + (b === 64 ? 3 : -3)); cmdSel = null; return schedule(); }
+      if (cmdMouse(b, x, by, up)) return schedule();
       if (b !== 0 || up) return;
       const m = ctl.mapHits.find((h) => by - ctl.mapTop >= h.row0 && by - ctl.mapTop <= h.row1 && x - 2 >= h.col0 && x - 2 <= h.col1);
       const c = x <= Math.round(ctl.L * 0.55) && ctl.chatHits.find((h) => by - ctl.tableTop === h.row);
@@ -955,6 +989,7 @@ export async function runTui() {
     }
     d = d.replace(MOUSE, (_, b, x, y, m) => { onMouse(Number(b), Number(x), Number(y), m === "m"); return ""; });
     if (!d) return;
+    cmdSel = null; // a key clears the commander selection
     // each key goes where the UI is at that moment: a dialog, the hub, or the live session
     const P = prefixByte();
     while (d) {
@@ -1019,7 +1054,7 @@ export async function runTui() {
       const m = await call(`/api/chats/${c.chat}/messages?limit=40`);
       const grew = m.length !== cmdMsgs.length || m.at(-1)?.text !== cmdMsgs.at(-1)?.text;
       cmdMsgs = m; cmdChat = c.chat; cmdLast = key;
-      if (grew) cmdScroll = 0; // a new message: back to the newest
+      if (grew) { cmdScroll = 0; cmdSel = null; } // a new message: back to the newest
       schedule();
     } catch {}
   };
