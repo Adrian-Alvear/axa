@@ -165,6 +165,33 @@ test("Bash: a push that reaches main in any refspec is never auto-allowed", () =
   for (const cmd of ["git push origin feat main", "git push origin HEAD:refs/heads/main", "git push origin refs/heads/master", "git push -u origin feat:production", "git push origin heads/main", "git push origin for/main", "git push origin x:refs/heads/release", "git push origin feat:team/main"]) assert.equal(sh(s, cmd), null, cmd);
 });
 
+test("Bash: push, deploy and publish spellings that dodge the old rules are never auto-allowed", () => {
+  const s = sandbox();
+  for (const cmd of ["git push origin feat:refs/heads/main", `git push origin "main"`, "git push origin 'main'", "git -C . push origin main", "git --no-pager push origin main", "git push origin HEAD:refs/heads/main",
+    "git push origin v1.2.3", "git push origin refs/tags/x", "git push --follow-tags", "pnpm prisma migrate deploy", "npx prisma migrate deploy", "npm run db -- migrate deploy", "vercel --yes --prod", "npm --tag next publish", "docker compose push", "kubectl --context prod apply -f x"])
+    assert.notEqual(sh(s, cmd), "allow", cmd);
+  for (const cmd of ["git push origin feat-x", "git push -u origin my-branch", "npm test", "pnpm test", `git commit -m "npm publish docs"`, `echo "git push origin main"`]) assert.equal(sh(s, cmd), "allow", cmd);
+});
+
+test("Bash: pushing HEAD or @ while on main is never auto-allowed, with git global options too", () => {
+  const s = sandbox();
+  rmSync(join(s.proj, ".git"), { recursive: true });
+  const git = (...a) => spawnSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...a], { cwd: s.proj, encoding: "utf8" });
+  git("init", "-q", "-b", "main"); git("commit", "-q", "--allow-empty", "-m", "x");
+  for (const cmd of ["git push origin @", "git push origin HEAD", "git -C . push origin HEAD", "git --no-pager push"]) assert.notEqual(sh(s, cmd), "allow", cmd);
+});
+
+test("edits to git hooks, MCP config and Claude Code hooks are denied, any case", () => {
+  const s = sandbox();
+  for (const f of [".mcp.json", ".husky/pre-commit", ".husky/_/husky.sh", ".githooks/pre-push", ".git/hooks/pre-commit", ".GIT/hooks/pre-commit", ".Git/config", ".claude/hooks/x.mjs", ".CLAUDE/Hooks/y.sh", "sub/.mcp.json"]) {
+    for (const tool of ["Write", "Edit"]) assert.equal(decision(s, tool, { file_path: join(s.proj, f) }), "deny", `${tool} ${f}`);
+  }
+  // nearby files are still fine
+  for (const f of ["mcp.json", "docs/husky.md", ".claude/agents/a.md", "githooks.md"]) assert.equal(decision(s, "Write", { file_path: join(s.proj, f) }), "allow", f);
+  // a redirection into a hook folder isn't auto-allowed either
+  assert.notEqual(sh(s, "echo x > .husky/pre-commit"), "allow");
+});
+
 test("Bash: writes to Claude Code's settings are denied, any spelling or case", () => {
   const s = sandbox();
   for (const cmd of ["sort -o .claude/settings.local.json x.json", "sort --output=.claude/settings.json x.json", "uniq x.json .claude/settings.local.json", "git diff --output=.claude/settings.json", "cp x.json .claude/settings.local.json", "echo {} | tee .claude/settings.json", "echo {} > .CLAUDE/Settings.Local.json", "cd sub && sort -o ../.claude/settings.json x"]) {

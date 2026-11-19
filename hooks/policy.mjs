@@ -16,7 +16,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
-import { dangerousShell, oneWayDoor, redact } from "../lib/safety.mjs";
+import { dangerousShell, oneWayDoor, pushDoor, redact } from "../lib/safety.mjs";
 
 const MAX_INPUT = 1024 * 1024;
 const home = process.env.AXA_HOME || join(homedir(), ".axa");
@@ -87,6 +87,13 @@ const isSecret = (p) => SECRET.test(basename(p)) || /\/\.ssh\/|\/\.aws\/|\/\.gnu
 // disableAllHooks, permissions.allow), so they're never auto-approved
 // (case-insensitive: folders on Windows drives, /mnt/c under WSL, ignore case)
 const isClaudeSettings = (p) => /(?:^|\/)\.claude\/settings(?:\.local)?\.json$/i.test(p);
+// Files that run code or start servers outside AXA's checks: git hooks (.git/**, .husky/**,
+// .githooks/**), MCP server config (.mcp.json) and Claude Code's hooks (.claude/hooks/**). Like the
+// settings, never auto-approved (any case, at any depth)
+const isGuarded = (p) => /(?:^|\/)(?:\.mcp\.json$|\.(?:git|husky|githooks)(?:\/|$)|\.claude\/hooks(?:\/|$))/i.test(p);
+// (inside the project, judged by the path from its root)
+const guarded = (p, ctx) => isGuarded(inside(p, ctx.root) ? relative(ctx.root, p) : p);
+const GUARDED = "editing git hooks, .git, .mcp.json or .claude/hooks isn't allowed: they run code outside AXA's checks; ask the user";
 // Secret files by name (the list above plus more credential stores and shell history), and private
 // places: credential and config folders in the home folder, other processes' memory/env. Used for
 // the commander's reads and the approver's read-only fast path.
@@ -105,7 +112,7 @@ const holdsPrivate = (p) => [...PRIVATE_HOME.map((d) => join(real(homedir()), d)
 const projectRoot = (ctx) => !inside(real(homedir()), ctx.root) && !inside(ctx.root, real(home)) && !isPrivatePath(ctx.root);
 // A file a session may change without the user: inside the project (not the folder itself), not
 // .git, not a secret or private place, not Claude Code's settings, not AXA's folder
-const projectFile = (p, ctx) => inside(p, ctx.root) && p !== ctx.root && !inGit(p, ctx) && !isSecret(p) && !isPrivatePath(p) && !isClaudeSettings(p) && !inside(p, real(home));
+const projectFile = (p, ctx) => inside(p, ctx.root) && p !== ctx.root && !inGit(p, ctx) && !guarded(p, ctx) && !isSecret(p) && !isPrivatePath(p) && !isClaudeSettings(p) && !inside(p, real(home));
 
 // ---------- the decision ----------
 const allow = (reason) => ({ decision: "allow", reason });
@@ -134,6 +141,7 @@ function decide(tool, input, ctx) {
       const p = pathOf(input.file_path || input.notebook_path || "", ctx);
       if (isSecret(p)) return deny(`editing a secret file (${basename(p)}) isn't allowed; ask the user`);
       if (isClaudeSettings(p)) return deny("editing Claude Code's settings (.claude/settings*.json) isn't allowed: it could switch off AXA's checks; ask the user");
+      if (guarded(p, ctx)) return deny(GUARDED);
       if (inside(p, ctx.scratch)) return ok("writing to the session's scratch folder");
       if (!inside(p, ctx.root)) return deny(`${p} is outside this project (${ctx.root}); edit only inside the project`);
       if (inGit(p, ctx)) return deny("editing .git internals isn't allowed; use git commands");
@@ -162,7 +170,7 @@ function bash(cmd, ctx, ok) {
   if (touch) return touch;
   if (ctx.settings.mode === "strict") return null;
   // a one-way door is never auto-allowed by allowBash: no opinion, so the approver sends it to the user
-  for (const re of ctx.settings.allowBash || []) if (safeRe(re, true)?.test(cmd)) return oneWayDoor("Bash", { command: cmd }) ? null : ok(`allowed by your policy (${re})`);
+  for (const re of ctx.settings.allowBash || []) if (safeRe(re, true)?.test(cmd)) return oneWayDoor("Bash", { command: cmd }, { cwd: ctx.cwd }) ? null : ok(`allowed by your policy (${re})`);
   // Anything we can't read with confidence gets no opinion: expansions, substitutions, heredocs
   if (/[`$]|<\(|>\(|<<|&>/.test(cmd) || escapes(cmd)) return null;
   if (!segments) return null;
@@ -180,7 +188,7 @@ function bash(cmd, ctx, ok) {
     if (!cwds.every((cwd) => safeSegment(words, { ...ctx, cwd }))) return null;
   }
   // a one-way door (e.g. a push to main spelled in a way safeGit misses) is never auto-allowed
-  return oneWayDoor("Bash", { command: cmd }) ? null : ok("safe command");
+  return oneWayDoor("Bash", { command: cmd }, { cwd: ctx.cwd }) ? null : ok("safe command");
 }
 // Every word that could name a file: the word itself, the value of --opt=value / -o=value, the rest
 // of a short option (-oFILE), a redirection's target
@@ -305,7 +313,7 @@ function safeSegment(words, ctx) {
     if (target === "&1" || target === "&2" || target === "/dev/null") continue;
     if (!target) return false;
     const p = pathOf(target, ctx);
-    if (!inside(p, ctx.root) || inGit(p, ctx) || isSecret(p) || isClaudeSettings(p)) return false;
+    if (!inside(p, ctx.root) || inGit(p, ctx) || guarded(p, ctx) || isSecret(p) || isClaudeSettings(p)) return false;
   }
   if (!args.length) return false;
   const [cmd, ...rest] = args;
@@ -363,6 +371,8 @@ function safeGit(rest, ctx) {
     case "checkout": case "switch": return (flags.includes("-b") || flags.includes("-c")) && !flags.includes("-B") && !flags.includes("-C");
     case "stash": return ["push", "list", "show", undefined].includes(a[0]);
     case "push": {
+      // the shared one-way-door check first (tags, main by any spelling, HEAD on main)
+      if (pushDoor(a, ctx.cwd)) return false;
       if (a.some((x) => /^(?:-f|--force(?:-with-lease)?|--delete|-d|--mirror|--all|--tags)$/.test(x) || x.startsWith("+") || x.startsWith(":"))) return false;
       // every refspec counts (`git push origin feat main` pushes main too), refs/heads/main is main
       // a bare HEAD (or no refspec) pushes the current branch under its own name
@@ -414,6 +424,7 @@ export function decideCommander(tool, input, ctx) {
     if (inside(p, real(home))) return deny(AXA_WRITE);
     if (isSecret(p)) return deny(`editing a secret file (${basename(p)}) isn't allowed; ask the user`);
     if (isClaudeSettings(p)) return deny("editing Claude Code's settings (.claude/settings*.json) isn't allowed: it could switch off AXA's checks; ask the user");
+    if (guarded(p, ctx)) return deny(GUARDED);
     if (!projectRoot(ctx) || !inside(p, ctx.root) || inside(p, PLUGIN)) return null;
     if (inGit(p, ctx)) return deny("editing .git internals isn't allowed; use git commands");
     return projectFile(p, ctx) ? ok("editing inside the commander's project") : null;
@@ -465,7 +476,7 @@ function commanderBash(cmd, ctx, ok) {
     }
     if (!cwds.every((cwd) => readable(cwd) && commanderSegment(words, { ...ctx, cwd }))) return null;
   }
-  return oneWayDoor("Bash", { command: cmd }) ? null : ok("read-only command");
+  return oneWayDoor("Bash", { command: cmd }, { cwd: ctx.cwd }) ? null : ok("read-only command");
 }
 
 // Writes into AXA's folder (redirections, cp/mv/tee targets, or any path of a command that changes
@@ -581,7 +592,7 @@ export function localReversible(tool, input, ctx) {
     if (EDIT_TOOLS.has(tool)) return projectFile(pathOf(input.file_path || input.notebook_path || "", ctx), ctx);
     if (tool !== "Bash") return false;
     const cmd = String(input.command || "");
-    if (!cmd.trim() || oneWayDoor("Bash", { command: cmd }) || answersPrompt(cmd)) return false;
+    if (!cmd.trim() || oneWayDoor("Bash", { command: cmd }, { cwd: ctx.cwd }) || answersPrompt(cmd)) return false;
     if (AXA_CONTROLS.test(cmd) || reachesAxaTmux(cmd) || cmd.includes(home)) return false;
     for (const re of ctx.settings.denyBash || []) if (safeRe(re)?.test(cmd)) return false;
     // a heredoc only when the whole command just writes its text to a project file (not Python:

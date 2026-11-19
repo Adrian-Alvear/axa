@@ -1,6 +1,10 @@
 // lib/safety.mjs: redact, oneWayDoor, dangerousShell, cleanText
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { cleanText, dangerousShell, oneWayDoor, redact } from "../lib/safety.mjs";
 
 const bash = (command) => oneWayDoor("Bash", { command });
@@ -95,6 +99,60 @@ test("oneWayDoor: shipping, publishing, deploying, admin", () => {
   for (const [cmd, why] of Object.entries(doors)) assert.equal(bash(cmd), why, cmd);
   // a command continued across a backslash-newline is still seen
   assert.equal(bash("npm \\\npublish"), "publish a package");
+});
+
+test("oneWayDoor: pushes to main however they're spelled", () => {
+  const MAIN = "push to a main/production branch";
+  for (const c of ["git push origin feat:refs/heads/main", `git push origin "main"`, "git push origin 'main'", "git -C . push origin main", "git --no-pager push origin main", "git push origin HEAD:refs/heads/main",
+    "git -c core.pager=less push origin main", "git --git-dir=.git --work-tree=. push origin master", "git push origin feat:heads/main", "git push origin refs/heads/production", "git push -u origin feat Main", `sh -c "git push origin main"`, "cd x && git push origin main"]) assert.equal(bash(c), MAIN, c);
+  for (const c of [`git -c alias.p="push origin main" p`, `git -c alias.p='!git push origin main' p`]) assert.equal(bash(c), MAIN, c);
+  // a leading + is a force push: caught first by the dangerous list
+  assert.equal(bash("git push origin +feat:heads/main"), "force-push to git");
+});
+
+test("oneWayDoor: pushing HEAD, @ or the current branch when it's main", () => {
+  const dir = mkdtempSync(join(tmpdir(), "axa-safety-git-"));
+  const git = (...a) => spawnSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...a], { cwd: dir, encoding: "utf8" });
+  git("init", "-q", "-b", "main"); git("commit", "-q", "--allow-empty", "-m", "x");
+  const prev = process.cwd();
+  process.chdir(dir);
+  try {
+    for (const c of ["git push origin @", "git push origin HEAD", "git push", "git push origin", "git push -u origin HEAD"]) assert.equal(bash(c), "push to a main/production branch", c);
+    git("checkout", "-q", "-b", "feat");
+    for (const c of ["git push origin @", "git push origin HEAD", "git push"]) assert.equal(bash(c), null, c);
+    // a local tag pushed by name is a tag push
+    git("tag", "snapshot");
+    assert.equal(bash("git push origin snapshot"), "push git tags");
+  } finally { process.chdir(prev); rmSync(dir, { recursive: true, force: true }); }
+  // the cwd can also be passed in
+  assert.equal(oneWayDoor("Bash", { command: "git push origin HEAD" }, { cwd: dir }), null);
+});
+
+test("oneWayDoor: tag pushes, migrations, deploys, publishes and infra with options in front", () => {
+  const doors = {
+    "git push origin v1.2.3": "push git tags",
+    "git push origin refs/tags/x": "push git tags",
+    "git push --follow-tags": "push git tags",
+    "git push origin --tags": "push git tags",
+    "git push origin tag v2": "push git tags",
+    "pnpm prisma migrate deploy": "apply database migrations",
+    "npx prisma migrate deploy": "apply database migrations",
+    "yarn knex migrate deploy": "apply database migrations",
+    "vercel --yes --prod": "deploy",
+    "npm --tag next publish": "publish a package",
+    "pnpm --filter x publish": "publish a package",
+    "docker compose push": "change live infrastructure",
+    "docker-compose push web": "change live infrastructure",
+    "kubectl --context prod apply -f x": "change live infrastructure",
+    "terraform -chdir=infra apply": "change live infrastructure",
+  };
+  for (const [cmd, why] of Object.entries(doors)) assert.equal(bash(cmd), why, cmd);
+});
+
+test("oneWayDoor: quoted text that isn't run is not a command", () => {
+  for (const c of [`echo "git push origin main"`, `git commit -m "npm publish docs"`, `git commit -m "git push origin main"`, `git commit --message="vercel --prod notes"`, "git push origin feat-x", "git push -u origin my-branch", "npm test", "pnpm test", "git push origin v2/p0-d"]) assert.equal(bash(c), null, c);
+  // but text a shell runs still counts
+  for (const c of [`echo "git push origin main" | sh`, `echo $(git push origin main)`, `bash -c 'git push origin main'`]) assert.equal(bash(c), "push to a main/production branch", c);
 });
 
 test("oneWayDoor: sending data out vs to this machine", () => {

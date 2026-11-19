@@ -138,7 +138,11 @@ agents/ skills/      axa:builder / reviewer / researcher; the axa, verify and we
   approved, dangerous ones refused, the rest goes to AXA's approver. Only one-way doors (shipping to
   main, deploying, publishing, accounts, spending) wait for you, in the yellow bar.
 - **Guardrails stay on.** Sessions can't edit `.claude/settings*.json` (that could switch AXA's checks
-  off), and commands that write files are never auto-approved. Test data isn't a command: a one-way-door
+  off), git hooks and `.git` (`.husky/`, `.githooks/`), `.mcp.json` or `.claude/hooks/`, and commands
+  that write files are never auto-approved. Pushes are read the way git reads them (quotes, `git -C`/`-c`
+  options, `refs/heads/main`, `HEAD` while on main), and any tag push is yours to approve, as are
+  `migrate deploy` and deploy/publish/infra commands with options before the subcommand. Test data isn't
+  a command: an `echo`ed or commit-message `git push` is text, and a one-way-door
   pattern that only appears in text a heredoc writes into a project file is judged as file data. If
   AXA's approver can't be reached (usage limit, network), only local, reversible steps inside the
   project are approved; everything else comes to you. **The commander** gets narrower rules: read-only

@@ -57,16 +57,16 @@ export async function run(raw, { ask = askClaude, judgeMs = JUDGE_MS + 5000 } = 
   if (commander && tool === "Bash" && answersPrompt(cmd)) { const v = { decision: "deny", reason: "the commander never answers permission prompts or questions; that's the user's." }; log(e, "deny", v.reason, "rule", what); return output(v); }
   // (also as the shell reads it: npm "publish" or npm pub\lish is npm publish)
   const bare = tool === "Bash" ? { command: unquote(cmd).replace(/\\([^\n])/g, "$1") } : input;
-  const door = oneWayDoor(tool, input) || userEscalate(settings, tool, input) || oneWayDoor(tool, bare) || userEscalate(settings, tool, bare);
+  const door = oneWayDoor(tool, input, ctx) || userEscalate(settings, tool, input) || oneWayDoor(tool, bare, ctx) || userEscalate(settings, tool, bare);
   // A rule that only matched words inside quotes ("npm publish" in an echo or test data) isn't a
   // one-way door by itself: the approver judges it, told what matched. Commands that could run
   // quoted text (sh -c, eval, xargs...) never get this, nor heredocs (a heredoc's text can be fed to
   // an interpreter: heredocs only get the narrower data-only check below).
-  const quotedOnly = door && tool === "Bash" && !RUNS_TEXT.test(cmd) && !cmd.includes("<<") && !oneWayDoor(tool, bare) && !userEscalate(settings, tool, bare);
+  const quotedOnly = door && tool === "Bash" && !RUNS_TEXT.test(cmd) && !cmd.includes("<<") && !oneWayDoor(tool, bare, ctx) && !userEscalate(settings, tool, bare);
   // Likewise a rule that matched only inside the text of a heredoc / inline Python that the command
   // just writes to a project file: the command without its text must match no rule
   const data = door && !quotedOnly && tool === "Bash" ? heredocWrite(cmd, ctx) : null;
-  const dataOnly = !!data && !oneWayDoor(tool, { command: data.stripped }) && !userEscalate(settings, tool, { command: data.stripped });
+  const dataOnly = !!data && !oneWayDoor(tool, { command: data.stripped }, ctx) && !userEscalate(settings, tool, { command: data.stripped });
   if (door && !quotedOnly && !dataOnly) { log(e, "escalate", `one-way door: ${door}`, "rule", what); return null; }
   // the commander and AXA's own folder: only reading its event log, session list and console token
   // is left to the rules below; anything else there is the user's call, never the model's
