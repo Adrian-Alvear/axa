@@ -8,7 +8,7 @@ import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { files, pluginRoot, port, srcDir } from "../paths.mjs";
-import { historyLines, logEvent, onChatSeen, onLine, runsSince, startTail, statusOf } from "./events.mjs";
+import { activity, historyLines, logEvent, onChatSeen, onLine, runsSince, startTail, statusOf } from "./events.mjs";
 import * as S from "./sessions.mjs";
 import { addLink, listLinks, removeLink, startSupervisor } from "./supervisor.mjs";
 import { listAgents, listProjects, readRoster } from "./catalog.mjs";
@@ -51,6 +51,7 @@ const routes = [
   ["GET", /^\/api\/health$/, () => [200, { ok: true, pid: process.pid, tmux: S.hasTmux }]],
   ["GET", /^\/api\/hub$/, (m, req, u) => [200, hub(Number(u.searchParams.get("chats")) || 40)]],
   ["GET", /^\/api\/terms$/, () => [200, S.listSessions()]],
+  ["GET", /^\/api\/activity$/, (m, req, u) => [200, activity(Math.min(240, Number(u.searchParams.get("minutes")) || 60), Math.min(300, Number(u.searchParams.get("limit")) || 60))]],
   ["POST", /^\/api\/terms$/, async (m, req) => {
     const b = await readBody(req);
     // Continuing a chat: it runs in that chat's own folder. If it's already open, that session is returned.

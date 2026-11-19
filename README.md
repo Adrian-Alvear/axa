@@ -47,7 +47,23 @@ plugin (for the `axa` skill, agents and tracing hooks in your own sessions):
 /plugin install axa@axa
 ```
 
-## The hub
+## Control (the home screen)
+
+Mission control for everything AXA runs, in one screen:
+
+- **Live map** in the middle: the AXA core (the commander) with every session on its orbit. Pulses run
+  along a session's link while it works, its helper agents circle it, and a session waiting on you
+  pulses amber. Click a node to select it, click again to open it.
+- **Global status**: active, working, needs you, done today, in big digits. **Activity**: events per
+  minute over the last hour.
+- **Requires approval**: the prompt a session is waiting on, with `x` decline / `y` approve.
+- **Commander**: what AXA last said, and a box to talk to it (`:` to type, Enter sends; it starts the
+  commander if it isn't running).
+- **Sessions** table and a live **log** of what every session is doing, in plain words.
+
+It needs a window of about 100×26 or more; smaller, it shows the sessions list instead.
+
+## The other tabs
 
 | Panel | What's in it | Enter | Other keys |
 |---|---|---|---|

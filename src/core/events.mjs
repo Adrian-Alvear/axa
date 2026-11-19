@@ -41,8 +41,37 @@ export function statusOf(id) {
 let onChat = () => {};
 export const onChatSeen = (fn) => (onChat = fn);
 
+// ---------- recent activity: the last events (for the hub's log) and events per minute (its chart) ----------
+const recent = []; // compact copies of the latest events
+const KEEP = ["ts", "event", "terminal", "role", "tool", "summary", "skill", "agent_id", "agent_type", "subagent_type", "decision", "reason", "answer", "from", "to", "items"];
+function remember(e) {
+  const c = {};
+  for (const k of KEEP) if (e[k] !== undefined) c[k] = typeof e[k] === "string" ? clip(e[k], 160) : e[k];
+  if (e.event === "UserPromptSubmit") c.prompt = clip(e.prompt, 160);
+  if (e.event === "Stop" || e.event === "SubagentStop") c.message = clip(e.message, 160);
+  if (e.event === "PostToolUseFailure") c.error = clip(e.error, 160);
+  recent.push(c);
+  if (recent.length > 4000) recent.splice(0, recent.length - 3000);
+}
+export function activity(minutes = 60, limit = 60) {
+  const now = Date.now(), perMinute = Array(minutes).fill(0);
+  for (let i = recent.length - 1; i >= 0; i--) {
+    const age = Math.floor((now - recent[i].ts) / 60_000);
+    if (age >= minutes) break;
+    if (age >= 0) perMinute[minutes - 1 - age]++;
+  }
+  const day = new Date(); day.setHours(0, 0, 0, 0);
+  const today = runs.filter((r) => r.start >= day.getTime());
+  return {
+    events: recent.filter((e) => !["PostToolUse", "Notification", "SessionStart", "PermissionRequest"].includes(e.event)).slice(-limit),
+    perMinute,
+    runs: { today: today.length, done: today.filter((r) => r.status === "done").length, failed_steps: today.reduce((n, r) => n + r.failures, 0), running: today.filter((r) => r.status === "running").length, approvals: today.reduce((n, r) => n + r.approvals, 0), helpers: today.reduce((n, r) => n + r.helpers, 0) },
+  };
+}
+
 function track(e) {
   if (!e?.terminal) return;
+  remember(e);
   // Only a session's own start (or /clear) names its chat, not a `claude -p` run inside it
   if (e.session && e.event === "SessionStart" && e.role && e.source !== "compact") onChat(e.terminal, e.session);
   const s = status.get(e.terminal) || { inflight: new Map() };

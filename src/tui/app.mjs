@@ -16,13 +16,14 @@ import { SOCKET, TMUX_CONF, tmuxEnv } from "../core/tmux-client.mjs";
 import { ESC, I, THEME_NAMES, nerdFontInstalled, URGENCY, ago, chipOf, clean, cut, fmtTok, gitText, line, look, pad, paint, selLine, setIcons, setTheme, spinner, truecolor, width } from "./draw.mjs";
 import { sliceAnsi } from "./ansi.mjs";
 import { LiveView } from "./live.mjs";
+import { controlRows } from "./control.mjs";
 import { pasteFile, readClipboard } from "./clipboard.mjs";
 
 const out = process.stdout;
 const PREFIXES = { "C-b": 0x02, "C-a": 0x01, "C-g": 0x07, "C-\\": 0x1c };
 const DEFAULTS = { theme: "axa", prefix: "C-b", bell: true };
-const PANELS = ["sessions", "chats", "agents", "projects"];
-const TITLES = { sessions: "Sessions", chats: "Chats", agents: "Agents", projects: "Projects" };
+const PANELS = ["control", "sessions", "chats", "agents", "projects"];
+const TITLES = { control: "Control", sessions: "Sessions", chats: "Chats", agents: "Agents", projects: "Projects" };
 
 export async function runTui() {
   // ---------- settings: ~/.axa/ui.json ----------
@@ -42,8 +43,10 @@ export async function runTui() {
   let data = { sessions: [], chats: [], projects: [], agents: [], links: [] };
   let err = "", screen = "hub", live = null, overlay = null, prefix = false, toast = null, quitting = false;
   let focus = 0; // which hub panel
-  const sel = { sessions: 0, chats: 0, agents: 0, projects: 0 }, scroll = { sessions: 0, chats: 0, agents: 0, projects: 0 };
-  const filter = { sessions: "", chats: "", agents: "", projects: "" };
+  const sel = { control: 0, sessions: 0, chats: 0, agents: 0, projects: 0 }, scroll = { control: 0, sessions: 0, chats: 0, agents: 0, projects: 0 };
+  const filter = { control: "", sessions: "", chats: "", agents: "", projects: "" };
+  let act = null, ctlSel = null, focusInput = false, cmdInput = ""; // Control: activity, selected session, the commander box
+  let ctl = { mapHits: [], tableHits: [] };
   let filtering = false; // typing into the focused panel's filter
   let pendingSend = null; // { id, text }: typed into a session as soon as it's ready (e.g. a commander just started)
   let prevStatus = null;
@@ -103,7 +106,7 @@ export async function runTui() {
     if (panel === "agents") return data.agents.filter((a) => match(`${a.name} ${a.source} ${a.description}`, q)).map((a) => ({ kind: "agent", a }));
     return [...data.projects.filter((p) => match(`${p.name} ${p.path}`, q)).map((p) => ({ kind: "project", p })), ...(q ? [] : [{ kind: "home" }])];
   }
-  const counts = () => ({ sessions: data.sessions.filter((s) => s.alive).length, chats: data.chats.length, agents: data.agents.length, projects: data.projects.length });
+  const counts = () => ({ control: data.sessions.filter((s) => s.status === "waiting" || s.status === "stuck").length || "", sessions: data.sessions.filter((s) => s.alive).length, chats: data.chats.length, agents: data.agents.length, projects: data.projects.length });
 
   // a list entry: two lines, [left segments, right segments] each
   function entry(it) {
@@ -299,7 +302,7 @@ export async function runTui() {
     let o = "", used = 0;
     tabHits = [];
     for (const [i, p] of PANELS.entries()) {
-      const icon = { sessions: I.session, chats: I.chat, agents: I.agent, projects: I.project }[p];
+      const icon = { control: I.axa, sessions: I.session, chats: I.chat, agents: I.agent, projects: I.project }[p];
       const t = ` ${i + 1} ${icon} ${TITLES[p]} ${c[p]} `;
       tabHits.push({ x0: used + 1, x1: used + width(t), i });
       o += paint(i === focus ? "tabOn" : "tabOff", t) + paint("bar", " ");
@@ -315,13 +318,22 @@ export async function runTui() {
   function footer() {
     if (screen === "live") return null; // a session keeps every row; notices show in its header
     if (toast && Date.now() < toast.until) return line([[` ${toast.text}`, "text"]], W, [], "bar");
-    const per = { sessions: [["⏎", "open"], ["d", "changes"], ["g", "goal"], ["v", "checks"], ["r", "rename"], ["X", "close"]], chats: [["⏎", "resume"], ["/", "search"]], agents: [["⏎", "give a task"], ["/", "search"]], projects: [["⏎", "open"], ["n", "new"], ["w", "worktree"], ["s", "shell"]] }[PANELS[focus]];
+    const per = { control: focusInput ? [["⏎", "send to the commander"], ["Esc", "stop typing"]] : [["⏎", "open"], [":", "talk to AXA"], ["y/x", "answer"], ["d", "changes"], ["g", "goal"], ["X", "close"]], sessions: [["⏎", "open"], ["d", "changes"], ["g", "goal"], ["v", "checks"], ["r", "rename"], ["X", "close"]], chats: [["⏎", "resume"], ["/", "search"]], agents: [["⏎", "give a task"], ["/", "search"]], projects: [["⏎", "open"], ["n", "new"], ["w", "worktree"], ["s", "shell"]] }[PANELS[focus]];
     const segs = per.flatMap(([k, t]) => [[` ${k} `, "keycap"], [` ${t}  `, "barDim"]]);
     return line(segs, W, [[" Tab ", "keycap"], [" switch  ", "barDim"], [" a ", "keycap"], [" AXA  ", "barDim"], [" n ", "keycap"], [" new  ", "barDim"], [" ? ", "keycap"], [" help  ", "barDim"], [" q ", "keycap"], [" quit", "barDim"]], "bar");
   }
+  // Control: sessions in table order (the commander first), and the one selected
+  const ctlOrder = () => orderedSessions().filter((s) => s.alive);
+  const ctlSelected = () => { const o = ctlOrder(); return o.find((s) => s.id === ctlSel) || o.find((s) => s.mode !== "axa") || o[0] || null; };
   function hubBody(y0, h) {
     hits = [];
     const panel = PANELS[focus];
+    if (panel === "control") {
+      if (W < 100 || h < 20) return [...listRows("sessions", 1, y0, W, h - 1), line([[" widen the window (100×26 or more) for the full control view", "dim"]], W)];
+      const w = waitingOthers();
+      ctl = { sessions: data.sessions, act, selId: ctlSelected()?.id, focusInput, input: cmdInput, nameOf, question, yesOpt, noOpt, waiting: w[0], waitingCount: w.length, order: ctlOrder(), mapHits: [], tableHits: [], y0 };
+      return controlRows(ctl, W, h);
+    }
     if (W < 90) return listRows(panel, 1, y0, W, h);
     const lw = Math.max(32, Math.min(56, Math.round(W * 0.36))), pw = W - lw - 1;
     const L = listRows(panel, 1, y0, lw, h);
@@ -557,7 +569,8 @@ export async function runTui() {
     const k = keyName();
     viewer("AXA keys", [
       { text: "The hub", role: "head" },
-      { text: "  Tab / Shift-Tab or 1-4   move between Sessions, Chats, Agents, Projects" },
+      { text: "  Tab / Shift-Tab or 1-5   move between Control, Sessions, Chats, Agents, Projects" },
+      { text: "  Control: ↑/↓ pick a session (or click it on the map or table) · : talk to the commander" },
       { text: "  ↑/↓ or j/k, PgUp/PgDn    move in a panel        Enter   open the selected thing" },
       { text: "  a   the AXA commander (opens it, or starts it)   n   new session (pick a folder)" },
       { text: "  /   filter the panel     y / x   answer the prompt in the yellow bar   !  go to it" },
@@ -602,8 +615,40 @@ export async function runTui() {
   // ---------- keys ----------
   const current = () => items(PANELS[focus])[sel[PANELS[focus]]];
   const selectedSession = () => { const it = current(); return it?.kind === "session" ? it.s : null; };
+  async function sendToCommander(text) {
+    const c = commander();
+    if (c && ["ready", "done"].includes(c.status) && !c.awaiting_permission) {
+      try { await call(`/api/terms/${c.id}/input`, { method: "POST", body: { text } }); flash("sent to the commander"); } catch (e) { flash(`couldn't send: ${e.message}`); }
+      return;
+    }
+    if (c) { pendingSend = { id: c.id, text }; return flash("the commander is busy: it gets this as soon as it's free", 5000); }
+    const cwd = inHome(process.cwd()) ? process.cwd() : homedir();
+    try { const s = await call("/api/terms", { method: "POST", body: { mode: "axa", cwd, cols: W, rows: H - 1 } }); pendingSend = { id: s.id, text }; flash("starting the commander; it gets your message when it's ready", 6000); await pollSessions(); }
+    catch (e) { flash(`couldn't start the commander: ${e.message}`); }
+  }
+  function controlKey(k) {
+    if (focusInput) {
+      if (k === "\r") { const t = cmdInput.trim(); if (t) { sendToCommander(t); cmdInput = ""; } focusInput = false; return true; }
+      if (k === ESC) { focusInput = false; return true; }
+      if (k === "\x7f" || k === "\b") { cmdInput = [...cmdInput].slice(0, -1).join(""); return true; }
+      if (k === "\x15") { cmdInput = ""; return true; }
+      if (!k.startsWith(ESC) && k >= " ") { cmdInput += k; return true; }
+      return true;
+    }
+    const o = ctlOrder(), cur = ctlSelected(), i = Math.max(0, o.findIndex((s) => s.id === cur?.id));
+    const go = (d) => { if (o.length) ctlSel = o[Math.max(0, Math.min(o.length - 1, i + d))].id; };
+    switch (k) {
+      case ":": case "i": case "c": focusInput = true; return true;
+      case "\x1b[A": case "k": go(-1); return true;
+      case "\x1b[B": case "j": go(1); return true;
+      case "\r": case " ": if (cur) openLive(cur); else openCommander(); return true;
+    }
+    if (cur && { d: 1, g: 1, v: 1, r: 1, X: 1 }[k]) { ({ d: showDiff, g: giveGoal, v: runVerify, r: rename, X: closeSession })[k](cur); return true; }
+    return false;
+  }
   function hubKey(k) {
     const panel = PANELS[focus], list = items(panel);
+    if (panel === "control" && controlKey(k)) return;
     if (filtering) {
       if (k === "\r" || k === "\x1b[B") { filtering = false; return; }
       if (k === ESC) { filtering = false; filter[panel] = ""; return; }
@@ -616,7 +661,7 @@ export async function runTui() {
     switch (k) {
       case "\t": focus = (focus + 1) % PANELS.length; return;
       case "\x1b[Z": focus = (focus + PANELS.length - 1) % PANELS.length; return;
-      case "1": case "2": case "3": case "4": focus = Number(k) - 1; return;
+      case "1": case "2": case "3": case "4": case "5": focus = Number(k) - 1; return;
       case "\x1b[A": case "k": return move(-1);
       case "\x1b[B": case "j": return move(1);
       case "\x1b[5~": return move(-10);
@@ -713,6 +758,19 @@ export async function runTui() {
       return;
     }
     if (y === 2) { const t = tabHits.find((h) => x >= h.x0 && x <= h.x1); if (t && b === 0 && !up) { focus = t.i; schedule(); } return; }
+    if (PANELS[focus] === "control" && ctl.y0) {
+      if (b !== 0 || up) return;
+      const by = y - ctl.y0; // body row (0-based)
+      const m = ctl.mapHits.find((h) => by - ctl.mapTop >= h.row0 && by - ctl.mapTop <= h.row1 && x - 2 >= h.col0 && x - 2 <= h.col1);
+      const t = ctl.tableHits.find((h) => by - ctl.tableTop === h.row);
+      const id = m?.id || t?.id;
+      if (!id) return;
+      if (id === "commander") return openCommander();
+      const again = Date.now() - lastClick.at < 450 && lastClick.i === id;
+      ctlSel = id; lastClick = { at: Date.now(), panel: "control", i: id };
+      if (again) { const s = data.sessions.find((x) => x.id === id); if (s) openLive(s); }
+      return schedule();
+    }
     const hit = hits.find((h) => y === h.y && x >= h.x0 && x <= h.x1);
     if (!hit) return;
     const p = PANELS.indexOf(hit.panel);
@@ -803,6 +861,11 @@ export async function runTui() {
   enter();
   draw();
   setInterval(pollSessions, 1000);
+  const pollActivity = () => call("/api/activity?minutes=60&limit=80").then((a) => { act = a; schedule(); }, () => {});
+  pollActivity();
+  setInterval(() => { if (screen === "hub" && PANELS[focus] === "control") pollActivity(); }, 2000);
+  // the map moves (pulses along links, agents circling)
+  setInterval(() => { if (screen === "hub" && !overlay && PANELS[focus] === "control") schedule(); }, 150);
   setInterval(() => { if (screen === "hub" && !overlay) pollHub(); }, 5000);
   setInterval(schedule, 15000); // the clock
   // spinners turn while something works
