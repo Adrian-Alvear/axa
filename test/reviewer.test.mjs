@@ -387,3 +387,37 @@ test("end to end: a turn that commits its work is reviewed on the whole range, w
     assert.match(sent.at(-1).text, /range \(w9\) finished its turn · review: ✓ approve/);
   } finally { rmSync(join(scratch, "..", ".."), { recursive: true, force: true }); }
 });
+
+test("a turn the daemon only knows from replayed history: its start commit is unknown, never a mid-turn HEAD", async () => {
+  const dir = repo();
+  const callLog = join(base, "calls-replay.jsonl");
+  process.env.FAKE_REVIEW_LOG = callLog;
+  process.env.FAKE_REVIEW = verdict({ verdict: "approve", summary: "ok", checks: [], findings: [] });
+  deps.send = async () => ({ ok: true });
+  deps.lastInputAt = () => 0;
+  deps.log = () => {};
+  const list = (status) => [{ id: "w8", name: "replay", mode: "claude", alive: true, status, cwd: dir, last_report: "done" }, { id: "c1", name: "axa", mode: "axa", alive: true, status: "ready" }];
+  const tick = async (status) => { const l = list(status); trackReviews(l); supervise(l); await reviewsSettled(); await new Promise((r) => setTimeout(r, 5)); };
+  await tick("ready");
+  // the turn started (and committed) before the daemon restarted: it sees the prompt and the edit only in the replay
+  trackEvent({ event: "UserPromptSubmit", terminal: "w8", role: "worker", cwd: dir, prompt: "change f" }, { live: false });
+  trackEvent({ event: "PreToolUse", terminal: "w8", role: "worker", tool: "Edit", summary: "src/a.js", tool_use_id: "r1" }, { live: false });
+  writeFileSync(join(dir, "src/a.js"), "module.exports = (x) => x * 2;\n");
+  gitIn(dir, "commit", "-qam", "double it");
+  await tick("working"); // the fallback notes the run now, after its commit
+  assert.equal(lastRun("w8").head_start, null, "HEAD now isn't the turn's start");
+  assert.ok(lastRun("w8").git_start, "change detection still gets a fingerprint");
+  trackEvent({ event: "Stop", terminal: "w8", role: "worker", message: "done" });
+  await tick("done"); await tick("done"); await tick("done");
+  const p = JSON.parse(readFileSync(callLog, "utf8").trim().split("\n").at(-1)).prompt;
+  assert.match(p, /the commit it started from is unknown/, "the reviewer is told the start is unknown");
+  assert.doesNotMatch(p, /Commits made during the turn|No commits were made during the turn/, "no made-up range");
+
+  // a live start records the real HEAD, even if the turn commits before the next tick
+  const before = gitIn(dir, "rev-parse", "HEAD").stdout.trim();
+  trackEvent({ event: "UserPromptSubmit", terminal: "w8", role: "worker", cwd: dir, prompt: "change f again" });
+  writeFileSync(join(dir, "src/a.js"), "module.exports = (x) => x * 3;\n");
+  gitIn(dir, "commit", "-qam", "triple it");
+  await tick("working");
+  assert.equal(lastRun("w8").head_start, before);
+});

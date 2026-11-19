@@ -134,7 +134,8 @@ function track(e, live = false) {
   trackRun(e, s, live);
 }
 
-export const trackEvent = (e) => track({ ts: Date.now(), ...e }, true); // tests: feed a live event, as if logged
+// tests: feed an event as if logged live, or ({ live: false }) as if replayed from history at start
+export const trackEvent = (e, { live = true } = {}) => track({ ts: Date.now(), ...e }, live);
 // A live run started (never the history replayed at start): the supervisor records git's HEAD then
 let onStart = () => {};
 export const onRunStart = (fn) => (onStart = fn);

@@ -116,18 +116,20 @@ function gateDone(p, s) {
 const jobs = new Set();
 export const reviewsSettled = () => Promise.all([...jobs]); // tests: wait for running reviews
 // Fingerprint git when a run starts, and forget a review once the session took a new instruction
-// (at the run's start when the daemon sees it live; else on the next tick, as a fallback)
-function noteStart(run, cwd) {
+// At the run's start when the daemon sees it live. A run it only knows from the replayed history (the
+// daemon restarted mid-turn) is noted on the next tick, but HEAD then may already include the turn's
+// commits: its start commit stays unknown (null), so the reviewer gets the fallback diff and is told so.
+function noteStart(run, cwd, live) {
   if (!run || run.git_start !== undefined || !cwd) return;
   run.git_start = gitState(cwd);
-  run.head_start = run.git_start ? headOf(cwd) : null;
+  run.head_start = live && run.git_start ? headOf(cwd) : null;
 }
-onRunStart((run) => noteStart(run, run.cwd));
+onRunStart((run) => noteStart(run, run.cwd, true));
 export function trackReviews(list) {
   for (const s of list) {
     if (s.mode !== "claude") continue;
     const run = lastRun(s.id);
-    if (run?.status === "running") noteStart(run, s.cwd);
+    if (run?.status === "running") noteStart(run, s.cwd, false);
     const rv = reviewOf(s.id);
     if (rv && rv.verdict !== "reviewing" && run && run.id !== rv.run && !String(run.prompt || "").startsWith(BLOCK_PREFIX)) setReview(s.id, null);
   }
