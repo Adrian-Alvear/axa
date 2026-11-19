@@ -138,7 +138,7 @@ function trackHelpers(e) {
     spawnQueue.set(t, [...(spawnQueue.get(t) || []), { desc: e.summary, type: e.subagent_type }].slice(-10));
   } else if (e.event === "PreToolUse" && e.agent_id) {
     const h = (helpers.get(t) || []).find((x) => x.id === e.agent_id);
-    if (h) { h.calls++; h.doing = doingText(e); h.at = at; }
+    if (h) { h.calls++; h.doing = doingText(e); h.at = at; h.recent = [...(h.recent || []), { at, text: clip(h.doing, 160) }].slice(-15); }
   } else if (e.event === "SubagentStart") {
     const sp = (spawnQueue.get(t) || []).shift();
     helpers.set(t, [...(helpers.get(t) || []), { id: e.agent_id, type: String(e.agent_type || sp?.type || "helper"), desc: clip(sp?.desc || "", 120), status: "running", start: at, at, calls: 0 }].slice(-12));

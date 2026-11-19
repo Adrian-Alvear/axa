@@ -115,6 +115,11 @@ function refreshUsage(chat) {
         let o; try { o = JSON.parse(line); } catch { continue; }
         const u = o.type === "assistant" && o.message?.usage;
         if (!u) continue;
+        // the main chat's latest reply: which model answered, and how full its context is
+        if (p === paths[0] && !o.isSidechain && o.message.model && o.message.model !== "<synthetic>") {
+          c.model = o.message.model;
+          c.context = (u.input_tokens || 0) + (u.cache_creation_input_tokens || 0) + (u.cache_read_input_tokens || 0);
+        }
         // a streamed response repeats its line as it grows: count the largest numbers once
         const key = `${o.message.id}:${o.requestId}`;
         const now = { input: (u.input_tokens || 0) + (u.cache_creation_input_tokens || 0), cached: u.cache_read_input_tokens || 0, output: u.output_tokens || 0 };
@@ -137,10 +142,10 @@ function budgetFor(cwd) {
 export function usageOf(chat, cwd, live) {
   if (!CHAT_ID.test(String(chat || ""))) return null;
   if (live) refreshUsage(chat);
-  const tot = usageCache.get(chat)?.tot;
+  const c = usageCache.get(chat), tot = c?.tot;
   if (!tot) return null;
   const tokens = tot.input + tot.output, budget = budgetFor(cwd);
-  return { tokens, input: tot.input, cached: tot.cached, output: tot.output, budget: budget || undefined, over_budget: budget > 0 && tokens > budget };
+  return { tokens, input: tot.input, cached: tot.cached, output: tot.output, budget: budget || undefined, over_budget: budget > 0 && tokens > budget, model: c.model, context: c.context };
 }
 
 // ---------- a chat's last messages, for the hub's preview ----------

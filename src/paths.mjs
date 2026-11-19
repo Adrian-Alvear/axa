@@ -20,6 +20,7 @@ export const files = {
   policy: join(home, "policy.json"),
   ui: join(home, "ui.json"),
   roster: join(home, "roster.md"),
+  pastes: join(home, "pastes"),
 };
 
 export const readToken = () => (existsSync(files.token) ? readFileSync(files.token, "utf8").trim() : "");

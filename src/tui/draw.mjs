@@ -47,7 +47,11 @@ function readdirSafe(d) { try { return readdirSync(d); } catch { return []; } }
 export const setIcons = (kind) => { I = kind === "nerd" ? NERD : PLAIN; };
 // the spinner for working sessions
 const SPIN = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
-export const spinner = () => SPIN[Math.floor(Date.now() / 100) % SPIN.length];
+// motion: "full" | "reduced" | "off" (Settings, ui.json, AXA_REDUCED_MOTION); with "off" nothing turns
+let motion = "full";
+export const setMotion = (m) => { motion = ["full", "reduced", "off"].includes(m) ? m : "full"; };
+export const getMotion = () => motion;
+export const spinner = () => (motion === "off" ? SPIN[0] : SPIN[Math.floor(Date.now() / 100) % SPIN.length]);
 
 // Status of a session: glyph, word, color role. Never color alone.
 // [glyph, word, color role, chip role]

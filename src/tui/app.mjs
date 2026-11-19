@@ -5,7 +5,7 @@
 // session shows it live, full screen, under a one-line AXA header; Ctrl-b h (the prefix key, then h)
 // brings you back to the hub, and the session keeps running.
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
@@ -13,15 +13,16 @@ import { fileURLToPath } from "node:url";
 import { files, inHome, openUrl, pluginRoot, port, tilde, webUrl } from "../paths.mjs";
 import { api } from "../daemon.mjs";
 import { SOCKET, TMUX_CONF, tmuxEnv } from "../core/tmux-client.mjs";
-import { ESC, I, THEME_NAMES, nerdFontInstalled, URGENCY, ago, chipOf, clean, cut, fmtTok, gitText, line, look, pad, paint, selLine, setIcons, setTheme, spinner, truecolor, width } from "./draw.mjs";
+import { ESC, I, THEME_NAMES, nerdFontInstalled, URGENCY, ago, chipOf, clean, cut, fmtTok, gitText, line, look, pad, paint, selLine, setIcons, setMotion, setTheme, spinner, truecolor, width } from "./draw.mjs";
 import { sliceAnsi } from "./ansi.mjs";
 import { LiveView } from "./live.mjs";
-import { controlRows } from "./control.mjs";
+import { agentDetail, agentName, axaStatusLine, controlRows } from "./control.mjs";
 import { pasteFile, readClipboard } from "./clipboard.mjs";
 
 const out = process.stdout;
 const PREFIXES = { "C-b": 0x02, "C-a": 0x01, "C-g": 0x07, "C-\\": 0x1c };
-const DEFAULTS = { theme: "axa", prefix: "C-b", bell: true };
+const DEFAULTS = { theme: "axa", prefix: "C-b", bell: true, motion: "full" };
+const MOTIONS = ["full", "reduced", "off"];
 const PANELS = ["control", "sessions", "chats", "agents", "projects"];
 const TITLES = { control: "Control", sessions: "Sessions", chats: "Chats", agents: "Agents", projects: "Projects" };
 
@@ -34,6 +35,10 @@ export async function runTui() {
   if (cfg.version !== 2 || !cfg.icons) { cfg = { ...cfg, theme: "axa", icons: nerdFontInstalled() ? "nerd" : "plain", version: 2 }; saveCfg(); }
   setTheme(cfg.theme === "axa" && !truecolor() && !process.env.AXA_TRUECOLOR ? "terminal" : cfg.theme);
   setIcons(cfg.icons);
+  // motion: your setting; AXA_REDUCED_MOTION=1 turns "full" down to "reduced"
+  const envReduced = /^(1|true|yes)$/i.test(process.env.AXA_REDUCED_MOTION || "");
+  const motionNow = () => { const m = MOTIONS.includes(cfg.motion) ? cfg.motion : "full"; return m === "full" && envReduced ? "reduced" : m; };
+  setMotion(motionNow());
   const noColor = !!process.env.NO_COLOR || process.env.TERM === "dumb";
   const prefixByte = () => String.fromCharCode(PREFIXES[cfg.prefix] ?? 0x02);
   const keyName = () => cfg.prefix.replace("C-", "Ctrl-");
@@ -47,7 +52,7 @@ export async function runTui() {
   const filter = { control: "", sessions: "", chats: "", agents: "", projects: "" };
   let act = null, ctlSel = null, focusInput = false, cmdInput = ""; // Control: activity, selected session, the commander box
   let cmdMsgs = [], cmdChat = null, cmdScroll = 0; // the commander's conversation, and how far you've scrolled it back
-  let ctl = { mapHits: [], chatHits: [] }, zone = "map", chatSel = 0; // Control's focus: the map (sessions) or the recent chats
+  let ctl = { mapHits: [], chatHits: [] }, zone = "map", chatSel = 0, ctlAgent = null; // Control's focus: the map (sessions) or the recent chats
   let filtering = false; // typing into the focused panel's filter
   let pendingSend = null; // { id, text }: typed into a session as soon as it's ready (e.g. a commander just started)
   let prevStatus = null;
@@ -182,6 +187,33 @@ export async function runTui() {
     const lines = r.status === 0 ? r.stdout.replace(/\n+$/, "").split("\n") : c?.lines || [];
     shots.set(id, { at: Date.now(), lines });
     return lines;
+  }
+  // The commander's status, read off the bottom of its screen the way Claude Code draws it:
+  //   ✽ Whirring… (5s · ↓ 343 tokens)      <- activity, above the input box
+  //   ──────── / ❯ input / ────────
+  //   ⏵⏵ auto mode on · esc to interrupt   <- the status line(s), below it
+  // Returns { mode, activity, lines } with the lines in their own colors (plain under NO_COLOR).
+  let statusCache = { at: 0, id: null, st: { mode: "", activity: "", lines: [] } };
+  const plain = (s) => s.replace(/\x1b\[[0-9;:?]*[ -/]*[@-~]/g, "");
+  function commanderStatus() {
+    const c = commander();
+    if (!c) return { mode: "", activity: "", lines: [] };
+    if (statusCache.id === c.id && Date.now() - statusCache.at < 1000) return statusCache.st;
+    const r = spawnSync("tmux", ["-L", SOCKET, "capture-pane", "-p", "-e", "-t", `=axa-${c.id}:`], { encoding: "utf8", env: tmuxEnv(), timeout: 2000 });
+    if (r.status !== 0) return statusCache.st;
+    const raw = r.stdout.replace(/\n+$/, "").split("\n").slice(-40), txt = raw.map(plain);
+    const rules = txt.map((t, i) => (/^\s*─{12,}\s*$/.test(t) ? i : -1)).filter((i) => i >= 0);
+    const st = { mode: "", activity: "", lines: [] };
+    if (rules.length >= 2) {
+      const [top, bottom] = rules.slice(-2);
+      st.lines = raw.slice(bottom + 1).filter((_, i) => txt[bottom + 1 + i].trim()).slice(0, 3).map((l) => (noColor ? plain(l) : l));
+      for (let i = top - 1; i >= Math.max(0, top - 3); i--) if (txt[i].trim()) { if (/…|\(\d+[smh]\b|tokens/.test(txt[i])) st.activity = noColor ? plain(raw[i]) : raw[i]; break; }
+    }
+    const foot = st.lines.map(plain).join("\n");
+    const m = /⏵⏵\s*(accept edits|auto mode|bypass permissions)\s+on/i.exec(foot) || /⏸\s*(plan mode)\s+on/i.exec(foot);
+    st.mode = m ? m[1].toLowerCase().replace("bypass permissions", "bypass perms") : rules.length >= 2 ? "default mode" : "";
+    statusCache = { at: Date.now(), id: c.id, st };
+    return st;
   }
   const chatCache = new Map(); // id -> { updated, msgs, loading }
   function messagesOf(c) {
@@ -332,9 +364,12 @@ export async function runTui() {
     if (panel === "control") {
       if (W < 100 || h < 20) return [...listRows("sessions", 1, y0, W, h - 1), line([[" widen the window (100×26 or more) for the full control view", "dim"]], W)];
       const w = waitingOthers();
-      ctl = { sessions: data.sessions, act, selId: ctlSelected()?.id, focusInput, input: cmdInput, nameOf, question, yesOpt, noOpt, waiting: w[0], waitingCount: w.length, order: ctlOrder(), chats: data.chats, zone, chatSel, mapHits: [], chatHits: [], y0, L: Math.round(W * 0.62), cmdMsgs, cmdScroll };
-      const rowsOut = controlRows(ctl, W, h);
+      ctl = { motion: motionNow(), sessions: data.sessions, act, selId: ctlSelected()?.id, focusInput, input: cmdInput, nameOf, question, yesOpt, noOpt, waiting: w[0], waitingCount: w.length, order: ctlOrder(), chats: data.chats, zone, chatSel, agentSel: ctlAgent, cmdStatus: commanderStatus(), mapHits: [], chatHits: [], y0, L: Math.round(W * 0.62), cmdMsgs, cmdScroll };
+      const rowsOut = controlRows(ctl, W, h - 1);
       cmdScroll = ctl.cmdScroll;
+      // one full-width status bar under it: mode · model · context · tokens · agents · sessions
+      const c = commander();
+      rowsOut.push(c ? axaStatusLine(c, data.sessions, W, 1, { mode: ctl.cmdStatus.mode, on: "bar" })[0] : line([[" AXA is offline · press a to start it", "barDim"]], W, [], "bar"));
       return rowsOut;
     }
     if (W < 90) return listRows(panel, 1, y0, W, h);
@@ -475,6 +510,21 @@ export async function runTui() {
       return s;
     } catch (e) { flash(`couldn't start it: ${e.message}`, 6000); return null; }
   }
+  // One of the commander's agents, in a popup that follows it live (sessions refresh every second)
+  function openAgent(sid, aid) {
+    const find = () => data.sessions.find((s) => s.id === sid)?.helpers?.find((h) => h.id === aid);
+    let last = find();
+    if (!last) return flash("that agent has gone");
+    ctlAgent = aid;
+    overlay = {
+      title: `Agent · ${agentName(last)}`,
+      render: (w) => { last = find() || last; return agentDetail(last, w); },
+      hint: "↑/↓ scroll · a opens AXA · Esc closes",
+      onClose: () => { ctlAgent = null; },
+      onKey: (k) => { if (k !== "a") return false; closeOverlay(); openCommander(); return true; },
+    };
+    schedule();
+  }
   // the commander: open it, or start it (in your home folder)
   async function openCommander() {
     const c = commander();
@@ -556,6 +606,7 @@ export async function runTui() {
       { label: "Prefix key", hint: keyName(), value: "prefix" },
       { label: "Icons", hint: cfg.icons === "nerd" ? "Nerd Font" : "plain Unicode", value: "icons" },
       { label: "Bell when a session needs you", hint: cfg.bell ? "on" : "off", value: "bell" },
+      { label: "Motion (map animation)", hint: motionNow() + (envReduced && cfg.motion === "full" ? " (AXA_REDUCED_MOTION)" : ""), value: "motion" },
     ];
     const cycle = (arr, v) => arr[(arr.indexOf(v) + 1) % arr.length];
     const again = (selected) => pick("Settings (Enter changes)", opts(), (o) => {
@@ -563,6 +614,7 @@ export async function runTui() {
       if (o.value === "icons") { cfg.icons = cfg.icons === "nerd" ? "plain" : "nerd"; setIcons(cfg.icons); }
       if (o.value === "prefix") cfg.prefix = cycle(Object.keys(PREFIXES), cfg.prefix);
       if (o.value === "bell") cfg.bell = !cfg.bell;
+      if (o.value === "motion") { cfg.motion = cycle(MOTIONS, MOTIONS.includes(cfg.motion) ? cfg.motion : "full"); setMotion(motionNow()); }
       saveCfg(); prevRows = [];
       again(opts().findIndex((x) => x.value === o.value));
     }, { selected, hint: `Enter changes · Esc done · saved in ${tilde(files.ui)}` });
@@ -594,7 +646,8 @@ export async function runTui() {
       { text: `  ${k} y / x   answer the prompt in the yellow bar      ${k} !   go to it` },
       { text: `  ${k} d   changes · g goal · v checks · i paste an image · r rename · X close · q quit` },
       { text: `  ${k} ${k}   sends a literal ${k} to the session` },
-      { text: "  Ctrl+V   pastes an image from your clipboard if there is one (else its text)" },
+      { text: "  Ctrl+V or Alt+V   pastes an image from your clipboard if there is one (else its text)" },
+      { text: "  On Control: press : then Alt+V (or Ctrl+V) to attach a clipboard image for the commander" },
       { text: "  Mouse: scroll goes to the session; drag selects and copies (Shift+drag: your terminal's own)" },
       { text: "" },
       { text: `Settings: ${tilde(files.ui)}   ·   web console: axa web   ·   port ${port}`, role: "dim" },
@@ -613,6 +666,27 @@ export async function runTui() {
       flash(`image pasted: ${tilde(target.file)}`);
     } else if (r?.text) { live.write(`${ESC}[200~${r.text.replace(/\x1b\[20[01]~/g, "")}${ESC}[201~`); toast = null; schedule(); }
     else flash("nothing to paste: copy an image first (on Windows: Win+Shift+S)");
+  }
+  // Control: a clipboard image (saved in the pastes folder) or its text goes into the commander box
+  async function pasteForCommander() {
+    if (screen !== "hub" || overlay || PANELS[focus] !== "control") return flash("press : on Control to talk to AXA, then Alt+V");
+    let file;
+    try { mkdirSync(files.pastes, { recursive: true, mode: 0o700 }); file = join(files.pastes, `paste-${new Date().toISOString().replace(/[:.]/g, "-")}.png`); }
+    catch (e) { return flash(`couldn't save the image: ${e.message}`); }
+    flash("reading the clipboard…", 15000);
+    const r = await readClipboard(file);
+    if (r?.image) { cmdInput += `${file} `; focusInput = true; flash(`image attached: ${tilde(file)}`); }
+    else if (r?.text) { cmdInput += r.text.replace(/\r?\n|\r/g, " "); focusInput = true; toast = null; }
+    else flash("nothing to paste: copy an image first (on Windows: Win+Shift+S)");
+    schedule();
+  }
+  // a bracketed paste in the hub or a dialog: the text goes into the open box and never sends
+  function hubPaste(text) {
+    if (!text.trim()) return pasteForCommander(); // an image-only clipboard pastes nothing
+    const t = text.replace(/\r?\n|\r/g, " ");
+    if (overlay && typeof overlay.input === "string") { overlay.input += t; return; }
+    if (!overlay && screen === "hub" && PANELS[focus] === "control") { focusInput = true; cmdInput += t; return; }
+    flash("press : on Control to talk to AXA, then paste");
   }
 
   // ---------- keys ----------
@@ -775,7 +849,7 @@ export async function runTui() {
     if (y === 2) { const t = tabHits.find((h) => x >= h.x0 && x <= h.x1); if (t && b === 0 && !up) { focus = t.i; schedule(); } return; }
     if (PANELS[focus] === "control" && ctl.y0) {
       const by = y - ctl.y0; // body row (0-based)
-      if ((b === 64 || b === 65) && x > ctl.L && by >= ctl.cmdTop && by < ctl.cmdBottom) { cmdScroll = Math.max(0, cmdScroll + (b === 64 ? 3 : -3)); return schedule(); }
+      if ((b === 64 || b === 65) && x > (ctl.midL ?? ctl.L) && by >= ctl.cmdTop && by < ctl.cmdBottom) { cmdScroll = Math.max(0, cmdScroll + (b === 64 ? 3 : -3)); return schedule(); }
       if (b !== 0 || up) return;
       const m = ctl.mapHits.find((h) => by - ctl.mapTop >= h.row0 && by - ctl.mapTop <= h.row1 && x - 2 >= h.col0 && x - 2 <= h.col1);
       const c = x <= Math.round(ctl.L * 0.55) && ctl.chatHits.find((h) => by - ctl.tableTop === h.row);
@@ -785,6 +859,7 @@ export async function runTui() {
         if (again && data.chats[c.i]) resumeChat(data.chats[c.i]);
         return schedule();
       }
+      if (m?.agent) return openAgent(m.id, m.agent);
       const id = m?.id;
       if (!id) return;
       zone = "map";
@@ -827,8 +902,23 @@ export async function runTui() {
   }
   const decoder = new StringDecoder("utf8");
   const MOUSE = /\x1b\[<(\d+);(\d+);(\d+)([Mm])/g;
+  const PS = `${ESC}[200~`, PE = `${ESC}[201~`;
+  let pasteBuf = "";
+  // inside a session: an empty paste (an image-only clipboard) or Alt+V pastes the clipboard image
+  const livePasteImage = () => { if (pasting) return; pasting = pasteImage().finally(() => { pasting = null; const rest = held.splice(0).join(""); if (rest) sendLive(rest); }); };
   process.stdin.on("data", (buf) => {
-    let d = decoder.write(buf);
+    let d = pasteBuf + decoder.write(buf);
+    pasteBuf = "";
+    // a paste split across chunks: hold it until its end marker arrives
+    const ps = d.lastIndexOf(PS);
+    if (ps >= 0 && d.indexOf(PE, ps) < 0) { pasteBuf = d.slice(ps); d = d.slice(0, ps); if (!d) return; }
+    if (screen === "live" && !overlay) {
+      // tmux forwards real pastes; only the empty one and Alt+V are ours
+      if (d.includes(PS + PE) || d === "\x1bv") { d = d.split(PS + PE).join(""); if (d === "\x1bv") d = ""; livePasteImage(); }
+    } else {
+      d = d.replace(/\x1b\[200~([\s\S]*?)\x1b\[201~/g, (_, t) => { hubPaste(t); return ""; });
+      if (d === "\x1bv" || (d === "\x16" && screen === "hub" && !overlay && PANELS[focus] === "control")) { d = ""; pasteForCommander(); }
+    }
     d = d.replace(MOUSE, (_, b, x, y, m) => { onMouse(Number(b), Number(x), Number(y), m === "m"); return ""; });
     if (!d) return;
     // each key goes where the UI is at that moment: a dialog, the hub, or the live session
@@ -862,8 +952,8 @@ export async function runTui() {
 
   // ---------- start and stop ----------
   // mouse: clicks and wheel (1000), drags (1002), SGR form (1006)
-  const enter = () => { out.write(`${ESC}[?1049h${ESC}[?1000h${ESC}[?1002h${ESC}[?1006h${ESC}[?25l${ESC}[2J`); process.stdin.setRawMode(true); process.stdin.resume(); };
-  const leave = () => { out.write(`${ESC}[?1002l${ESC}[?1000l${ESC}[?1006l${ESC}[0m${ESC}[?25h${ESC}[?1049l`); try { process.stdin.setRawMode(false); } catch {} };
+  const enter = () => { out.write(`${ESC}[?1049h${ESC}[?2004h${ESC}[?1000h${ESC}[?1002h${ESC}[?1006h${ESC}[?25l${ESC}[2J`); process.stdin.setRawMode(true); process.stdin.resume(); };
+  const leave = () => { out.write(`${ESC}[?2004l${ESC}[?1002l${ESC}[?1000l${ESC}[?1006l${ESC}[0m${ESC}[?25h${ESC}[?1049l`); try { process.stdin.setRawMode(false); } catch {} };
   function quit() {
     quitting = true;
     live?.close();
@@ -904,7 +994,14 @@ export async function runTui() {
   pollActivity();
   setInterval(() => { if (screen === "hub" && PANELS[focus] === "control") pollActivity(); }, 2000);
   // the map moves (pulses along links, agents circling)
-  setInterval(() => { if (screen === "hub" && !overlay && PANELS[focus] === "control") schedule(); }, 150);
+  // Control's redraw: fast while something on the map moves (ctl.anim, set by the last draw), slow when
+  // it's idle (breathing and the sweep), slower still with reduced motion; unchanged rows aren't rewritten
+  const ctlTick = () => {
+    const on = screen === "hub" && !overlay && PANELS[focus] === "control", m = motionNow();
+    if (on) schedule();
+    setTimeout(ctlTick, !on ? 400 : m !== "full" ? 1000 : ctl.anim ? 80 : 400);
+  };
+  ctlTick();
   setInterval(() => { if (screen === "hub" && !overlay) pollHub(); }, 5000);
   setInterval(schedule, 15000); // the clock
   // spinners turn while something works
