@@ -18,6 +18,7 @@ import { sliceAnsi } from "./ansi.mjs";
 import { LiveView } from "./live.mjs";
 import { agentDetail, agentName, axaStatusLine, controlRows, msgText, selectedText } from "./control.mjs";
 import { copyToClipboard, pasteFile, readClipboard } from "./clipboard.mjs";
+import { hintKey, hitAt, makeArm, overlayHit, segSpans } from "./mouse.mjs";
 
 const out = process.stdout;
 const PREFIXES = { "C-b": 0x02, "C-a": 0x01, "C-g": 0x07, "C-\\": 0x1c };
@@ -63,6 +64,10 @@ export async function runTui() {
   let filtering = false; // typing into the focused panel's filter
   let pendingSend = null; // { id, text }: typed into a session as soon as it's ready (e.g. a commander just started)
   let prevStatus = null;
+  // the mouse: approve takes two clicks (the first arms it for 4 s); what the title, alert bar and footer
+  // drew where (hit boxes, rebuilt every frame); the list area the wheel scrolls
+  const approveArm = makeArm(4000);
+  let titleHits = [], alertHits = [], footHits = [], alertY = 0, footY = 0, listArea = null;
 
   const call = (path, opts = {}) => api(path, { ...opts, headers: { "x-axa-client": "tui", ...(opts.headers || {}) } });
   const flash = (text, ms = 3500) => { toast = { text, until: Date.now() + ms }; schedule(); setTimeout(schedule, ms + 50); };
@@ -79,6 +84,8 @@ export async function runTui() {
   const question = (c) => { const ls = c.question.split("\n").map(clean).filter(Boolean); return [...ls].reverse().find((l) => l.includes("?")) || ls.at(-1) || "a prompt"; };
   const yesOpt = (c) => c.options.find((o) => /^yes\b/i.test(o.label)) || c.options[0];
   const noOpt = (c) => c.options.find((o) => /^no\b/i.test(o.label)) || c.options.at(-1);
+  // what a click on Approve would approve: this session and this very prompt
+  const armKey = (s) => `${s.id}\n${s.choices?.question}\n${yesOpt(s.choices)?.n}`;
 
   async function pollSessions() {
     try { data.sessions = await call("/api/terms"); err = ""; } catch (e) { err = e.message; }
@@ -334,7 +341,12 @@ export async function runTui() {
     const n = (st) => data.sessions.filter((s) => s.status === st).length, needs = n("waiting") + n("stuck"), work = n("working");
     const clock = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
     const right = [[needs ? ` ${I.wait} ${needs} NEED${needs > 1 ? "" : "S"} YOU ` : "", "chipWait"], [needs && work ? " " : "", "bar"], [work ? ` ${spinner()} ${work} WORKING ` : "", "chipWork"], [!needs && !work ? `${I.done} all quiet` : "", "barDim"], [`   ${clock}`, "barDim"]];
-    if (screen === "hub") return line([[` ${I.axa} AXA`, "barTitle"], [err ? `   ${err}` : "", "stuck"]], W, right, "bar");
+    titleHits = [];
+    if (screen === "hub") {
+      const left = [[` ${I.axa} AXA`, "barTitle"], [err ? `   ${err}` : "", "stuck"]], chip = needs && segSpans(left, W, right).right.find((s) => s.i === 0);
+      if (chip) titleHits.push({ y: 1, x0: chip.x0, x1: chip.x1, k: "needs" });
+      return line(left, W, right, "bar");
+    }
     const s = data.sessions.find((x) => x.id === live?.id) || { name: "?", status: "exited", mode: "claude" };
     const bits = [gitText(s.git), s.usage?.tokens ? `${I.tokens} ${fmtTok(s.usage.tokens)}` : ""].filter(Boolean).join("  ");
     return line([[` ${I.axa} AXA `, "barTitle"], [" ‹ hub ", "keycap"], ["  ", "bar"], [nameOf(s), "head"], ["  ", "bar"], chipOf(s), [bits ? `  ${bits}` : "", "barDim"]], W, prefix ? [[" waiting for a key… ", "chipWait"]] : toast && Date.now() < toast.until ? [[` ${toast.text} `, "chipIdle"]] : [[` ${keyName()} h `, "keycap"], [" hub  ", "barDim"], [` ${keyName()} n `, "keycap"], [" next  ", "barDim"], [` ${keyName()} ? `, "keycap"], [" keys", "barDim"]], "bar");
@@ -354,26 +366,41 @@ export async function runTui() {
     return o + line([[ftxt, filtering ? "chipWork" : "chipIdle"]], Math.max(0, W - used), [], "bar");
   }
   function alertBar(a) {
-    const yes = yesOpt(a.choices), no = noOpt(a.choices), k = screen === "live" ? `${keyName()} ` : "";
-    return line([[` ${I.wait} NEEDS YOU `, "chipWait"], [`  ${nameOf(a)}`, "wait"], [`  ${question(a.choices)}`, "waitSoft"]], W, [[` ${k}y `, "keycap"], [` ${cut(yes.label, 20)}  `, "waitSoft"], [` ${k}x `, "keycap"], [` ${cut(no.label, 20)}  `, "waitSoft"], [` ${k}! `, "keycap"], [" go there", "waitSoft"]]);
+    const yes = yesOpt(a.choices), no = noOpt(a.choices), k = screen === "live" ? `${keyName()} ` : "", armed = approveArm.armed(armKey(a));
+    const left = [[` ${I.wait} NEEDS YOU `, "chipWait"], [`  ${nameOf(a)}`, "wait"], [`  ${question(a.choices)}`, "waitSoft"]];
+    const right = [[` ${k}y `, "keycap"], [armed ? " click again to approve  " : ` ${cut(yes.label, 20)}  `, armed ? "chipWait" : "waitSoft"], [` ${k}x `, "keycap"], [` ${cut(no.label, 20)}  `, "waitSoft"], [` ${k}! `, "keycap"], [" go there", "waitSoft"]];
+    // every part is clickable: y (twice) approves, x declines, the rest goes there (y is filled in by frame())
+    const sp = segSpans(left, W, right);
+    alertHits = [...sp.left.map((s) => ({ ...s, k: "go" })), ...sp.right.map((s) => ({ ...s, k: s.i < 2 ? "yes" : s.i < 4 ? "no" : "go" }))];
+    return line(left, W, right);
   }
   function footer() {
+    footHits = [];
     if (screen === "live") return null; // a session keeps every row; notices show in its header
     if (toast && Date.now() < toast.until) return line([[` ${toast.text}`, "text"]], W, [], "bar");
     const per = { control: focusInput ? [["⏎", "send to the commander"], ["Esc", "stop typing"]] : zone === "chats" ? [["⏎", "resume chat"], ["↑↓", "pick"], ["←", "back to the map"], [":", "talk to AXA"]] : [["⏎", "open"], ["↑↓", "pick session"], ["→", "chats"], [":", "talk to AXA"], ["PgUp", "AXA's messages"], ["y/x", "answer"], ["d", "changes"], ...(W >= 170 ? [["drag", "copy"]] : [])], sessions: [["⏎", "open"], ["d", "changes"], ["g", "goal"], ["v", "checks"], ["r", "rename"], ["X", "close"]], chats: [["⏎", "resume"], ["/", "search"]], agents: [["⏎", "give a task"], ["/", "search"]], projects: [["⏎", "open"], ["n", "new"], ["w", "worktree"], ["s", "shell"]] }[PANELS[focus]];
+    const all = [["Tab", "switch"], ["a", "AXA"], ["n", "new"], ["?", "help"], ["q", "quit"]];
     const segs = per.flatMap(([k, t]) => [[` ${k} `, "keycap"], [` ${t}  `, "barDim"]]);
-    return line(segs, W, [[" Tab ", "keycap"], [" switch  ", "barDim"], [" a ", "keycap"], [" AXA  ", "barDim"], [" n ", "keycap"], [" new  ", "barDim"], [" ? ", "keycap"], [" help  ", "barDim"], [" q ", "keycap"], [" quit", "barDim"]], "bar");
+    const right = all.flatMap(([k, t], j) => [[` ${k} `, "keycap"], [j === all.length - 1 ? ` ${t}` : ` ${t}  `, "barDim"]]);
+    // every hint is a button for its key (y/x: the y half approves, the x half declines)
+    const sp = segSpans(segs, W, right);
+    for (const [spans, src] of [[sp.left, per], [sp.right, all]]) for (const s of spans) {
+      const k = src[s.i >> 1][0];
+      if (k === "y/x" && s.i % 2 === 0) footHits.push({ x0: s.x0, x1: s.x0 + 1, k: "y" }, { x0: s.x0 + 2, x1: s.x1, k: "x" });
+      else footHits.push({ x0: s.x0, x1: s.x1, k });
+    }
+    return line(segs, W, right, "bar");
   }
   // Control: sessions in table order (the commander first), and the one selected
   const ctlOrder = () => orderedSessions().filter((s) => s.alive);
   const ctlSelected = () => { const o = ctlOrder(); return o.find((s) => s.id === ctlSel) || o.find((s) => s.mode !== "axa") || o[0] || null; };
   function hubBody(y0, h) {
-    hits = [];
+    hits = []; listArea = null;
     const panel = PANELS[focus];
     if (panel === "control") {
       if (W < 100 || h < 20) return [...listRows("sessions", 1, y0, W, h - 1), line([[" widen the window (100×26 or more) for the full control view", "dim"]], W)];
       const w = waitingOthers();
-      ctl = { motion: motionNow(), sessions: data.sessions, act, selId: ctlSelected()?.id, focusInput, input: cmdInput, nameOf, question, yesOpt, noOpt, waiting: w[0], waitingCount: w.length, order: ctlOrder(), chats: data.chats, zone, chatSel, agentSel: ctlAgent, cmdStatus: commanderStatus(), mapHits: [], chatHits: [], y0, L: Math.round(W * 0.62), cmdMsgs, cmdScroll, cmdSel: cmdSel?.dragged && cmdSel.scroll === cmdScroll ? cmdSel : null };
+      ctl = { motion: motionNow(), sessions: data.sessions, act, selId: ctlSelected()?.id, focusInput, input: cmdInput, nameOf, question, yesOpt, noOpt, waiting: w[0], waitingCount: w.length, armed: !!w[0] && approveArm.armed(armKey(w[0])), apHits: [], order: ctlOrder(), chats: data.chats, zone, chatSel, agentSel: ctlAgent, cmdStatus: commanderStatus(), mapHits: [], chatHits: [], y0, L: Math.round(W * 0.62), cmdMsgs, cmdScroll, cmdSel: cmdSel?.dragged && cmdSel.scroll === cmdScroll ? cmdSel : null };
       const rowsOut = controlRows(ctl, W, h - 1);
       cmdScroll = ctl.cmdScroll;
       if (cmdSel && cmdSel.scroll !== cmdScroll) cmdSel = null; // the conversation scrolled: the selection goes
@@ -382,8 +409,9 @@ export async function runTui() {
       rowsOut.push(c ? axaStatusLine(c, data.sessions, W, 1, { mode: ctl.cmdStatus.mode, on: "bar", voice: voiceOn() })[0] : line([[" AXA is offline · press a to start it", "barDim"]], W, [], "bar"));
       return rowsOut;
     }
-    if (W < 90) return listRows(panel, 1, y0, W, h);
+    if (W < 90) { listArea = { x0: 1, x1: W, y0, y1: y0 + h - 1, panel }; return listRows(panel, 1, y0, W, h); }
     const lw = Math.max(32, Math.min(56, Math.round(W * 0.36))), pw = W - lw - 1;
+    listArea = { x0: 1, x1: lw, y0, y1: y0 + h - 1, panel };
     const L = listRows(panel, 1, y0, lw, h);
     const R = previewRows(items(panel)[sel[panel]], pw, h);
     return L.map((l, i) => l + paint("frame", "│") + R[i]);
@@ -392,7 +420,8 @@ export async function runTui() {
     const rows = [titleBar()];
     if (screen === "hub") rows.push(tabBar());
     const alert = waitingOthers()[0];
-    if (alert) rows.push(alertBar(alert));
+    alertY = 0; alertHits = [];
+    if (alert) { rows.push(alertBar(alert)); alertY = rows.length; for (const h of alertHits) h.y = alertY; }
     const foot = footer();
     const bodyH = H - rows.length - (foot === null ? 0 : 1);
     if (screen === "live" && live) {
@@ -402,7 +431,8 @@ export async function runTui() {
       if (live.dead) for (let i = 0; i < bodyH; i++) rows.push(i === Math.floor(bodyH / 2) ? line([[" ".repeat(Math.max(0, Math.floor((W - 50) / 2))) + live.dead + `  ${keyName()} h goes back to the hub`, "dim"]], W) : " ".repeat(W));
       else rows.push(...live.rowsAnsi().slice(0, bodyH));
     } else rows.push(...hubBody(rows.length + 1, bodyH));
-    if (foot !== null) rows.push(foot);
+    footY = 0;
+    if (foot !== null) { rows.push(foot); footY = rows.length; for (const h of footHits) h.y = footY; }
     while (rows.length < H) rows.push(" ".repeat(W));
     rows.length = H;
     if (overlay) drawOverlay(rows);
@@ -443,7 +473,9 @@ export async function runTui() {
     const listH = ih - (ov.input !== undefined ? 2 : 0);
     ov.scroll = Math.max(0, Math.min(ov.scroll || 0, content.length - listH));
     if (ov.follow !== undefined) { if (ov.follow < ov.scroll) ov.scroll = ov.follow; if (ov.follow >= ov.scroll + listH) ov.scroll = ov.follow - listH + 1; }
-    const box = [paint("frameOn", "╭─") + paint("title", cut(` ${ov.title} `, w - 4)) + paint("frameOn", "─".repeat(Math.max(0, w - 3 - width(cut(` ${ov.title} `, w - 4)))) + "╮")];
+    // the top edge ends in a ✕ that closes it (a click outside does too)
+    const tt = cut(` ${ov.title} `, w - 7);
+    const box = [paint("frameOn", "╭─") + paint("title", tt) + paint("frameOn", "─".repeat(Math.max(0, w - 6 - width(tt)))) + paint("dim", " ✕ ") + paint("frameOn", "╮")];
     const wrap = (s) => paint("frameOn", "│") + s + paint("frameOn", "│");
     for (const l of content.slice(ov.scroll, ov.scroll + listH)) box.push(wrap(l.raw ?? (l.role === "sel" ? paint("sel", pad(` ${l.text}`, w - 2)) : " " + paint(l.role || "", pad(l.text, w - 3)))));
     while (box.length < listH + 1) box.push(wrap(" ".repeat(w - 2)));
@@ -457,6 +489,8 @@ export async function runTui() {
     const more = content.length > ov.scroll + listH ? ` ↓ ${content.length - ov.scroll - listH} more ` : "";
     box.push(paint("frameOn", "╰─") + paint("dim", cut(` ${ov.hint || "Esc closes"} `, w - 4 - width(more))) + paint("frameOn", "─".repeat(Math.max(0, w - 3 - width(cut(` ${ov.hint || "Esc closes"} `, w - 4 - width(more))) - width(more)))) + paint("dim", more) + paint("frameOn", "╯"));
     box.forEach((b, i) => { const r = y + i; if (r < H) rows[r] = sliceAnsi(rows[r], 0, x) + b + sliceAnsi(rows[r], x + w, W); });
+    // where it is, for the mouse (see overlayHit in mouse.mjs)
+    ov.geo = { x, y, w, h: box.length, listTop: y + 1, listH, scroll: ov.scroll, n: content.length, more: more ? [x + w - width(more), x + w - 1] : null };
   }
   const closeOverlay = () => { try { overlay?.onClose?.(); } catch {} overlay = null; prevRows = []; schedule(); };
   const viewer = (title, lines, extra = {}) => { overlay = { title, lines, hint: "↑/↓ PgUp/PgDn scroll · Esc closes", ...extra }; schedule(); };
@@ -484,6 +518,8 @@ export async function runTui() {
       ov.follow = ov.sel;
       return true;
     };
+    // a click selects an option; a click on the selected one (so a double-click too) picks it
+    ov.pickAt = (i) => { if (i < 0 || i >= options.length) return; if (i === ov.sel) return ov.onKey("\r"); ov.sel = ov.follow = i; };
     overlay = ov; schedule();
   }
   function overlayKey(k) {
@@ -686,8 +722,15 @@ export async function runTui() {
       { text: "  /   filter the panel     y / x   answer the prompt in the yellow bar   !  go to it" },
       { text: "  o   web console          ,  settings             q   quit (sessions keep running)" },
       { text: "  Control: m   voice on/off (AXA reads its replies aloud) · Esc stops it speaking" },
-      { text: "  Control: drag over the commander's text to copy it · double-click a message to copy all of it" },
-      { text: "           (Shift+drag uses your terminal's own selection instead)" },
+      { text: "" },
+      { text: "Mouse", role: "head" },
+      { text: "  Control: click the commander's box (or its conversation) to talk to AXA · ⏎ send sends" },
+      { text: "           click anywhere else, or Esc, to stop typing" },
+      { text: "  Drag over the commander's text to copy it · double-click a message to copy all of it" },
+      { text: "  Click a tab, a session, a chat, any key hint in the footer, or the NEEDS YOU chip (jumps there)" },
+      { text: "  Approve takes two clicks (the button reads \"click again to approve\"); Decline takes one" },
+      { text: "  Popups: click an item to select it, click it again (or double-click) to choose; ✕ or a click outside closes" },
+      { text: "  Shift+drag uses your terminal's own selection instead" },
       { text: "" },
       { text: "Sessions panel", role: "head" },
       { text: "  Enter open live · d changes (diff) · g give a goal · v run checks · r rename · X close" },
@@ -909,7 +952,7 @@ export async function runTui() {
     if (b === 32 && cmdSel && !cmdSel.done) { cmdSel.endRow = by; cmdSel.endCol = x; cmdSel.dragged = true; return true; }
     if (b === 0 && up && cmdSel && !cmdSel.done) {
       const text = cmdSel.dragged ? selectedText(lines, cmdSel) : "";
-      if (!text) { cmdSel = null; return true; }
+      if (!text) { if (!cmdSel.dragged) focusInput = true; cmdSel = null; return true; } // a click, not a drag: talk to AXA
       copyToClipboard(text);
       const n = [...text].length;
       flash(`copied ${n} character${n === 1 ? "" : "s"}`);
@@ -920,7 +963,7 @@ export async function runTui() {
     if (b !== 0 || up) return false;
     cmdSel = null;
     const inText = x > (ctl.midL ?? ctl.L) + 1 && by >= ctl.cmdTop && by < ctl.cmdBottom && lines.length && by >= lines[0].row && by <= lines.at(-1).row;
-    if (!inText) return false;
+    if (!inText) { if (!inCommander(x, by)) return false; focusInput = true; return true; } // the box, the header, blank rows
     const l = lines.find((t) => t.row === by);
     if (l && l.msg >= 0 && cmdMsgs[l.msg]) {
       const again = Date.now() - lastClick.at < 450 && lastClick.i === `msg:${l.msg}`;
@@ -930,9 +973,53 @@ export async function runTui() {
     cmdSel = { startRow: by, startCol: x, endRow: by, endCol: x, scroll: cmdScroll, dragged: false, done: 0 };
     return true;
   }
+  // the commander panel on Control (x 1-based, by a body row)
+  const inCommander = (x, by) => x > (ctl.midL ?? ctl.L) && by >= ctl.cmdTop && by < ctl.cmdBottom;
+  const onControl = () => screen === "hub" && !overlay && PANELS[focus] === "control" && ctl.y0;
+  // a click on an Approve button (the alert bar's y, the Approvals panel's, the footer's y)
+  function onApprove(x, y) {
+    if (overlay) return false;
+    if (alertY && y === alertY) return hitAt(alertHits, x, y)?.k === "yes";
+    if (screen !== "hub") return false;
+    if (footY && y === footY) return hitAt(footHits, x, y)?.k === "y";
+    return !!onControl() && hitAt(ctl.apHits || [], x, y - ctl.y0)?.which === "yes";
+  }
+  // answer the prompt shown in the yellow bar by mouse: decline at once; approve on the second click, and
+  // only if it's still the same prompt. Same path as the y/x keys (answerAlert).
+  function clickAnswer(which) {
+    const s = waitingOthers()[0];
+    if (!s) { approveArm.disarm(); return flash("nothing is waiting on you"); }
+    if (which === "no") { approveArm.disarm(); return answerAlert("no", s); }
+    if (approveArm.press(armKey(s)) === "fire") return answerAlert("yes", s);
+    setTimeout(schedule, 4050); // the button goes back to normal when it disarms
+  }
+  // a footer hint: the same as pressing its key
+  function footerClick(k) {
+    if (k === "y" || k === "x") return clickAnswer(k === "y" ? "yes" : "no");
+    if (k === "drag") return flash("drag over the commander's text to copy it");
+    const key = hintKey(k);
+    if (!key) return;
+    if (focusInput && !["⏎", "Esc"].includes(k)) focusInput = false; // help, quit… while typing: stop typing first
+    hubKey(key);
+  }
   function onMouse(b, x, y, up) {
+    const press = b === 0 && !up;
+    if (press && !onApprove(x, y)) approveArm.disarm(); // any other click disarms Approve
     if (overlay) {
-      if (b === 64) overlay.scroll = (overlay.scroll || 0) - 3; else if (b === 65) overlay.scroll = (overlay.scroll || 0) + 3;
+      const ov = overlay;
+      if (b === 64 || b === 65) { ov.scroll = (ov.scroll || 0) + (b === 64 ? -3 : 3); ov.follow = undefined; return schedule(); }
+      if (!press || !ov.geo) return;
+      const h = overlayHit(ov.geo, x, y);
+      if (h.kind === "outside" || h.kind === "close") overlayKey(ESC); // like Esc
+      else if (h.kind === "more") { ov.scroll = (ov.scroll || 0) + ov.geo.listH; ov.follow = undefined; }
+      else if (h.kind === "item" && ov.pickAt) ov.pickAt(h.i);
+      return schedule();
+    }
+    // the yellow bar (in the hub and above a live session): y approves (two clicks), x declines, the rest goes there
+    if (alertY && y === alertY) {
+      const h = press && hitAt(alertHits, x, y);
+      if (h?.k === "yes" || h?.k === "no") clickAnswer(h.k);
+      else if (h?.k === "go") { const w = waitingOthers()[0]; if (w) openLive(w); }
       return schedule();
     }
     if (screen === "live") {
@@ -940,10 +1027,29 @@ export async function runTui() {
       if (live && y > live.top && !live.dead) live.mouse(b, x, y - live.top, up);
       return;
     }
-    if (y === 2) { const t = tabHits.find((h) => x >= h.x0 && x <= h.x1); if (t && b === 0 && !up) { focus = t.i; schedule(); } return; }
+    if (footY && y === footY) { const h = press && hitAt(footHits, x, y); if (h) footerClick(h.k); return schedule(); }
+    // a click outside the commander panel stops typing to it
+    if (press && focusInput && !(onControl() && inCommander(x, y - ctl.y0))) focusInput = false;
+    if (y === 1) {
+      if (press && hitAt(titleHits, x, y)) { const w = data.sessions.filter((s) => ["waiting", "stuck"].includes(s.status)).sort(byUrgency)[0]; if (w) openLive(w); }
+      return schedule();
+    }
+    if (y === 2) { const t = tabHits.find((h) => x >= h.x0 && x <= h.x1); if (t && press) focus = t.i; return schedule(); }
     if (PANELS[focus] === "control" && ctl.y0) {
       const by = y - ctl.y0; // body row (0-based)
-      if ((b === 64 || b === 65) && x > (ctl.midL ?? ctl.L) && by >= ctl.cmdTop && by < ctl.cmdBottom) { cmdScroll = Math.max(0, cmdScroll + (b === 64 ? 3 : -3)); cmdSel = null; return schedule(); }
+      if ((b === 64 || b === 65) && inCommander(x, by)) { cmdScroll = Math.max(0, cmdScroll + (b === 64 ? 3 : -3)); cmdSel = null; return schedule(); }
+      // the wheel over the recent chats picks one
+      if ((b === 64 || b === 65) && ctl.tableTop && by >= ctl.tableTop - 1 && x <= Math.round(ctl.L * 0.55)) { zone = "chats"; chatSel = Math.max(0, Math.min(Math.min(data.chats.length, 9) - 1, chatSel + (b === 64 ? -1 : 1))); return schedule(); }
+      if (press) {
+        const a = hitAt(ctl.apHits || [], x, by);
+        if (a) { clickAnswer(a.which); return schedule(); }
+        // the send button at the end of the input line
+        if (by === ctl.inputRow && ctl.sendHit && x >= ctl.sendHit.x0 && x <= ctl.sendHit.x1) {
+          focusInput = true;
+          if (cmdInput.trim()) controlKey("\r");
+          return schedule();
+        }
+      }
       if (cmdMouse(b, x, by, up)) return schedule();
       if (b !== 0 || up) return;
       const m = ctl.mapHits.find((h) => by - ctl.mapTop >= h.row0 && by - ctl.mapTop <= h.row1 && x - 2 >= h.col0 && x - 2 <= h.col1);
@@ -964,10 +1070,15 @@ export async function runTui() {
       if (again) { const s = data.sessions.find((x) => x.id === id); if (s) openLive(s); }
       return schedule();
     }
+    // the wheel anywhere over a list moves its selection
+    if ((b === 64 || b === 65) && listArea && y >= listArea.y0 && y <= listArea.y1 && x >= listArea.x0 && x <= listArea.x1) {
+      const n = items(listArea.panel).length;
+      sel[listArea.panel] = Math.max(0, Math.min(n - 1, sel[listArea.panel] + (b === 64 ? -1 : 1)));
+      return schedule();
+    }
     const hit = hits.find((h) => y === h.y && x >= h.x0 && x <= h.x1);
     if (!hit) return;
     const p = PANELS.indexOf(hit.panel);
-    if (b === 64 || b === 65) { focus = p; sel[hit.panel] = Math.max(0, sel[hit.panel] + (b === 64 ? -1 : 1)); return schedule(); }
     if (b !== 0 || up) return;
     focus = p;
     if (hit.i !== undefined) {
@@ -1017,6 +1128,7 @@ export async function runTui() {
     d = d.replace(MOUSE, (_, b, x, y, m) => { onMouse(Number(b), Number(x), Number(y), m === "m"); return ""; });
     if (!d) return;
     cmdSel = null; // a key clears the commander selection
+    approveArm.disarm(); // and an armed Approve
     // each key goes where the UI is at that moment: a dialog, the hub, or the live session
     const P = prefixByte();
     while (d) {

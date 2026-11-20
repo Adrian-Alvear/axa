@@ -4,6 +4,7 @@
 import { Canvas, areaChart } from "./canvas.mjs";
 import { sliceAnsi } from "./ansi.mjs";
 import { I, ago, chipOf, clean, cut, fmtTok, line, look, paint, reviewBadge, setMotion, sgrOf, spinner, width } from "./draw.mjs";
+import { segSpans } from "./mouse.mjs";
 
 // a finished session leaves the map after this long idle (it stays open and in the Sessions tab)
 const MAP_IDLE_MS = 20 * 60_000;
@@ -468,7 +469,8 @@ export function agentDetail(h, w) {
 }
 
 // ---------- the whole screen ----------
-// ctx: { motion, sessions, chats, act, selId, zone, chatSel, focusInput, input, nameOf, question, yesOpt, noOpt, waiting, mapHits, chatHits }
+// ctx: { motion, sessions, chats, act, selId, zone, chatSel, focusInput, input, nameOf, question, yesOpt, noOpt, waiting, armed, mapHits, chatHits }
+// it fills in what a click can hit: mapHits, chatHits, apHits (the approval buttons), cmdText, inputRow, sendHit
 export function controlRows(ctx, W, B) {
   if (ctx.motion) setMotion(ctx.motion); // spinners follow the same setting
   const { sessions, act } = ctx;
@@ -518,7 +520,11 @@ export function controlRows(ctx, W, B) {
     const no = ctx.noOpt(w.choices), yes = ctx.yesOpt(w.choices);
     const bw = Math.floor((iw - 6) / 2);
     ab.push(" ".repeat(iw));
-    ab.push(line([["  ", ""], [cut(` x  ${no.label} `.padEnd(bw), bw), "keycap"], ["  ", ""], [cut(` y  ${yes.label} `.padEnd(bw), bw), "tabOn"]], iw));
+    // the buttons are clickable (approve takes two clicks: ctx.armed is the first)
+    const btn = [["  ", ""], [cut(` x  ${no.label} `.padEnd(bw), bw), "keycap"], ["  ", ""], [cut(ctx.armed ? " click again to approve ".padEnd(bw) : ` y  ${yes.label} `.padEnd(bw), bw), ctx.armed ? "chipWait" : "tabOn"]];
+    const sp = segSpans(btn, iw, [], midL + 2), row = (topH || 0) + 1 + ab.length;
+    for (const s of sp.left) if (s.i === 1 || s.i === 3) (ctx.apHits ||= []).push({ y: row, x0: s.x0, x1: s.x1, which: s.i === 1 ? "no" : "yes" });
+    ab.push(line(btn, iw));
   } else {
     ab.push(line([["  ✓ Nothing needs your approval", "done"], [` · ${act?.runs?.approvals ?? 0} handled by AXA today`, "dim"]], iw));
   }
@@ -562,9 +568,13 @@ export function controlRows(ctx, W, B) {
   }
   while (cb.length < chH - 4 - actRow.length - statRows.length) cb.push(" ".repeat(iw));
   cb.push(...actRow);
-  const prompt = ctx.focusInput ? ctx.input + "▏" : ctx.input || "Ask anything…  (press : to type)";
+  const prompt = ctx.focusInput ? ctx.input + "▏" : ctx.input || "Click here or press : to talk to AXA…";
   cb.push(paint("frame", " " + "─".repeat(iw - 2) + " "));
-  cb.push(line([[" › ", "accent"], [cut(prompt.slice(-(iw - 6)), iw - 4), ctx.focusInput || ctx.input ? "head" : "dim"]], iw));
+  // the input line, with a send button at its right end (clickable; dim while there's nothing to send)
+  const inSegs = [[" › ", "accent"], [cut(prompt.slice(-(iw - 16)), iw - 14), ctx.focusInput || ctx.input ? "head" : "dim"]], send = [[" ⏎ send ", (ctx.input || "").trim() ? "keycap" : "dim"]];
+  ctx.inputRow = cmdTop + 1 + cb.length;
+  ctx.sendHit = segSpans(inSegs, iw, send, midL + 2).right[0] || null;
+  cb.push(line(inSegs, iw, send));
   cb.push(...statRows);
   const above = Math.max(0, end - room);
   const chPanel = panel("Commander", mR, chH, cb, { on: ctx.focusInput, tag: ctx.cmdScroll ? `↓ ${ctx.cmdScroll} newer · PgDn` : above ? `↑ ${above} more · PgUp` : "Enter sends" });
