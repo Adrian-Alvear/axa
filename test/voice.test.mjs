@@ -36,8 +36,8 @@ test("toSpeech: paths and URLs replaced", () => {
 test("toSpeech: long text is cut at a sentence, with a pointer to the screen", () => {
   const sentence = "This sentence is about fifty characters long, ok. ";
   const s = toSpeech(sentence.repeat(12));
-  assert.ok(s.endsWith("ok. The details are on screen."), s);
-  assert.ok(s.length <= 350 + " The details are on screen.".length);
+  assert.ok(s.endsWith("okay. The details are on screen."), s); // "ok" -> "okay": the pronunciation map
+  assert.ok(s.replace(/okay/g, "ok").length <= 350 + " The details are on screen.".length);
   // a short reply is said whole, with nothing added
   assert.equal(toSpeech("All done, the tests pass."), "All done, the tests pass.");
   // a later paragraph is left for the screen

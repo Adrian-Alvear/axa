@@ -108,10 +108,10 @@ const routes = [
   ["GET", /^\/api\/voice$/, async () => [200, await V.info()]],
   ["POST", /^\/api\/voice\/stop$/, () => { V.stop(); return [200, {}]; }],
   ["POST", /^\/api\/voice\/test$/, () => {
-    const b = V.detect();
-    if (!b.name) return [409, { error: b.why }];
+    const b = V.detect(), { engine } = V.settings();
+    if (engine !== "kokoro" && !b.name) return [409, { error: b.why }];
     V.speak("AXA voice check.");
-    return [200, { backend: b.name }];
+    return [200, { engine, backend: engine === "kokoro" ? "kokoro" : b.name }];
   }],
   // the terminal UI says when you type into a session (the supervisor waits until you stop)
   ["POST", /^\/api\/terms\/([\w-]+)\/typing$/, (m) => { S.noteInput(m[1]); return [200, {}]; }],

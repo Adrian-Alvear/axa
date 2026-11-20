@@ -1,14 +1,19 @@
-// AXA's voice: the daemon reads the commander's finished replies aloud with the computer's own voices
-// (macOS `say`, Windows/WSL System.Speech through powershell.exe, Linux spd-say or espeak). Off by default;
-// turned on in the hub's settings (~/.axa/ui.json "voice": "on") or with AXA_VOICE=1.
+// AXA's voice: the daemon reads the commander's finished replies aloud. Two engines:
+//  - "kokoro": the Kokoro neural voice (kokoro.mjs), once `axa voice install kokoro` has put it in place;
+//  - "system": the computer's own voices (macOS `say`, Windows/WSL System.Speech through powershell.exe,
+//    Linux spd-say or espeak). Any Kokoro failure falls back to these for that reply.
+// Off by default; turned on in the hub's settings (~/.axa/ui.json "voice": "on") or with AXA_VOICE=1.
+// ui.json "voiceEngine": "kokoro" | "system"; with no choice, Kokoro is used when it's installed.
 //
-// The text never goes on a command line: it's written to a private temp file the speaker reads, and removed after.
+// The text never goes on a command line for the system voices: it's written to a private temp file the speaker
+// reads, and removed after. Kokoro gets it over the resident speaker's stdin (the CLI fallback: one argv entry, no shell).
 import { spawn, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { copyFileSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { files } from "../paths.mjs";
+import { basename, join } from "node:path";
+import { files, isWsl } from "../paths.mjs";
+import * as K from "./kokoro.mjs";
 
 const has = (c) => spawnSync("which", [c], { stdio: "ignore" }).status === 0;
 
@@ -19,8 +24,13 @@ export function settings() {
   const env = process.env.AXA_VOICE;
   const on = env === "1" ? true : env === "0" ? false : cfg.voice === "on";
   const rate = Math.max(-2, Math.min(2, Number(cfg.voiceRate) || 0));
-  return { on, name: typeof cfg.voiceName === "string" ? cfg.voiceName : "", rate, forced: env === "1" || env === "0" };
+  const engineChoice = ["kokoro", "system"].includes(cfg.voiceEngine) ? cfg.voiceEngine : "";
+  return { on, name: typeof cfg.voiceName === "string" ? cfg.voiceName : "", rate, forced: env === "1" || env === "0",
+    engineChoice, engine: pickEngine(engineChoice, K.state().installed) };
 }
+// your explicit choice wins (a chosen-but-missing Kokoro still falls back, per reply); no choice: Kokoro if installed
+export const pickEngine = (choice, kokoroInstalled) =>
+  choice === "system" ? "system" : choice === "kokoro" || kokoroInstalled ? "kokoro" : "system";
 
 // ---------- the backend: picked once ----------
 let backend;
@@ -64,23 +74,45 @@ export function command(b, { name, rate, file, winFile }) {
 }
 
 // ---------- speak / stop ----------
-let current = null; // { child, file }
+// `current` is the reply being said: stop() runs every kill it registered (synthesis in flight, playback)
+let current = null;
+const newJob = () => ({ stopped: false, kills: new Set(), kill() { this.stopped = true; for (const k of this.kills) try { k(); } catch {} this.kills.clear(); } });
 export function stop() {
   const c = current;
   current = null;
-  if (!c) return;
-  try { unlinkSync(c.file); } catch {}
-  try { c.child.kill(); } catch {}
-  if (c.cancel) try { c.cancel(); } catch {}
+  if (c) c.kill();
 }
+const log = (m) => console.log(`[${new Date().toISOString()}] voice: ${m}`);
 
 // Speaks `text` (stopping anything already speaking). Resolves to the exit code, or null if it couldn't start.
 export function speak(text, opts = {}) {
+  stop();
+  const s = { ...settings(), ...opts };
+  if (!String(text || "").trim()) return Promise.resolve(null);
+  const me = newJob();
+  current = me;
+  return speakWith(String(text), s, { kokoro: kokoroSpeak, system: systemSpeak, log, job: me })
+    .catch(() => null).finally(() => { if (current === me) current = null; });
+}
+
+// The engine choice and the fallback (deps injected: unit-tested). A stopped reply never falls back.
+export async function speakWith(text, s, { kokoro, system, log = () => {}, job = newJob() }) {
+  if (s.engine === "kokoro") {
+    try { return await kokoro(text, s, job); } catch (e) {
+      if (job.stopped || e.stopped) return null;
+      log(`Kokoro failed (${e.message}); using the system voice for this reply`);
+    }
+  }
+  if (job.stopped) return null;
+  return system(text, s, job);
+}
+
+// The computer's own voice
+function systemSpeak(text, s, job) {
   return new Promise((done) => {
     try {
-      stop();
-      const b = detect(), s = { ...settings(), ...opts };
-      if (!b.name || !String(text || "").trim()) return done(null);
+      const b = detect();
+      if (!b.name) return done(null);
       const file = join(tmpdir(), `axa-voice-${randomBytes(6).toString("hex")}.txt`);
       writeFileSync(file, String(text), { mode: 0o600, flag: "wx" });
       let winFile;
@@ -88,12 +120,126 @@ export function speak(text, opts = {}) {
       const [cmd, args] = command(b, { name: s.name, rate: s.rate, file, winFile });
       const child = spawn(cmd, args, { stdio: [b.name === "spd-say" ? "pipe" : "ignore", "ignore", "ignore"] });
       if (b.name === "spd-say") { child.stdin.on("error", () => {}); child.stdin.end(String(text)); }
-      const me = { child, file, cancel: b.name === "spd-say" ? () => spawnSync("spd-say", ["-C"], { stdio: "ignore" }) : null };
-      current = me;
-      const end = (code) => { try { unlinkSync(file); } catch {} if (current === me) current = null; done(code); };
+      // removing the file is how the Windows side learns to stop
+      const kill = () => { try { unlinkSync(file); } catch {} try { child.kill(); } catch {} if (b.name === "spd-say") spawnSync("spd-say", ["-C"], { stdio: "ignore" }); };
+      job.kills.add(kill);
+      const end = (code) => { job.kills.delete(kill); try { unlinkSync(file); } catch {} done(code); };
       child.on("error", () => end(null));
       child.on("close", (code) => end(code));
     } catch { done(null); }
+  });
+}
+
+// ---------- Kokoro: text -> wav (resident speaker, or the CLI) -> play ----------
+let speaker = null;
+function residentSpeaker(st) {
+  if (speaker && (speaker.python !== st.python || speaker.model !== st.model)) { speaker.kill(); speaker = null; }
+  return (speaker ||= new K.Speaker({ python: st.python, model: st.model, log }));
+}
+export const SYNTH_TIMEOUT = 8000;
+// Makes the wav for `text`; resolves { out, secs } (secs: time to wav). Exported for timing it by hand.
+export async function kokoroWav(text, s, job = newJob(), out = join(tmpdir(), `axa-voice-${randomBytes(6).toString("hex")}.wav`)) {
+  const st = K.state();
+  if (!st.installed) throw new Error(`Kokoro is ${st.why}`);
+  const req = { text: pronounce(text), sid: K.sidOf(s.name), speed: K.speedOf(s.rate), out };
+  const t0 = Date.now();
+  if (st.mode === "resident") {
+    const sp = residentSpeaker(st), cancel = () => sp.cancel();
+    job.kills.add(cancel);
+    try { await sp.synth(req, SYNTH_TIMEOUT); } finally { job.kills.delete(cancel); }
+  } else {
+    const p = K.cliSynth({ cli: st.cli, model: st.model, ...req }, SYNTH_TIMEOUT), kill = () => p.kill();
+    job.kills.add(kill);
+    try { await p; } finally { job.kills.delete(kill); }
+  }
+  return { out, secs: (Date.now() - t0) / 1000 };
+}
+async function kokoroSpeak(text, s, job) {
+  const temp = wslNow() ? windowsTemp() : null; // looked up while the wav is made
+  let out;
+  try {
+    ({ out } = await kokoroWav(text, s, job));
+    if (job.stopped) return null;
+    return await playWav(out, job, temp && (await temp));
+  } finally { if (out) try { unlinkSync(out); } catch {} }
+}
+const wslNow = () => process.platform === "linux" && isWsl() && has("powershell.exe");
+
+// ---------- playing a wav ----------
+// a wav's length in ms from its header (PCM: the "data" chunk's size / bytes per second)
+export function wavMs(buf) {
+  if (buf.length < 44 || buf.toString("ascii", 0, 4) !== "RIFF") return 0;
+  let byteRate = 0;
+  for (let i = 12; i + 8 <= buf.length;) {
+    const id = buf.toString("ascii", i, i + 4), size = buf.readUInt32LE(i + 4);
+    if (id === "fmt ") byteRate = buf.readUInt32LE(i + 16);
+    if (id === "data") return byteRate ? Math.round((Math.min(size, buf.length - i - 8) / byteRate) * 1000) : 0;
+    i += 8 + size + (size & 1);
+  }
+  return 0;
+}
+// C:\Users\me\AppData\Local\Temp\ -> /mnt/c/Users/me/AppData/Local/Temp/ (when wslpath isn't there to ask)
+export const winToUnix = (p) => String(p).replace(/^([A-Za-z]):[\\/]?/, (m, d) => `/mnt/${d.toLowerCase()}/`).replace(/\\/g, "/");
+// On WSL a wav on the Linux side (\\wsl.localhost\...) doesn't play: it's copied to the Windows temp folder first.
+// The copy's two names: `unix` to write it from WSL, `win` for powershell; `flag` is removed to stop playback.
+export function wslTempCopy({ winTemp, unixTemp = winToUnix(winTemp), name }) {
+  const w = String(winTemp).replace(/[\\/]*$/, "\\"), u = String(unixTemp).replace(/\/*$/, "/");
+  return { win: w + name, unix: u + name, winFlag: w + name + ".playing", unixFlag: u + name + ".playing" };
+}
+let winTempP = null;
+function windowsTemp() {
+  return (winTempP ||= new Promise((ok) => {
+    let o = "";
+    const c = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", "[IO.Path]::GetTempPath()"], { stdio: ["ignore", "pipe", "ignore"] });
+    c.stdout.on("data", (d) => (o += d));
+    c.on("error", () => ok(null));
+    c.on("close", () => {
+      const winTemp = o.trim();
+      if (!winTemp) return ok(null);
+      const r = spawnSync("wslpath", ["-u", winTemp], { encoding: "utf8" });
+      ok({ winTemp, unixTemp: r.status === 0 && r.stdout.trim() ? r.stdout.trim() : winToUnix(winTemp) });
+    });
+  }).then((v) => { if (!v) winTempP = null; return v; }));
+}
+// Plays the wav, blocking for its length; stops early when the flag file disappears (how stop() reaches Windows)
+export function playScript({ winWav, winFlag, ms }) {
+  const q = (s) => `'${psq(s)}'`;
+  return [
+    `$p = New-Object System.Media.SoundPlayer ${q(winWav)}`,
+    "$p.Load()",
+    "$p.Play()",
+    `$end = (Get-Date).AddMilliseconds(${Math.max(0, Math.round(ms)) + 250})`,
+    `while ((Get-Date) -lt $end) { if (-not (Test-Path -LiteralPath ${q(winFlag)})) { break }; Start-Sleep -Milliseconds 100 }`,
+    "$p.Stop()",
+  ].join("; ");
+}
+function playWav(out, job, temp) {
+  return new Promise((done, fail) => {
+    const ms = Math.min(5 * 60 * 1000, wavMs(readFileSync(out)) || 60000);
+    let cmd, args, cleanup = () => {}, flag = null;
+    if (process.platform === "darwin") [cmd, args] = ["afplay", [out]];
+    else if (process.platform === "win32" || wslNow()) {
+      let winWav = out, winFlag = out + ".playing";
+      flag = winFlag;
+      if (process.platform !== "win32") {
+        if (!temp) return fail(new Error("couldn't find the Windows temp folder"));
+        const c = wslTempCopy({ ...temp, name: basename(out) });
+        copyFileSync(out, c.unix);
+        winWav = c.win; winFlag = c.winFlag; flag = c.unixFlag;
+        cleanup = () => { try { unlinkSync(c.unix); } catch {} };
+      }
+      writeFileSync(flag, "", { mode: 0o600 });
+      [cmd, args] = [process.platform === "win32" ? "powershell" : "powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", playScript({ winWav, winFlag, ms })]];
+    } else if (has("paplay")) [cmd, args] = ["paplay", [out]];
+    else if (has("aplay")) [cmd, args] = ["aplay", ["-q", out]];
+    else return fail(new Error("no wav player (install pulseaudio-utils or alsa-utils)"));
+    const rm = () => { if (flag) try { unlinkSync(flag); } catch {} };
+    const child = spawn(cmd, args, { stdio: "ignore" });
+    const kill = () => { rm(); try { child.kill(); } catch {} };
+    job.kills.add(kill);
+    const end = () => { job.kills.delete(kill); rm(); cleanup(); };
+    child.on("error", (e) => { end(); fail(e); });
+    child.on("close", (code) => { end(); done(code); });
   });
 }
 
@@ -124,10 +270,31 @@ export function voices() {
   return parse().then((v) => { if (v.length) voiceList = [...new Set(v)]; return v; }, () => []);
 }
 
-// What GET /api/voice answers
+// What GET /api/voice answers. `voices` are the current engine's; `backend` is "kokoro" or the system backend.
 export async function info() {
-  const b = detect(), s = settings();
-  return { on: s.on && !!b.name, setting: s.on ? "on" : "off", forced: s.forced, backend: b.name, why: b.why, name: s.name, rate: s.rate, voices: b.name ? await voices() : [] };
+  const b = detect(), s = settings(), k = K.state();
+  const kokoro = s.engine === "kokoro";
+  return {
+    on: s.on && (kokoro || !!b.name), setting: s.on ? "on" : "off", forced: s.forced,
+    engine: s.engine, engineChoice: s.engineChoice, installed: k.installed,
+    kokoro: { installed: k.installed, mode: k.mode || null, why: k.why || null, dir: k.dir, lastTest: K.lastTest(k.dir), voices: K.VOICES, defaultVoice: K.DEFAULT_VOICE },
+    backend: kokoro ? "kokoro" : b.name, system: b.name, why: kokoro ? undefined : b.why, name: s.name, rate: s.rate,
+    voices: kokoro ? K.VOICES : b.name ? await voices() : [],
+  };
+}
+
+// ---------- pronunciation: one table, applied to what's said (harmless for the system voices) ----------
+// Kokoro silently drops words its lexicon doesn't know (e.g. "macOS", and "axa" itself), so they're spelled out here.
+export const PRONOUNCE = [
+  ["macOS", "mac O S"], ["WSL", "W S L"], ["npm", "N P M"], ["git", "git"], ["GitHub", "git hub"], ["AXA", "ax uh"],
+  ["JSON", "jason"], ["README(?:\\.md)?", "read me"], ["CLI", "C L I"], ["UI", "U I"], ["TUI", "T U I"],
+  ["API", "A P I"], ["URL", "U R L"], ["PR", "P R"], ["ok", "okay"],
+];
+const PRON_RE = PRONOUNCE.map(([w, say]) => [new RegExp(`(?<![\\w~/.-])${w}(?![\\w-])`, "gi"), say]);
+export function pronounce(t) {
+  let x = String(t);
+  for (const [re, say] of PRON_RE) x = x.replace(re, say);
+  return x.replace(/(^|\s)~\/(?=\s|[.,!?;:]|$)/g, "$1home folder");
 }
 
 // ---------- a reply, made speakable ----------
@@ -165,7 +332,7 @@ export function toSpeech(md) {
     said = end > 40 ? head.slice(0, end + 1) : head.slice(0, head.lastIndexOf(" ")).replace(/[,;:\s-]+$/, "") + ".";
     cut = true;
   }
-  return (cut ? `${said} The details are on screen.` : said).trim();
+  return pronounce(cut ? `${said} The details are on screen.` : said).trim();
 }
 
 function inline(x) {

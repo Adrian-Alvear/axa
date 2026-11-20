@@ -22,6 +22,7 @@ import { copyToClipboard, pasteFile, readClipboard } from "./clipboard.mjs";
 const out = process.stdout;
 const PREFIXES = { "C-b": 0x02, "C-a": 0x01, "C-g": 0x07, "C-\\": 0x1c };
 const DEFAULTS = { theme: "axa", prefix: "C-b", bell: true, motion: "full", voice: "off", voiceName: "", voiceRate: 0 };
+const KOKORO_KIND = { af: "American, female", am: "American, male", bf: "British, female", bm: "British, male" };
 const SPEEDS = { "-2": "slowest", "-1": "slow", 0: "normal", 1: "fast", 2: "fastest" };
 const MOTIONS = ["full", "reduced", "off"];
 const PANELS = ["control", "sessions", "chats", "agents", "projects"];
@@ -473,7 +474,7 @@ export async function runTui() {
   // a list to pick from: options [{ label, hint, value }]; extra keys: { key: (option) => void }
   function pick(title, options, onPick, { hint, keys = {}, selected = 0 } = {}) {
     const ov = { title, sel: selected, size: "small", hint: hint || "↑/↓ choose · Enter pick · Esc cancel" };
-    ov.render = (w) => options.map((o, i) => ({ raw: i === ov.sel ? paint("sel", pad(` ${o.label}${o.hint ? "  " + o.hint : ""}`, w + 2)) : " " + line([[o.label, "head"], [o.hint ? "  " + o.hint : "", "dim"]], w + 1) }));
+    ov.render = (w) => options.map((o, i) => ({ raw: i === ov.sel ? paint("sel", pad(` ${o.label}${o.hint ? "  " + o.hint : ""}`, w + 2)) : " " + line([[o.label, o.dim ? "dim" : "head"], [o.hint ? "  " + o.hint : "", "dim"]], w + 1) }));
     ov.onKey = (k) => {
       if (k === "\x1b[A" || k === "k") ov.sel = Math.max(0, ov.sel - 1);
       else if (k === "\x1b[B" || k === "j") ov.sel = Math.min(options.length - 1, ov.sel + 1);
@@ -610,6 +611,7 @@ export async function runTui() {
     }, { lines: [{ text: clean(a.description), role: "dim" }] });
   }
   const stopVoice = () => call("/api/voice/stop", { method: "POST" }).catch(() => {});
+  let voiceInfo = null; // the daemon's /api/voice answer (engine, Kokoro installed, voices), refreshed by the pickers
   function toggleVoice() {
     stopVoice();
     if (voiceEnv) return flash(`voice is forced ${voiceEnv} by AXA_VOICE`);
@@ -619,9 +621,28 @@ export async function runTui() {
   async function pickVoice(back) {
     let v;
     try { v = await call("/api/voice"); } catch (e) { flash(`couldn't ask the daemon: ${e.message}`); return back(); }
+    voiceInfo = v;
     if (!v.backend) { flash(`no voice here: ${v.why}`, 6000); return back(); }
-    const opts = [{ label: "Default", hint: "the system's voice", value: "" }, ...v.voices.map((n) => ({ label: n, value: n }))];
+    const kokoro = v.engine === "kokoro";
+    const opts = [{ label: "Default", hint: kokoro ? `Kokoro's ${v.kokoro?.defaultVoice || "af_heart"}` : "the system's voice", value: "" },
+      ...v.voices.map((n) => ({ label: n, hint: kokoro ? KOKORO_KIND[n.slice(0, 2)] : "", value: n }))];
     pick(`Voice (${v.backend})`, opts, (o) => { cfg.voiceName = o.value; saveCfg(); back(); }, { selected: Math.max(0, opts.findIndex((o) => o.value === cfg.voiceName)) });
+  }
+  // Kokoro (the neural voice, once `axa voice install kokoro` has run) or the computer's own voices
+  async function pickEngine(back) {
+    let v;
+    try { v = await call("/api/voice"); } catch (e) { flash(`couldn't ask the daemon: ${e.message}`); return back(); }
+    voiceInfo = v;
+    const ok = !!v.kokoro?.installed, now = v.engine || "system";
+    const opts = [
+      { label: "Kokoro", hint: ok ? `neural, offline${now === "kokoro" ? " · in use" : ""}` : "not installed: run axa voice install kokoro", value: "kokoro", dim: !ok },
+      { label: "System", hint: `your computer's own voices${v.system ? ` (${v.system})` : ""}${now === "system" ? " · in use" : ""}`, value: "system" },
+    ];
+    pick("Voice engine", opts, (o) => {
+      if (o.value === "kokoro" && !ok) { flash("Kokoro isn't installed: run  axa voice install kokoro  in a terminal", 7000); return back(); }
+      if (o.value !== now) { cfg.voiceEngine = o.value; cfg.voiceName = ""; stopVoice(); saveCfg(); voiceInfo = { ...v, engine: o.value }; }
+      back();
+    }, { selected: now === "kokoro" ? 0 : 1 });
   }
   function settings(start = 0) {
     const opts = () => [
@@ -631,7 +652,8 @@ export async function runTui() {
       { label: "Bell when a session needs you", hint: cfg.bell ? "on" : "off", value: "bell" },
       { label: "Motion (map animation)", hint: motionNow() + (envReduced && cfg.motion === "full" ? " (AXA_REDUCED_MOTION)" : ""), value: "motion" },
       { label: "Voice (reads AXA's replies aloud)", hint: (voiceOn() ? "on" : "off") + (voiceEnv ? " (AXA_VOICE)" : ""), value: "voice" },
-      { label: "Voice name", hint: cfg.voiceName || "default", value: "voiceName" },
+      { label: "Voice engine", hint: voiceInfo ? (voiceInfo.engine === "kokoro" ? "Kokoro" : "System") + (voiceInfo.kokoro?.installed ? "" : " (Kokoro: not installed)") : cfg.voiceEngine === "kokoro" ? "Kokoro" : cfg.voiceEngine === "system" ? "System" : "automatic", value: "voiceEngine" },
+      { label: "Voice name", hint: cfg.voiceName || (voiceInfo?.engine === "kokoro" ? "af_heart" : "default"), value: "voiceName" },
       { label: "Voice speed", hint: SPEEDS[cfg.voiceRate] || "normal", value: "voiceRate" },
       { label: "Test the voice", hint: "says \"AXA voice check.\"", value: "voiceTest" },
     ];
@@ -647,9 +669,11 @@ export async function runTui() {
       if (o.value === "voiceTest") call("/api/voice/test", { method: "POST" }).then(() => flash("speaking…"), (e) => flash(`no voice: ${e.message}`));
       saveCfg(); prevRows = [];
       if (o.value === "voiceName") return pickVoice(() => again(opts().findIndex((x) => x.value === "voiceName")));
+      if (o.value === "voiceEngine") return pickEngine(() => again(opts().findIndex((x) => x.value === "voiceEngine")));
       again(opts().findIndex((x) => x.value === o.value));
     }, { selected, hint: `Enter changes · Esc done · saved in ${tilde(files.ui)}` });
-    again(start);
+    // the engine row needs the daemon's view (is Kokoro installed?); don't hold the overlay up for long
+    Promise.race([call("/api/voice").then((v) => { voiceInfo = v; }, () => {}), new Promise((r) => setTimeout(r, 1500))]).then(() => again(start));
   }
   function help() {
     const k = keyName();
@@ -687,6 +711,7 @@ export async function runTui() {
       { text: "Voice", role: "head" },
       { text: "  AXA speaks the commander's finished replies (the short version) with your computer's own voices." },
       { text: "  m on Control or , settings turns it on; pick the voice and speed there; AXA_VOICE=1/0 forces it." },
+      { text: "  A better, offline neural voice: axa voice install kokoro (then Voice engine in , settings switches)." },
       { text: "  To talk back, turn on Claude Code's hold-to-talk dictation (/config, \"voiceEnabled\") in the commander." },
       { text: "" },
       { text: `Settings: ${tilde(files.ui)}   ·   web console: axa web   ·   port ${port}`, role: "dim" },

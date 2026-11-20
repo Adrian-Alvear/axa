@@ -20,7 +20,9 @@ const USAGE = `AXA: one place for all your Claude Code sessions, chats and agent
   axa status [--json]  what's running, what needs you first
   axa attach <name>    take over one session in this terminal (Ctrl-] detaches; it keeps running)
   axa stop [--all]     stop the background daemon (--all also ends every session)
-  axa restart          restart the daemon (sessions keep running)`;
+  axa restart          restart the daemon (sessions keep running)
+  axa voice install kokoro [--yes]    a better, offline neural voice (~380 MB); uninstall kokoro removes it
+  axa voice status     the voice engine, whether Kokoro is installed, its test timing`;
 
 async function daemon() {
   if (await ensureDaemon()) return;
@@ -106,6 +108,10 @@ switch (cmd) {
     await daemon();
     console.log("AXA daemon restarted; sessions kept running.");
     break;
+  case "voice": {
+    const { main } = await import(join(root, "src", "core", "kokoro-install.mjs"));
+    process.exit(await main(rest));
+  }
   case "help": case "--help": case "-h": console.log(USAGE); break;
   default: console.log(USAGE); process.exit(1);
 }

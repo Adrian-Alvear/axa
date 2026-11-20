@@ -77,6 +77,30 @@ The daemon does the speaking, so it works from the hub or the web console, and o
 never a worker session. To talk back, turn on Claude Code's own hold-to-talk dictation (`/config`,
 `"voiceEnabled": true`) in the commander's session.
 
+### Better voice: Kokoro
+
+[Kokoro](https://huggingface.co/hexgrad/Kokoro-82M) is a small neural text-to-speech model that sounds far more
+natural than the built-in voices. It's Apache-2.0, runs fully offline on the CPU (through
+[sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx)), and takes about 380 MB on disk. Install it yourself, from
+a terminal (macOS, or Windows through WSL; Linux works too):
+
+```sh
+axa voice install kokoro      # shows the sizes and asks first; --yes skips the question
+axa voice status              # engine in use, install state, how long the test sentence took
+```
+
+It goes into `~/.axa/voices/kokoro/` (`AXA_KOKORO_DIR` moves it): a Python venv with sherpa-onnx (or, without
+`python3 -m venv`, sherpa-onnx's prebuilt CLI, which is slower) and the `kokoro-multi-lang-v1_0` model. The
+installer checks it by saying one sentence, then makes Kokoro AXA's voice with the `af_heart` voice. The daemon
+keeps the model loaded in a small resident speaker, so a reply takes about a second to start (the first one after
+a start or 10 idle minutes takes about two). On WSL the audio is played on the Windows speakers. Pick one of
+Kokoro's 28 English voices (`af_` / `am_` American, `bf_` / `bm_` British) under **Voice name** in `,` settings.
+
+If Kokoro fails for a reply (missing, crashed, slower than 8 s), AXA says that reply with the system voice and
+notes why in `~/.axa/console.log`. To go back to the built-in voices, set **Voice engine** to System in `,`
+settings, or remove Kokoro with `axa voice uninstall kokoro`. Words the model doesn't know (like "macOS") are
+spelled out by a small pronunciation table in `src/core/voice.mjs`.
+
 ## The other tabs
 
 | Panel | What's in it | Enter | Other keys |
@@ -211,4 +235,4 @@ cp roster.example.md ~/.axa/roster.md
 The roster holds the roles AXA uses (which agent, which model), house rules every agent follows,
 and your projects with notes. Settings for the hub are in `,` and saved in `~/.axa/ui.json`: theme (`axa`, the default on
 terminals with 24-bit color; `terminal`, your terminal's own 16 colors; `mono`), icons (Nerd Font
-glyphs if one is installed, else plain Unicode), prefix key, bell and voice (on/off, voice name, speed).
+glyphs if one is installed, else plain Unicode), prefix key, bell and voice (on/off, engine, voice name, speed).
