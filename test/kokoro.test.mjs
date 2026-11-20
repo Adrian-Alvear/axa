@@ -16,7 +16,7 @@ const tmp = () => mkdtempSync(join(tmpdir(), "axa-kokoro-test-"));
 // ---------- pronunciation ----------
 test("pronounce: the word map", () => {
   assert.equal(pronounce("AXA runs on macOS and WSL."), "ax uh runs on mac O S and W S L.");
-  assert.equal(pronounce("npm and git, then a PR for the README.md."), "N P M and git, then a P R for the read me.");
+  assert.equal(pronounce("npm and git, then a PR for the README.md."), "N P M and git, then a pull request for the read me.");
   assert.equal(pronounce("The CLI, the TUI and the UI call the API with a URL."), "The C L I, the T U I and the U I call the A P I with a URL.".replace("URL", "U R L"));
   assert.equal(pronounce("It's ok, the JSON is fine. OK?"), "It's okay, the jason is fine. okay?");
   assert.equal(pronounce("Saved in ~/ for you."), "Saved in home folder for you.");

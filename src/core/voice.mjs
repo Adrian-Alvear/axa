@@ -4,6 +4,7 @@
 //    Linux spd-say or espeak). Any Kokoro failure falls back to these for that reply.
 // Off by default; turned on in the hub's settings (~/.axa/ui.json "voice": "on") or with AXA_VOICE=1.
 // ui.json "voiceEngine": "kokoro" | "system"; with no choice, Kokoro is used when it's installed.
+// ui.json "voiceMoreHint": false stops the closing "You can read the rest on screen." (default: said).
 //
 // The text never goes on a command line for the system voices: it's written to a private temp file the speaker
 // reads, and removed after. Kokoro gets it over the resident speaker's stdin (the CLI fallback: one argv entry, no shell).
@@ -14,6 +15,7 @@ import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { files, isWsl } from "../paths.mjs";
 import * as K from "./kokoro.mjs";
+import { pronounce } from "./speech.mjs";
 
 const has = (c) => spawnSync("which", [c], { stdio: "ignore" }).status === 0;
 
@@ -26,6 +28,7 @@ export function settings() {
   const rate = Math.max(-2, Math.min(2, Number(cfg.voiceRate) || 0));
   const engineChoice = ["kokoro", "system"].includes(cfg.voiceEngine) ? cfg.voiceEngine : "";
   return { on, name: typeof cfg.voiceName === "string" ? cfg.voiceName : "", rate, forced: env === "1" || env === "0",
+    moreHint: cfg.voiceMoreHint !== false, // "You can read the rest on screen." after a shortened reply
     engineChoice, engine: pickEngine(engineChoice, K.state().installed) };
 }
 // your explicit choice wins (a chosen-but-missing Kokoro still falls back, per reply); no choice: Kokoro if installed
@@ -283,73 +286,5 @@ export async function info() {
   };
 }
 
-// ---------- pronunciation: one table, applied to what's said (harmless for the system voices) ----------
-// Kokoro silently drops words its lexicon doesn't know (e.g. "macOS", and "axa" itself), so they're spelled out here.
-export const PRONOUNCE = [
-  ["macOS", "mac O S"], ["WSL", "W S L"], ["npm", "N P M"], ["git", "git"], ["GitHub", "git hub"], ["AXA", "ax uh"],
-  ["JSON", "jason"], ["README(?:\\.md)?", "read me"], ["CLI", "C L I"], ["UI", "U I"], ["TUI", "T U I"],
-  ["API", "A P I"], ["URL", "U R L"], ["PR", "P R"], ["ok", "okay"],
-];
-const PRON_RE = PRONOUNCE.map(([w, say]) => [new RegExp(`(?<![\\w~/.-])${w}(?![\\w-])`, "gi"), say]);
-export function pronounce(t) {
-  let x = String(t);
-  for (const [re, say] of PRON_RE) x = x.replace(re, say);
-  return x.replace(/(^|\s)~\/(?=\s|[.,!?;:]|$)/g, "$1home folder");
-}
-
-// ---------- a reply, made speakable ----------
-const SHORT = 350;
-export function toSpeech(md) {
-  let t = String(md || "").replace(/\r\n?/g, "\n");
-  let saidCode = false, saidTable = false;
-  const mark = (kind) => {
-    if (kind === "code") { if (saidCode) return "\n\n"; saidCode = true; return "\n\nThere's code on screen.\n\n"; }
-    if (saidTable) return "\n\n"; saidTable = true; return "\n\nThere's a table on screen.\n\n";
-  };
-  // fenced code blocks (an unclosed one runs to the end)
-  t = t.replace(/^\s*(```|~~~)[^\n]*\n[\s\S]*?(?:^\s*\1[^\n]*$|(?![\s\S]))/gm, () => mark("code"));
-  // tables: two or more lines of | cells |
-  t = t.replace(/(?:^[ \t]*\|.*\|[ \t]*(?:\n|$)){2,}/gm, () => mark("table"));
-  const lines = t.split("\n").map((l) => {
-    if (/^\s*([-*_])(\s*\1){2,}\s*$/.test(l)) return ""; // a rule
-    let x = l.replace(/^\s*>+\s?/, "");
-    const heading = /^\s*#{1,6}\s+/.test(x), bullet = /^\s*(?:[-*+•]|\d+[.)])\s+/.test(x);
-    x = x.replace(/^\s*#{1,6}\s+/, "").replace(/^\s*(?:[-*+•]|\d+[.)])\s+(?:\[[ xX]\]\s+)?/, "");
-    x = inline(x).trim();
-    // headings and bullets become sentences
-    if ((heading || bullet) && x && !/[.!?:;]$/.test(x)) x += ".";
-    return x;
-  });
-  const paras = lines.join("\n").split(/\n\s*\n/).map((p) => p.replace(/\s+/g, " ").replace(/\s+([.,!?;:])/g, "$1").trim()).filter((p) => p && /[\p{L}\p{N}]/u.test(p));
-  if (!paras.length) return "";
-  // the short version: the first paragraph (with the next ones while it's still very short), cut at a sentence
-  let said = "", used = 0;
-  while (used < paras.length && said.length < 40) said = (said ? said + " " : "") + paras[used++];
-  let cut = used < paras.length;
-  if (said.length > SHORT) {
-    const head = said.slice(0, SHORT + 1);
-    const end = Math.max(...[". ", "! ", "? "].map((p) => head.lastIndexOf(p)));
-    said = end > 40 ? head.slice(0, end + 1) : head.slice(0, head.lastIndexOf(" ")).replace(/[,;:\s-]+$/, "") + ".";
-    cut = true;
-  }
-  return pronounce(cut ? `${said} The details are on screen.` : said).trim();
-}
-
-function inline(x) {
-  return x
-    .replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1") // images -> their alt text
-    .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1") // links -> their text
-    .replace(/<(https?:\/\/[^>\s]+)>/g, "$1")
-    .replace(/\bhttps?:\/\/[^\s)>\]]+/g, "a link")
-    .replace(/\bwww\.[^\s)>\]]+\.[a-z]{2,}[^\s)>\]]*/gi, "a link")
-    .replace(/`+([^`]*)`+/g, "$1") // inline code -> its text
-    .replace(/(?:\*\*|__)(.+?)(?:\*\*|__)/g, "$1")
-    .replace(/(^|[\s(])[*_]([^*_\s][^*_]*?)[*_](?=[\s).,!?:;]|$)/g, "$1$2")
-    .replace(/~~(.+?)~~/g, "$1")
-    .replace(/<\/?[a-z][^>]*>/gi, "") // stray html tags
-    // file paths: /abs/path, ~/x, ./x, C:\x, src/dir/file.ext (with an optional :line)
-    .replace(/(?:[A-Za-z]:\\[^\s,;)]+|(?:~|\.{1,2})?\/(?:[\w.@-]+\/)+[\w.@-]*|(?:~|\.{1,2})\/[\w.@-]+|\b[\w.-]+\/(?:[\w.@-]+\/)*[\w@-]+\.\w+)(?<!\.)(?::\d+(?::\d+)?)?/g, "a file path")
-    .replace(/\ba file path(?:(?:,\s*|\s+and\s+|\s+)a file path)+/g, "some file paths")
-    .replace(/\s*(?:→|->|=>)\s*/g, " to ")
-    .replace(/[*#|`]/g, " ");
-}
+// ---------- a reply, made speakable: the pure normalizer and the pronunciation map live in speech.mjs ----------
+export { PRONOUNCE, pronounce, toSpeech } from "./speech.mjs";

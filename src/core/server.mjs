@@ -37,8 +37,9 @@ S.setStatusSource(statusOf);
 onChatSeen(S.noteChat);
 // AXA's voice: only the commander's own session, only when voice is on (re-read from ui.json each time)
 onCommanderReply((id, message) => {
-  if (S.listSessions().find((s) => s.id === id)?.mode !== "axa" || !V.settings().on) return;
-  const text = V.toSpeech(safe(message));
+  const vs = V.settings();
+  if (S.listSessions().find((s) => s.id === id)?.mode !== "axa" || !vs.on) return;
+  const text = V.toSpeech(safe(message), { more: vs.moreHint });
   if (text) V.speak(text);
 });
 

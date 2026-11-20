@@ -22,7 +22,7 @@ import { hintKey, hitAt, makeArm, overlayHit, segSpans } from "./mouse.mjs";
 
 const out = process.stdout;
 const PREFIXES = { "C-b": 0x02, "C-a": 0x01, "C-g": 0x07, "C-\\": 0x1c };
-const DEFAULTS = { theme: "axa", prefix: "C-b", bell: true, motion: "full", voice: "off", voiceName: "", voiceRate: 0 };
+const DEFAULTS = { theme: "axa", prefix: "C-b", bell: true, motion: "full", voice: "off", voiceName: "", voiceRate: 0, voiceMoreHint: true };
 const KOKORO_KIND = { af: "American, female", am: "American, male", bf: "British, female", bm: "British, male" };
 const SPEEDS = { "-2": "slowest", "-1": "slow", 0: "normal", 1: "fast", 2: "fastest" };
 const MOTIONS = ["full", "reduced", "off"];
@@ -691,6 +691,7 @@ export async function runTui() {
       { label: "Voice engine", hint: voiceInfo ? (voiceInfo.engine === "kokoro" ? "Kokoro" : "System") + (voiceInfo.kokoro?.installed ? "" : " (Kokoro: not installed)") : cfg.voiceEngine === "kokoro" ? "Kokoro" : cfg.voiceEngine === "system" ? "System" : "automatic", value: "voiceEngine" },
       { label: "Voice name", hint: cfg.voiceName || (voiceInfo?.engine === "kokoro" ? "af_heart" : "default"), value: "voiceName" },
       { label: "Voice speed", hint: SPEEDS[cfg.voiceRate] || "normal", value: "voiceRate" },
+      { label: "Say when there's more on screen", hint: cfg.voiceMoreHint === false ? "off" : "on", value: "voiceMoreHint" },
       { label: "Test the voice", hint: "says \"AXA voice check.\"", value: "voiceTest" },
     ];
     const cycle = (arr, v) => arr[(arr.indexOf(v) + 1) % arr.length];
@@ -701,6 +702,7 @@ export async function runTui() {
       if (o.value === "bell") cfg.bell = !cfg.bell;
       if (o.value === "motion") { cfg.motion = cycle(MOTIONS, MOTIONS.includes(cfg.motion) ? cfg.motion : "full"); setMotion(motionNow()); }
       if (o.value === "voice") { if (voiceEnv) flash(`voice is forced ${voiceEnv} by AXA_VOICE`); else { cfg.voice = voiceOn() ? "off" : "on"; if (cfg.voice === "off") stopVoice(); } }
+      if (o.value === "voiceMoreHint") cfg.voiceMoreHint = cfg.voiceMoreHint === false;
       if (o.value === "voiceRate") cfg.voiceRate = cfg.voiceRate >= 2 ? -2 : (Math.round(Number(cfg.voiceRate)) || 0) + 1;
       if (o.value === "voiceTest") call("/api/voice/test", { method: "POST" }).then(() => flash("speaking…"), (e) => flash(`no voice: ${e.message}`));
       saveCfg(); prevRows = [];
