@@ -5,9 +5,9 @@ import { MORE, pronounce, sayPath, toSpeech } from "../src/core/speech.mjs";
 
 const cases = [
   ["real: pushed branch and commit", "Pushed: GitHub's `axa-v2-hub` is now at `0ba68ea` and includes mouse support.",
-    "Pushed: git hub's ax uh version 2 hub is now at a commit and includes mouse support."],
+    "Pushed: git hub's ax uh v2 hub is now at a commit and includes mouse support."],
   ["real: engine and mode bullets", "- **Engine:** Kokoro, with the voice **af_heart**.\n- **Mode: resident.** … about a second. The installer's own test sentence took 1.9 s.",
-    "Engine: coco row, with the voice af heart. Mode: resident. about a second. The installer's own test sentence took 1.9 seconds."],
+    "Engine: Kokoro, with the voice af heart. Mode: resident. about a second. The installer's own test sentence took 1.9 seconds."],
   ["real: download size and y/N", "It shows the download size (about 380 MB) and asks y/N.",
     "It shows the download size, about 380 megabytes, and asks yes or no."],
   ["real: restart the hub keys", "Restart your hub (`q`, then `axa`) after that to see everything.",
@@ -19,7 +19,7 @@ const cases = [
   ["spinner and middle dot", "⠹ Working on the reviewer · 2h 5m elapsed",
     "Working on the reviewer, 2 hours 5 minutes elapsed."],
   ["box separators and pointers", "Status: 3 sessions running │ 1 needs you ▸ axa-v2",
-    "Status: 3 sessions running, 1 needs you, ax uh version 2."],
+    "Status: 3 sessions running, 1 needs you, ax uh v2."],
   ["commit id and git stats", "Committed `e9eeb1e` (+40 −2).",
     "Committed a commit, 40 lines added, 2 removed."],
   ["two commit ids", "Two commits: c0d7d9c and 5fe6067.",
@@ -31,7 +31,7 @@ const cases = [
   ["a long path", "Saved to /home/me/projects/some-really-long-folder-name/generated_report_for_the_whole_week.json for you.",
     "Saved to a file path for you."],
   ["a folder path", "Kokoro lives in ~/.cache/voices/kokoro/ now.",
-    "coco row lives in the coco row folder now."],
+    "Kokoro lives in the kokoro folder now."],
   ["a URL", "Read https://github.com/k2-fsa/sherpa-onnx/releases for details.",
     "Read a link for details."],
   ["a command and an env setting", "Run `npm test -- --watch` or set `AXA_VOICE=1`.",
@@ -53,13 +53,13 @@ const cases = [
   ["slash between words, e.g., MCP, TTS", "Use the client/server split, e.g. for MCP and TTS.",
     "Use the client or server split, for example, for M C P and text to speech."],
   ["a long heading is not the whole short version", "## Kokoro voice install summary for this machine\n\nIt downloaded the model and played a test sentence on the speakers.\n\nMore below.",
-    "coco row voice install summary for this machine. It downloaded the model and played a test sentence on the speakers. You can read the rest on screen."],
+    "Kokoro voice install summary for this machine. It downloaded the model and played a test sentence on the speakers. You can read the rest on screen."],
   ["heading then a table", "## Done\n\n| file | change |\n|---|---|\n| a | b |\n\nThat's all.",
     "Done. There's a table on screen. That's all."],
   ["emoji dropped", "🚀 Shipped! 🎉 The hub runs in tmux now.",
     "Shipped! The hub runs in tee mux now."],
   ["bold label", "Settings: **Voice** on, speed normal, engine Kokoro.",
-    "Settings: Voice on, speed normal, engine coco row."],
+    "Settings: Voice on, speed normal, engine Kokoro."],
   ["quotes removed, apostrophes kept", "Quote: \"it works\" and 'fine', it's GitHub’s copy.",
     "Quote: it works and fine, it's git hub's copy."],
   ["nested bullets collapse", "Pending (2):\n  - restart the daemon\n    - then the hub\n  - check the repo",
@@ -90,7 +90,7 @@ test("speech: path names", () => {
 });
 
 test("speech: the word map (AXA is said 'ax uh'; PR only when it's the abbreviation)", () => {
-  assert.equal(pronounce("AXA, tmux, MCP, TTS, sherpa-onnx, Kokoro, PRs and a PR."), "ax uh, tee mux, M C P, text to speech, sherpa onnx, coco row, pull requests and a pull request.");
+  assert.equal(pronounce("AXA, tmux, MCP, TTS, sherpa-onnx, Kokoro, PRs and a PR."), "ax uh, tee mux, M C P, text to speech, sherpa onnx, Kokoro, pull requests and a pull request.");
   assert.equal(pronounce("a pr and prs stay"), "a pr and prs stay");
   const once = pronounce("AXA on WSL2 with Node.js, HTTPS and venv");
   assert.equal(once, "ax uh on W S L 2 with node J S, H T T P S and vee env");

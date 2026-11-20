@@ -30,10 +30,11 @@ export const kokoroDir = () => process.env.AXA_KOKORO_DIR || join(home, "voices"
 export const sidOf = (name) => { const i = VOICES.indexOf(name); return i < 0 ? VOICES.indexOf(DEFAULT_VOICE) : i; };
 // AXA's neutral rate -2..2 -> Kokoro's speed (CLI: --kokoro-length-scale = 1 / speed)
 export const speedOf = (rate = 0) => Math.round((1 + Math.max(-2, Math.min(2, Number(rate) || 0)) * 0.15) * 100) / 100;
-export function cliArgs({ model, sid, speed = 1, out, text, threads = THREADS }) {
+// extraLexicon: a second lexicon file (the reply's out-of-lexicon words), read before the model's own
+export function cliArgs({ model, sid, speed = 1, out, text, threads = THREADS, extraLexicon }) {
   return [
     `--kokoro-model=${join(model, "model.onnx")}`, `--kokoro-voices=${join(model, "voices.bin")}`,
-    `--kokoro-tokens=${join(model, "tokens.txt")}`, `--kokoro-lexicon=${join(model, "lexicon-us-en.txt")}`,
+    `--kokoro-tokens=${join(model, "tokens.txt")}`, `--kokoro-lexicon=${extraLexicon ? extraLexicon + "," : ""}${join(model, "lexicon-us-en.txt")}`,
     `--kokoro-length-scale=${Math.round((1 / speed) * 1000) / 1000}`,
     `--num-threads=${threads}`, `--sid=${sid}`, `--output-filename=${out}`, text,
   ];
@@ -99,12 +100,13 @@ export class Speaker {
   onLine(l) {
     let m; try { m = JSON.parse(l); } catch { return; }
     if (m.ready) { this.log(`kokoro speaker ready (model loaded in ${m.load}s)`); return; }
+    if (m.lexicon !== undefined) { this.log(m.error ? `kokoro extra lexicon failed: ${m.error}` : `kokoro extra lexicon: ${m.lexicon} words (loaded in ${m.load}s)`); return; }
     const p = this.pending.get(m.id);
     if (!p) return;
     this.pending.delete(m.id);
     if (m.ok) p.resolve({ out: m.out, secs: m.secs, audio: m.audio }); else p.reject(new Error(m.error || "synthesis failed"));
   }
-  synth({ text, sid = 3, speed = 1, out }, timeoutMs = 8000) {
+  synth({ text, phonemes, extra, sid = 3, speed = 1, out }, timeoutMs = 8000) {
     clearTimeout(this.idle);
     this.start();
     const id = ++this.seq;
@@ -112,7 +114,7 @@ export class Speaker {
       const t = setTimeout(() => { if (this.pending.delete(id)) { this.send({ cancel: id }); this.armIdle(); reject(new Error(`timed out after ${timeoutMs / 1000}s`)); } }, timeoutMs);
       const fin = (f) => (v) => { clearTimeout(t); this.armIdle(); f(v); };
       this.pending.set(id, { resolve: fin(resolve), reject: fin(reject) });
-      if (!this.send({ id, text, sid, speed, out }) && this.pending.delete(id)) fin(reject)(new Error("couldn't reach the Kokoro speaker"));
+      if (!this.send({ id, text, ...(extra && Object.keys(extra).length ? { extra, phonemes } : {}), sid, speed, out }) && this.pending.delete(id)) fin(reject)(new Error("couldn't reach the Kokoro speaker"));
     });
   }
   send(o) { try { return this.child ? (this.child.stdin.write(JSON.stringify(o) + "\n"), true) : false; } catch { return false; } }
@@ -131,11 +133,11 @@ export class Speaker {
 }
 
 // ---------- the CLI, one process per reply (no venv) ----------
-export function cliSynth({ cli, model, text, sid, speed, out }, timeoutMs = 15000, spawnFn = spawn) {
+export function cliSynth({ cli, model, text, sid, speed, out, extraLexicon }, timeoutMs = 15000, spawnFn = spawn) {
   let child;
   const p = new Promise((resolve, reject) => {
     const t0 = Date.now();
-    child = spawnFn(cli, cliArgs({ model, sid, speed, out, text }), { stdio: ["ignore", "ignore", "pipe"] });
+    child = spawnFn(cli, cliArgs({ model, sid, speed, out, text, extraLexicon }), { stdio: ["ignore", "ignore", "pipe"] });
     let err = "";
     child.stderr?.on("data", (d) => { err = (err + d).slice(-2000); });
     const t = setTimeout(() => { try { child.kill(); } catch {} reject(new Error(`timed out after ${timeoutMs / 1000}s`)); }, timeoutMs);

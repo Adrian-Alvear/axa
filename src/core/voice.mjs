@@ -10,12 +10,13 @@
 // reads, and removed after. Kokoro gets it over the resident speaker's stdin (the CLI fallback: one argv entry, no shell).
 import { spawn, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { copyFileSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { copyFileSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { files, isWsl } from "../paths.mjs";
 import * as K from "./kokoro.mjs";
 import { pronounce } from "./speech.mjs";
+import * as P from "./phonemes.mjs";
 
 const has = (c) => spawnSync("which", [c], { stdio: "ignore" }).status === 0;
 
@@ -144,18 +145,38 @@ export const SYNTH_TIMEOUT = 8000;
 export async function kokoroWav(text, s, job = newJob(), out = join(tmpdir(), `axa-voice-${randomBytes(6).toString("hex")}.wav`)) {
   const st = K.state();
   if (!st.installed) throw new Error(`Kokoro is ${st.why}`);
-  const req = { text: pronounce(text), sid: K.sidOf(s.name), speed: K.speedOf(s.rate), out };
+  const said = pronounce(text);
+  // every word made speakable (Kokoro skips words its lexicon lacks, and all numbers): phonemes.mjs
+  let ph = { text: said, chunks: [], oov: [], extra: {} };
+  try { ph = P.phonemize(said, P.loadLexicon(join(st.model, "lexicon-us-en.txt"))); } catch (e) { log(`phonemes skipped (${e.message})`); }
+  logOov(oovLogFile(st.dir), ph.oov);
+  const req = { text: ph.text, extra: ph.extra, phonemes: ph.chunks, sid: K.sidOf(s.name), speed: K.speedOf(s.rate), out };
   const t0 = Date.now();
   if (st.mode === "resident") {
     const sp = residentSpeaker(st), cancel = () => sp.cancel();
     job.kills.add(cancel);
     try { await sp.synth(req, SYNTH_TIMEOUT); } finally { job.kills.delete(cancel); }
   } else {
-    const p = K.cliSynth({ cli: st.cli, model: st.model, ...req }, SYNTH_TIMEOUT), kill = () => p.kill();
+    // the CLI loads the model for each reply: the missing words go in a second lexicon file
+    const extraLexicon = Object.keys(ph.extra).length ? out.replace(/\.wav$/, "") + ".lexicon.txt" : undefined;
+    if (extraLexicon) writeFileSync(extraLexicon, P.lexiconText(ph.extra), { mode: 0o600 });
+    const p = K.cliSynth({ cli: st.cli, model: st.model, text: ph.text, sid: req.sid, speed: req.speed, out, extraLexicon }, SYNTH_TIMEOUT), kill = () => p.kill();
     job.kills.add(kill);
-    try { await p; } finally { job.kills.delete(kill); }
+    try { await p; } finally { job.kills.delete(kill); if (extraLexicon) try { unlinkSync(extraLexicon); } catch {} }
   }
   return { out, secs: (Date.now() - t0) / 1000 };
+}
+// Out-of-lexicon words, counted for later tuning: <kokoro dir>/oov.json {"word": {"n": 3, "how": "morph"}}.
+// AXA_OOV_LOG names another file, or "0" for none. Best effort: a failed write never stops a reply.
+export const oovLogFile = (dir, env = process.env.AXA_OOV_LOG) => (env === "0" ? null : env || join(dir, "oov.json"));
+export function logOov(file, oov) {
+  if (!file || !oov?.length) return;
+  let db = {};
+  try { db = JSON.parse(readFileSync(file, "utf8")) || {}; } catch {}
+  for (const { word, how } of oov) { const k = String(word).toLowerCase(); db[k] = { n: (Number(db[k]?.n) || 0) + 1, how }; }
+  const keep = Object.entries(db).sort((a, b) => b[1].n - a[1].n).slice(0, 2000);
+  const tmp = `${file}.${process.pid}.tmp`;
+  try { writeFileSync(tmp, JSON.stringify(Object.fromEntries(keep), null, 1) + "\n"); renameSync(tmp, file); } catch { try { unlinkSync(tmp); } catch {} }
 }
 async function kokoroSpeak(text, s, job) {
   const temp = wslNow() ? windowsTemp() : null; // looked up while the wav is made

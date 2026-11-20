@@ -7,12 +7,13 @@
 // ---------- pronunciation: one table, applied last ----------
 // Words Kokoro's lexicon doesn't have (it drops them silently) are spelled the way they're said. "AXA" is said
 // "ax uh", exactly as the table below spells it. Entries are case-insensitive unless marked "cs".
-// Checked and left alone (Kokoro says them well): Opus, Sonnet, hub, daemon, repo, git.
+// Checked and left alone (in Kokoro's lexicon): Kokoro, Opus, Sonnet, hub, daemon, repo, git. Words it lacks are
+// made speakable by phonemes.mjs, so this table is only for words that should be said differently.
 export const PRONOUNCE = [
   ["macOS", "mac O S"], ["WSL2", "W S L 2"], ["WSL", "W S L"], ["npm", "N P M"], ["npx", "N P X"], ["git", "git"],
   ["GitHub", "git hub"], ["AXA", "ax uh"], ["JSON", "jason"], ["README(?:\\.md)?", "read me"], ["CLI", "C L I"],
   ["UI", "U I"], ["TUI", "T U I"], ["API", "A P I"], ["URL", "U R L"], ["PRs", "pull requests", "cs"],
-  ["PR", "pull request", "cs"], ["ok", "okay"], ["sherpa-onnx", "sherpa onnx"], ["Kokoro", "coco row"],
+  ["PR", "pull request", "cs"], ["ok", "okay"], ["sherpa-onnx", "sherpa onnx"],
   ["tmux", "tee mux"], ["MCP", "M C P"], ["TTS", "text to speech"], ["LLM", "L L M"], ["SSH", "S S H"],
   ["HTTPS?", (m) => m.toUpperCase().split("").join(" ")], ["CPU", "C P U"], ["GPU", "G P U"], ["SDK", "S D K"],
   ["CI", "C I", "cs"], ["venv", "vee env"], ["stdin", "standard in"], ["stdout", "standard out"],
@@ -97,7 +98,7 @@ export function sayNumbers(t) {
     .replace(/\b(\d+)x\b/g, "$1 times")
     .replace(/(\d)\s?[×x]\s?(\d)/g, "$1 by $2")
     .replace(/\b(\d{1,2}):(\d{2})(?!\d|:\d)/g, (a, h, m) => `${h} ${m.startsWith("0") ? `oh ${m[1]}` : m}`)
-    .replace(/(^|[^\w.-])v(\d+(?:\.\d+)*)\b/g, "$1version $2")
+    .replace(/(^|[^\w.-])v(\d+(?:\.\d+)+)\b/g, "$1version $2")
     .replace(/(^|[\s(])#(\d+)\b/g, "$1number $2")
     .replace(/(\d)\s?%/g, "$1 percent");
 }
