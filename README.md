@@ -140,6 +140,7 @@ axa chat             talk to the commander here, as a plain Claude Code session
 axa web              the web console in your browser (same sessions, also works on your phone)
 axa status [--json]  what's running, what needs you first
 axa review [path] [--base <sha>]   a milestone review of a repo's recent work
+axa review --reset-milestone [path]   forget the repo's stored milestone (the next review's base)
 axa attach <name>    one session in this terminal, no hub around it (Ctrl-] detaches)
 axa stop [--all]     stop the background daemon (--all also ends every session)
 axa restart          restart the daemon; sessions keep running
@@ -213,6 +214,9 @@ depends on `reviewer.mode`:
   what its message says, problems across commits, regressions, missing tests, docs, security, leftovers.
   The base is `--base` if given, else the last milestone of that repo and branch (`~/.axa/milestones.json`),
   else the merge-base with the upstream (`@{upstream}`, or `origin/<branch>`), else `HEAD~20`.
+  Over budget, source and logic files (`src/`, `lib/`, `hooks/`, `mcp/`, `bin/`, most lines changed
+  first) are inlined before other code, then tests, then docs and fixtures; every file left out is
+  listed. `axa review --reset-milestone [path]` forgets the stored milestone of that repo and branch.
   Worker turns get no model review in this mode; the verify gate still runs.
 - **The fixer loop.** When the confirmed verdict is `block` (or a `warn` with confirmed high findings),
   the daemon opens a new worker session named **fixer** in that repo (like `open_session`: accept-edits,
@@ -220,10 +224,12 @@ depends on `reviewer.mode`:
   quote, problem, evidence), fix exactly these, add or adjust tests, run the checks, commit locally as
   `Fix review findings: …`, change nothing else, never push. When the fixer finishes, the reviewer
   re-reviews the same base..new HEAD with the previous findings listed. At most 3 fix rounds
-  (`milestone_rounds`); then the commander hears what's still open (the fixer stays open). On approve
-  (or a warn with nothing serious) the milestone is recorded, the fixer is closed and the commander gets
-  the verdict and the fix commits: `milestone review <repo>: ✓ approve · …`. The fixer never reviews;
-  the reviewer never edits.
+  (`milestone_rounds`); then the commander hears what's still open (the fixer stays open). Only an
+  approve records the milestone (the next review starts from it). A warn with nothing serious ends the
+  review the same way but leaves the base where it was, so its findings are in the next review's range
+  again; an error never records. Either way the fixer is closed and the commander gets the verdict and
+  the fix commits: `milestone review <repo>: ✓ approve · …`. The fixer never reviews; the reviewer
+  never edits.
 - **`"turn"`: every code-changing turn.** When a project session finishes a turn that changed code (it
   edited files, or git moved), the reviewer runs before the commander hears about it (below).
 - **`"off"`**, or `AXA_REVIEWER=0` in the daemon's environment: no reviews.
@@ -250,7 +256,8 @@ depends on `reviewer.mode`:
   running milestone reviews (with their round) in `list_sessions`. A running review shows what it is
   doing (`reviewing… (checks running: npm test)`). If the reviewer times out (a turn review after 15
   minutes, a milestone review after 30) or fails, AXA carries on, says the work wasn't reviewed and how
-  far the reviewer got.
+  far the reviewer got. The limit is wall-clock time (a laptop's sleep counts), and at the limit the
+  reviewer and every process it started (a hanging test run, say) are killed.
 - **Settings** in `~/.axa/policy.json`, for all projects or one:
   `{ "default": { "reviewer": { "mode": "milestone", "model": "claude-opus-5-5", "effort": "high", "timeout_ms": 900000, "milestone_timeout_ms": 1800000, "milestone_rounds": 3 } }, "projects": { "notes": { "reviewer": { "mode": "off" } } } }`
   (`"mode": "on"`, the old name, means `"turn"`). Each review is a real, billed model run.

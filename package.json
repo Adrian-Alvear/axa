@@ -3,6 +3,9 @@
   "private": true,
   "type": "module",
   "description": "AXA: a hub for your Claude Code sessions, chats and agents",
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
   "dependencies": {
     "@xterm/addon-fit": "^0.10.0",
     "@xterm/addon-search": "^0.15.0",

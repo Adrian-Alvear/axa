@@ -1,7 +1,11 @@
 import { createRequire } from "node:module";
-const require = createRequire("/home/adrianwsl/axa/package.json");
+import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
+// the AXA checkout to measure: AXA_ROOT, else the repo this folder is in
+const ROOT = process.env.AXA_ROOT ? pathToFileURL(resolve(process.env.AXA_ROOT) + "/") : new URL("../../", import.meta.url);
+const require = createRequire(new URL("package.json", ROOT));
 const { Terminal } = require("@xterm/headless");
-const { LiveView } = await import("/home/adrianwsl/axa/src/tui/live.mjs");
+const { LiveView } = await import(new URL("src/tui/live.mjs", ROOT));
 for (const [cols, rows] of [[120, 40], [200, 55]]) {
   const term = new Terminal({ cols, rows, scrollback: 0, allowProposedApi: true });
   let s = ""; for (let y = 0; y < rows; y++) s += `\x1b[38;2;${y};100;200m` + "colored text ".repeat(Math.floor(cols / 13)) + "\x1b[0m\r\n";

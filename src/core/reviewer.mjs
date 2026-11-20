@@ -253,17 +253,28 @@ export function progressOf(line) {
 const resultOf = (out) => out.split("\n").reverse().find((l) => /^\s*\{.*"type"\s*:\s*"result"/.test(l)) || out;
 // onProgress(text, steps): each step the reviewer takes. On a timeout the verdict is "error" and says
 // how far it got.
+// The limit is a wall-clock deadline (Date.now(), checked every few seconds as well as by a plain timer:
+// Node's timers run on the monotonic clock, which stands still while the machine or the WSL VM sleeps,
+// so a 30 min timer could fire hours of real time later). At the limit the reviewer's whole process
+// group goes (it runs detached, as its own group) plus any descendants that left the group: a check
+// the reviewer started (a hanging `node --test`) must not outlive it.
 export function runReviewer({ cwd, prompt, settings = DEFAULTS, env = process.env, onProgress = () => {} }) {
   const cmd = (env.AXA_REVIEWER_CMD || "claude").trim().split(/\s+/);
   const childEnv = { ...env, AXA_ROLE: "reviewer" };
   delete childEnv.AXA_TERMINAL_ID; delete childEnv.TMUX; delete childEnv.TMUX_PANE; // never traced as the worker's session
   return new Promise((done) => {
-    let out = "", err = "", finished = false, line = "", progress = "starting", steps = 0;
-    const end = (r) => { if (!finished) { finished = true; clearTimeout(timer); done(r); } };
-    let child;
-    try { child = spawn(cmd[0], [...cmd.slice(1), ...reviewerArgs(settings)], { cwd, env: childEnv, stdio: ["pipe", "pipe", "pipe"] }); }
+    let out = "", err = "", finished = false, line = "", progress = "starting", steps = 0, timer = null, poll = null, child;
+    const end = (r) => { if (!finished) { finished = true; clearTimeout(timer); clearInterval(poll); done(r); } };
+    try { child = spawn(cmd[0], [...cmd.slice(1), ...reviewerArgs(settings)], { cwd, env: childEnv, stdio: ["pipe", "pipe", "pipe"], detached: process.platform !== "win32" }); }
     catch (e) { return end({ verdict: "error", summary: `couldn't start the reviewer: ${e.message}`, checks: [], findings: [] }); }
-    const timer = setTimeout(() => { child.kill("SIGTERM"); setTimeout(() => child.kill("SIGKILL"), 5000).unref?.(); end({ verdict: "error", summary: `the reviewer timed out after ${Math.round(settings.timeout_ms / 60000)} min (it got as far as: ${progress}, ${steps} step${steps === 1 ? "" : "s"})`, checks: [], findings: [] }); }, settings.timeout_ms);
+    const ms = settings.timeout_ms, deadline = Date.now() + ms;
+    const timeUp = () => {
+      if (finished) return;
+      killTree(child.pid);
+      end({ verdict: "error", summary: `the reviewer timed out after ${Math.max(1, Math.round(ms / 60000))} min (got as far as: ${progress}, ${steps} step${steps === 1 ? "" : "s"})`, checks: [], findings: [] });
+    };
+    timer = setTimeout(timeUp, ms);
+    poll = setInterval(() => { if (Date.now() >= deadline) timeUp(); }, Math.min(ms, 5000));
     child.stdout.on("data", (c) => {
       c = String(c);
       if (out.length < 8 << 20) out += c;
@@ -285,6 +296,31 @@ export function runReviewer({ cwd, prompt, settings = DEFAULTS, env = process.en
     child.stdin.on("error", () => {});
     child.stdin.end(prompt);
   });
+}
+
+// pid and every process below it (from ps), deepest last
+export function descendants(pid) {
+  const r = spawnSync("ps", ["-A", "-o", "pid=,ppid="], { encoding: "utf8", timeout: 5000 });
+  if (r.status !== 0) return [];
+  const kids = new Map();
+  for (const l of r.stdout.split("\n")) {
+    const [p, pp] = l.trim().split(/\s+/).map(Number);
+    if (p && pp) (kids.get(pp) || kids.set(pp, []).get(pp)).push(p);
+  }
+  const out = [], todo = [pid];
+  while (todo.length) for (const k of kids.get(todo.shift()) || []) { out.push(k); todo.push(k); }
+  return out;
+}
+// SIGTERM the process group and the descendants now, SIGKILL whatever is left 3 s later
+export function killTree(pid) {
+  if (!pid) return;
+  const sig = (s, pids) => {
+    if (process.platform !== "win32") try { process.kill(-pid, s); } catch {}
+    for (const p of pids) try { process.kill(p, s); } catch {}
+  };
+  const pids = process.platform === "win32" ? [pid] : [pid, ...descendants(pid)];
+  sig("SIGTERM", pids);
+  setTimeout(() => sig("SIGKILL", pids), 3000).unref?.();
 }
 
 // The gate's instructions (agents/reviewer-gate.md, its frontmatter left out: the file also sits in the

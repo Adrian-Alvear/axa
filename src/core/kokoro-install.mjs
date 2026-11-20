@@ -2,7 +2,11 @@
 // Install: a Python venv with sherpa-onnx (or, without python3 -m venv, sherpa-onnx's prebuilt CLI), the Kokoro
 // model, a test sentence, then ui.json "voiceEngine": "kokoro", "voiceName": "af_heart". Safe to run again.
 // AXA_KOKORO_DIR moves the install; AXA_KOKORO_MODEL_SRC (a .tar.bz2 or an extracted model folder) skips the download.
+// Every download is checked before it is unpacked: its sha256 must match the digest GitHub publishes for the
+// release asset (the releases API's "digest") and the pinned value below, when there is one; a mismatch, or
+// no digest to check against at all, and nothing is unpacked.
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { createWriteStream, existsSync, mkdirSync, readFileSync, rmSync, rmdirSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -15,6 +19,15 @@ import * as K from "./kokoro.mjs";
 const MB = 1024 * 1024;
 const MODEL_MB = 334, MODEL_DISK_MB = 384, RUNTIME_MB = 30;
 const out = process.stdout;
+
+// sha256 of the exact assets the installer uses, for when the releases API can't be reached (computed from
+// the downloaded files, and equal to the digests GitHub publishes for them)
+export const PINNED = {
+  "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-multi-lang-v1_0.tar.bz2": "60703707bc05ccd48d60e1eb723f38b07d6e474795a0b6a588d7220400e0f7a4",
+  "https://github.com/k2-fsa/sherpa-onnx/releases/download/v2.0.2/sherpa-onnx-v2.0.2-linux-x64-shared.tar.bz2": "e7f65778bfb891ec98db56c2cfc37b968d7f56e57271986a8dd2cd0c21d002c9",
+};
+// what the installer reaches outside itself (tests put a fake fetch in)
+export const net = { fetch: (...a) => globalThis.fetch(...a), pinned: PINNED };
 
 // the prebuilt sherpa-onnx CLI for this machine (only used when python3 -m venv isn't available)
 export function cliTarball(platform = process.platform, arch = process.arch) {
@@ -50,26 +63,54 @@ async function confirm(q, yes) {
 const run = (cmd, args, opts = {}) => spawnSync(cmd, args, { stdio: "inherit", ...opts }).status === 0;
 const quiet = (cmd, args) => spawnSync(cmd, args, { stdio: "ignore" }).status === 0;
 
+// The sha256 GitHub publishes for a release asset (https://github.com/<owner>/<repo>/releases/download/<tag>/<name>),
+// or null (not a GitHub release URL, the API unreachable or rate-limited, no digest published)
+export async function publishedDigest(url) {
+  const m = /^https:\/\/github\.com\/([\w.-]+)\/([\w.-]+)\/releases\/download\/([^/]+)\/([^/?#]+)$/.exec(url);
+  if (!m) return null;
+  const [, owner, repo, tag, name] = m;
+  try {
+    const res = await net.fetch(`https://api.github.com/repos/${owner}/${repo}/releases/tags/${encodeURIComponent(decodeURIComponent(tag))}`, { headers: { accept: "application/vnd.github+json", "user-agent": "axa-installer" } });
+    if (!res.ok) return null;
+    const asset = ((await res.json())?.assets || []).find((a) => a?.name === decodeURIComponent(name));
+    const d = /^sha256:([0-9a-f]{64})$/i.exec(String(asset?.digest || ""));
+    return d ? d[1].toLowerCase() : null;
+  } catch { return null; }
+}
+// The digests a download must match: the published one and the pinned one (both, when both are known)
+export async function expectedDigests(url) {
+  const want = [await publishedDigest(url), net.pinned[url]].filter(Boolean).map((d) => d.toLowerCase());
+  return [...new Set(want)];
+}
+
 async function download(url, file, label) {
-  const res = await fetch(url, { redirect: "follow" });
+  const res = await net.fetch(url, { redirect: "follow" });
   if (!res.ok || !res.body) throw new Error(`download failed: ${res.status} ${res.statusText} (${url})`);
   const total = Number(res.headers.get("content-length")) || 0;
   let got = 0, shown = -1;
-  const body = Readable.fromWeb(res.body);
+  const body = Readable.fromWeb(res.body), hash = createHash("sha256");
   body.on("data", (c) => {
-    got += c.length;
+    got += c.length; hash.update(c);
     const pct = total ? Math.floor((got / total) * 100) : -1;
     if (pct !== shown) { shown = pct; out.write(`\r  ${label}: ${total ? `${pct}% (${Math.round(got / MB)} of ${Math.round(total / MB)} MB)` : `${Math.round(got / MB)} MB`}   `); }
   });
   await pipeline(body, createWriteStream(file));
   out.write("\n");
+  return hash.digest("hex");
 }
-async function fetchAndExtract(url, into, label, dir) {
+// Download, check the sha256, then unpack; on a mismatch the file is deleted and nothing is unpacked
+export async function fetchAndExtract(url, into, label, dir) {
   mkdirSync(join(dir, "dl"), { recursive: true });
-  mkdirSync(into, { recursive: true });
+  const want = await expectedDigests(url);
+  if (!want.length) throw new Error(`no sha256 to check ${url.split("/").pop()} against (GitHub's releases API didn't answer and it isn't pinned); try again later`);
   const file = join(dir, "dl", url.split("/").pop());
-  await download(url, file, label);
-  console.log(`  unpacking ${label}…`);
+  const got = await download(url, file, label);
+  if (want.some((d) => d !== got)) {
+    try { unlinkSync(file); } catch {}
+    throw new Error(`${label}: the download's sha256 (${got}) doesn't match the expected ${want.join(" / ")}; not unpacked`);
+  }
+  console.log(`  ✓ sha256 checked; unpacking ${label}…`);
+  mkdirSync(into, { recursive: true });
   if (!run("tar", ["-xjf", file, "-C", into])) throw new Error(`couldn't unpack ${file} (is bzip2 installed?)`);
   unlinkSync(file);
 }

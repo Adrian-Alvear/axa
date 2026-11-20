@@ -159,3 +159,61 @@ test("speaker: timeout, cancel (stop) and the idle stop", { skip: !hasPython && 
     assert.equal(sp.alive, false, "stopped after being idle");
   } finally { sp.kill(); }
 });
+
+// ---------- downloads are checked before they're unpacked ----------
+test("fetchAndExtract: the sha256 must match GitHub's published digest and the pin; a mismatch is never unpacked", async () => {
+  const I = await import("../src/core/kokoro-install.mjs");
+  const K = await import("../src/core/kokoro.mjs");
+  const { createHash } = await import("node:crypto");
+  const { existsSync, readdirSync } = await import("node:fs");
+  // the pins cover the exact assets the installer fetches on this kind of machine
+  assert.ok(I.PINNED[K.MODEL_URL], "the model is pinned");
+  assert.ok(I.PINNED[cliTarball("linux", "x64").url], "the linux-x64 CLI is pinned");
+  // a small real .tar.bz2 to serve
+  const src = tmp(), dir = tmp();
+  mkdirSync(join(src, "pkg")); writeFileSync(join(src, "pkg", "hello.txt"), "hi");
+  const tarball = join(src, "pkg.tar.bz2");
+  assert.equal(spawnSync("tar", ["-cjf", tarball, "-C", src, "pkg"]).status, 0);
+  const bytes = readFileSync(tarball), good = createHash("sha256").update(bytes).digest("hex"), bad = "0".repeat(64);
+  const url = "https://github.com/acme/tool/releases/download/v1.0/pkg.tar.bz2";
+  const calls = [];
+  const fakeFetch = (digest, { api = true } = {}) => async (u) => {
+    calls.push(u);
+    if (u.startsWith("https://api.github.com/")) {
+      assert.equal(u, "https://api.github.com/repos/acme/tool/releases/tags/v1.0");
+      if (!api) return new Response("rate limited", { status: 403 });
+      return Response.json({ assets: [{ name: "other.tar.bz2", digest: `sha256:${bad}` }, { name: "pkg.tar.bz2", digest: digest && `sha256:${digest}` }] });
+    }
+    assert.equal(u, url);
+    return new Response(bytes, { headers: { "content-length": String(bytes.length) } });
+  };
+  const saved = { ...I.net };
+  const into = (n) => join(dir, `into-${n}`);
+  try {
+    I.net.pinned = {};
+    // the published digest matches: unpacked, download removed
+    I.net.fetch = fakeFetch(good);
+    await I.fetchAndExtract(url, into(1), "pkg", dir);
+    assert.equal(readFileSync(join(into(1), "pkg", "hello.txt"), "utf8"), "hi");
+    assert.equal(existsSync(join(dir, "dl", "pkg.tar.bz2")), false);
+    // it doesn't: refused, nothing unpacked, the download deleted
+    I.net.fetch = fakeFetch(bad);
+    await assert.rejects(I.fetchAndExtract(url, into(2), "pkg", dir), /sha256 .* doesn't match .*not unpacked/);
+    assert.equal(existsSync(into(2)), false);
+    assert.deepEqual(readdirSync(join(dir, "dl")), []);
+    // no published digest (or the API is down): the pinned value decides
+    I.net.fetch = fakeFetch(null, { api: false });
+    await assert.rejects(I.fetchAndExtract(url, into(3), "pkg", dir), /no sha256 to check/, "nothing to check against: not even downloaded");
+    assert.ok(!calls.slice(-1)[0].endsWith(".bz2"));
+    I.net.pinned = { [url]: good };
+    await I.fetchAndExtract(url, into(3), "pkg", dir);
+    assert.ok(existsSync(join(into(3), "pkg", "hello.txt")));
+    I.net.pinned = { [url]: bad };
+    await assert.rejects(I.fetchAndExtract(url, into(4), "pkg", dir), /doesn't match/);
+    assert.equal(existsSync(into(4)), false);
+    // published and pinned disagree: both must match, so it's refused
+    I.net.fetch = fakeFetch(good);
+    await assert.rejects(I.fetchAndExtract(url, into(5), "pkg", dir), /doesn't match/);
+    assert.equal(await I.publishedDigest("https://example.com/pkg.tar.bz2"), null, "not a GitHub release asset");
+  } finally { Object.assign(I.net, saved); }
+});

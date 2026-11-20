@@ -4,8 +4,10 @@
 // "warn" with confirmed high findings), a fresh worker session named "fixer" gets one self-contained
 // instruction to fix exactly those findings; when it finishes, the verifier re-reviews the same base
 // against the new HEAD with the previous findings listed. At most milestone_rounds fix rounds (3), then
-// the commander hears what's still open. On approve the milestone is recorded (~/.axa/milestones.json:
-// the next review starts from it) and the fixer is closed. The fixer never reviews; the verifier never edits.
+// the commander hears what's still open. Only an approve records the milestone (~/.axa/milestones.json:
+// the next review starts from it); a warn leaves the base where it was, so its findings are in the next
+// review's range again, and an error never records. The fixer is closed when the review ends without
+// open high findings. The fixer never reviews; the verifier never edits.
 //
 // Everything outside this file is reached through `mdeps` (supervisor.mjs fills in the live sessions,
 // tests put fakes in).
@@ -62,6 +64,21 @@ export function recordMilestone(repo, branch, sha, verdict, file = files.milesto
   } catch {}
   return all[keyOf(repo, branch)];
 }
+// Forget the stored milestone of the repo+branch at cwd (`axa review --reset-milestone [path]`): the
+// next review picks its base as if there had never been one. Returns { key, removed } (removed: the
+// entry, or null when there was none).
+export function forgetMilestone(cwd, file = files.milestones) {
+  const r = repoOf(cwd);
+  if (!r) throw new Error(`${cwd} isn't a git repository`);
+  const all = readMilestones(file), key = keyOf(r.repo, r.branch), removed = all[key] || null;
+  if (removed) {
+    delete all[key];
+    const tmp = `${file}.${process.pid}.tmp`;
+    writeFileSync(tmp, JSON.stringify(all, null, 2), { mode: 0o600 });
+    renameSync(tmp, file); chmodSync(file, 0o600);
+  }
+  return { key, removed };
+}
 
 // ---------- the base ----------
 // given (a commit) > the last milestone of this repo+branch (if still an ancestor of HEAD) > the
@@ -89,9 +106,22 @@ export function pickBase(cwd, { base, file = files.milestones } = {}) {
 }
 
 // ---------- the range: commits, the diff (committed + uncommitted), new files ----------
-// Lockfiles and build output matter least; source and tests most
+// When the diff is over budget, what the reviewer sees first: source and logic files (src/, lib/, hooks/,
+// mcp/, bin/), then other code, then tests, then docs, data and fixtures; within each, the most lines
+// changed first. Lockfiles and build output are never inlined (it can read them itself).
 const LOW = /(?:^|\/)(?:package-lock\.json|yarn\.lock|pnpm-lock\.yaml|Cargo\.lock|poetry\.lock|go\.sum)$|(?:^|\/)(?:dist|build|vendor|node_modules)\/|\.min\.(?:js|css)$|\.(?:svg|png|jpg|gif|ico|lock|map)$/;
-const weight = (f) => (LOW.test(f.file) ? 0 : /\.(?:md|txt|rst)$/i.test(f.file) ? 1 : 2);
+const SOURCE_DIR = /^(?:src|lib|hooks|mcp|bin)\//;
+const FIXTURES = /(?:^|\/)(?:fixtures?|__fixtures__|testdata)\//;
+const TESTS = /(?:^|\/)(?:tests?|__tests__|spec)\/|[._-](?:test|spec)\.\w+$/i;
+const DOCS = /(?:^|\/)(?:docs?|research|examples?)\/|\.(?:md|markdown|txt|rst|json|ya?ml|toml|csv|html?)$/i;
+export const weight = (f) => {
+  const file = f.file;
+  if (LOW.test(file)) return 0;
+  if (FIXTURES.test(file)) return 1;
+  if (TESTS.test(file)) return 2;
+  if (SOURCE_DIR.test(file)) return 4;
+  return DOCS.test(file) ? 1 : 3;
+};
 export async function rangeDiff(cwd, base) {
   const head = ((await gitAsync(cwd, ["rev-parse", "HEAD"])) || "").trim();
   const log = (await gitAsync(cwd, ["log", "--no-color", "--format=%h %s", "-n", "200", `${base}..HEAD`])) || "";
@@ -106,7 +136,8 @@ export async function rangeDiff(cwd, base) {
   const res = { base, head, commits, commits_total: total, stats, untracked: untrackedAll.slice(0, 200).map(safe), untracked_total: untrackedAll.length, partial: false, left_out: [] };
   const size = parts.reduce((n, p) => n + p.text.length, 0);
   if (size <= RANGE_MAX) { res.diff = parts.map((p) => p.text).join(""); return res; }
-  // too big to read at once: the stats, plus the most important files' diffs that fit; the rest it reads itself
+  // too big to read at once: the stats, plus the most important files' diffs that fit; the rest it reads
+  // itself (every file left out is listed in the prompt)
   res.partial = true;
   const lines = new Map(stats.map((s) => [s.file, s.added + s.removed]));
   const ranked = [...parts].sort((a, b) => weight(b) - weight(a) || (lines.get(b.file) || 0) - (lines.get(a.file) || 0));
@@ -191,10 +222,13 @@ function review(r) {
         raw = await mdeps.review({ cwd: r.cwd, prompt, settings: { ...r.settings, timeout_ms: r.settings.milestone_timeout_ms }, onProgress: (p) => { r.progress = p; } });
       }
     } catch (e) { raw = { verdict: "error", summary: `the review failed: ${e.message}`, checks: [], findings: [] }; }
-    decide(r, raw);
-  })().finally(() => jobs.delete(job));
-  jobs.add(job);
+    try { await decide(r, raw); }
+    catch (e) { if (active(r)) finish(r, "failed", `? error: the review's verdict couldn't be handled (${e.message}): check it yourself`); }
+  })();
+  track(job);
 }
+// jobs holds every promise the module starts (reviews, sends to the fixer) until it settles
+const track = (p) => { const t = p.finally(() => jobs.delete(t)); jobs.add(t); return t; };
 
 // The high findings the daemon itself found in the files: what a fixer is sent
 const fixable = (res, cwd) => res.findings.filter((f) => f.severity === "high" && quoteNear(cwd, f));
@@ -206,8 +240,9 @@ async function decide(r, raw) {
   say(r, `${ICON[res.verdict] || "?"} ${res.verdict}${r.round ? ` (re-review ${r.round})` : ""} · ${res.summary}`, { verdict: res.verdict, raw_verdict: raw.verdict, findings: res.findings.length });
   if (res.verdict === "error") return finish(r, "failed", `? error: ${res.summary}: not reviewed, check it yourself`);
   if (!high.length) {
-    // approve (or a warn without confirmed high findings): this is the new milestone
-    if (!raw.nothing) recordMilestone(r.repo, r.branch, r.head, res.verdict);
+    // only an approve is a new milestone; a warn without confirmed high findings ends the review but
+    // leaves the base, so the next review looks at the code of these findings again
+    if (res.verdict === "approve" && !raw.nothing) recordMilestone(r.repo, r.branch, r.head, res.verdict);
     return finish(r, "done", `${ICON[res.verdict]} ${res.verdict} · ${res.summary}${res.verdict === "warn" && res.findings.length ? ` (${res.findings.length} finding${res.findings.length === 1 ? "" : "s"}: ${clip(res.findings.map((f) => f.problem).join("; "), 160)})` : ""}${r.fixCommits.length ? ` · fix commits: ${r.fixCommits.join(", ")}` : ""}`, { closeFixer: true });
   }
   if (r.round >= r.maxRounds) return finish(r, "done", `${ICON[res.verdict]} ${res.verdict} after ${r.round} fix round${r.round === 1 ? "" : "s"}, still open: ${clip(high.map((f) => `${where(f)} ${f.problem}`).join("; "), 300)}${r.fixCommits.length ? ` · fix commits: ${r.fixCommits.join(", ")}` : ""}${r.fixer ? ` · the fixer session (${r.fixer.id}) is still open` : ""}`);
@@ -250,11 +285,11 @@ export function tickMilestones(list) {
     if (r.state === "fixer-starting") {
       if (["ready", "done"].includes(s.status) && !s.awaiting_permission && !r.sending) {
         r.sending = true;
-        mdeps.send(s.id, fixerInstruction(r, r.fixFindings)).then((sent) => {
+        track(Promise.resolve().then(() => mdeps.send(s.id, fixerInstruction(r, r.fixFindings))).then((sent) => {
           r.sending = false;
           if (!sent?.ok) return; // retried next tick (a prompt on screen, say)
           r.state = "fixing"; r.sentAt = Date.now(); r.sawWork = false; r.progress = `fix round ${r.round}: the fixer is working`;
-        });
+        }, () => { r.sending = false; })); // a failed send is retried next tick
       } else if (Date.now() - r.fixerOpened > FIXER_START_MS && s.status !== "waiting") finish(r, "failed", `the fixer never got ready (status ${s.status}); still open: ${clip(r.fixFindings.map((f) => `${where(f)} ${f.problem}`).join("; "), 300)}`);
       continue;
     }

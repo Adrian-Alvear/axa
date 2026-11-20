@@ -5,7 +5,22 @@
 //   FAKE_REVIEW_LOG: a file to append { args, role, cwd, prompt } to, one JSON line per call
 //   FAKE_REVIEW_MODE: "crash" (exit 1, no output), "hang" (never answers), "raw" (print FAKE_REVIEW as is),
 //     "stream" (stream-json: a step running `npm test`, then the result line), "stream-hang" (that step, then hangs)
-import { appendFileSync } from "node:fs";
+//   FAKE_REVIEW_PIDS: in the hang modes, a file that gets {"pid","child"}: its own pid and a child process it
+//     starts (like a check that hangs), so a test can see both are gone after the timeout;
+//     FAKE_REVIEW_CHILD_DETACHED=1 starts that child in a process group of its own
+import { appendFileSync, writeFileSync } from "node:fs";
+import { spawn } from "node:child_process";
+
+// `node --test` picks up every file under test/ as a test file: then there's nothing to do (run as the
+// reviewer it always gets arguments, and the tests that start it pass NODE_TEST_CONTEXT down)
+if (process.env.NODE_TEST_CONTEXT && process.argv.length <= 2) process.exit(0);
+const hang = () => {
+  if (process.env.FAKE_REVIEW_PIDS) {
+    const c = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore", detached: process.env.FAKE_REVIEW_CHILD_DETACHED === "1" });
+    writeFileSync(process.env.FAKE_REVIEW_PIDS, JSON.stringify({ pid: process.pid, child: c.pid }));
+  }
+  setInterval(() => {}, 1000);
+};
 
 let prompt = "";
 process.stdin.on("data", (c) => (prompt += c));
@@ -13,9 +28,9 @@ process.stdin.on("end", () => {
   const mode = process.env.FAKE_REVIEW_MODE || "";
   if (process.env.FAKE_REVIEW_LOG) appendFileSync(process.env.FAKE_REVIEW_LOG, JSON.stringify({ args: process.argv.slice(2), role: process.env.AXA_ROLE, terminal: process.env.AXA_TERMINAL_ID || null, cwd: process.cwd(), prompt }) + "\n");
   if (mode === "crash") { process.stderr.write("fake reviewer: boom\n"); process.exit(1); }
-  if (mode === "hang") { setInterval(() => {}, 1000); return; }
+  if (mode === "hang") return hang();
   const step = JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", name: "Bash", input: { command: "npm test" } }] } });
-  if (mode === "stream-hang") { process.stdout.write(step + "\n"); setInterval(() => {}, 1000); return; }
+  if (mode === "stream-hang") { process.stdout.write(step + "\n"); return hang(); }
   if (mode === "stream") process.stdout.write(JSON.stringify({ type: "system", subtype: "init" }) + "\n" + step + "\n");
   const text = process.env.FAKE_REVIEW || JSON.stringify({ verdict: "approve", summary: "does what was asked; tests pass", checks: [{ cmd: "node --test", ok: true, tail: "# pass 3" }], findings: [] });
   if (mode === "raw") process.stdout.write(text);

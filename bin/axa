@@ -20,6 +20,7 @@ const USAGE = `AXA: one place for all your Claude Code sessions, chats and agent
   axa status [--json]  what's running, what needs you first
   axa attach <name>    take over one session in this terminal (Ctrl-] detaches; it keeps running)
   axa review [path] [--base <sha>]   a milestone review of a repo's recent work (base..HEAD + uncommitted)
+  axa review --reset-milestone [path]   forget that repo+branch's stored milestone (the next review's base)
   axa stop [--all]     stop the background daemon (--all also ends every session)
   axa restart          restart the daemon (sessions keep running)
   axa voice install kokoro [--yes]    a better, offline neural voice (~380 MB); uninstall kokoro removes it
@@ -104,6 +105,16 @@ async function review() {
   process.exit(r.verdict === "approve" || r.verdict === "warn" ? 0 : 1);
 }
 
+// the stored milestone is read on every review, so this needs no daemon
+async function resetMilestone() {
+  const { forgetMilestone } = await import(join(root, "src", "core", "milestone.mjs"));
+  const cwd = resolve(rest.find((a) => !a.startsWith("--")) || process.cwd());
+  try {
+    const { key, removed } = forgetMilestone(cwd);
+    console.log(removed ? `Forgot the milestone of ${key} (${removed.verdict} at ${String(removed.sha).slice(0, 12)}); the next review picks its base afresh.` : `No milestone stored for ${key}.`);
+  } catch (e) { console.error(`axa review: ${e.message}`); process.exit(1); }
+}
+
 switch (cmd) {
   case "hub": case "ui": {
     needTty("The hub");
@@ -125,7 +136,9 @@ switch (cmd) {
     openUrl(webUrl());
     break;
   case "status": await daemon(); await status(); break;
-  case "review": await daemon(); await review(); break;
+  case "review":
+    if (flags.has("--reset-milestone")) { await resetMilestone(); break; }
+    await daemon(); await review(); break;
   case "attach": needTty("axa attach"); await daemon(); await attach(rest.find((a) => !a.startsWith("--"))); break;
   case "stop": {
     const all = flags.has("--all");

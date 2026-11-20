@@ -154,6 +154,31 @@ test("rangeDiff: the commits since base, the committed and uncommitted work, new
   assert.match(p, /New files \(untracked, 1\): new\.txt/);
 });
 
+test("rangeDiff over budget: source files before tests, docs and fixtures; everything left out is listed", async () => {
+  const dir = repo(), start = sha(dir);
+  const big = (n) => Array.from({ length: n }, (_, i) => `line ${i} ${"y".repeat(60)}`).join("\n") + "\n";
+  mkdirSync(join(dir, "test/fixtures"), { recursive: true }); mkdirSync(join(dir, "docs")); mkdirSync(join(dir, "lib"));
+  // the tests, docs and fixtures change the most lines; the source files fewer
+  writeFileSync(join(dir, "test/x.test.mjs"), big(500));
+  writeFileSync(join(dir, "test/fixtures/data.mjs"), big(500));
+  writeFileSync(join(dir, "docs/guide.md"), big(500));
+  writeFileSync(join(dir, "README.md"), big(450));
+  writeFileSync(join(dir, "src/logic.mjs"), big(300));
+  writeFileSync(join(dir, "lib/util.mjs"), big(250));
+  git(dir, "add", "."); git(dir, "commit", "-qm", "big");
+  const r = await M.rangeDiff(dir, start);
+  assert.equal(r.partial, true);
+  assert.match(r.diff, /src\/logic\.mjs/);
+  assert.match(r.diff, /lib\/util\.mjs/);
+  assert.ok(r.left_out.length > 0);
+  for (const f of r.left_out) assert.ok(!["src/logic.mjs", "lib/util.mjs"].includes(f), `${f}: a source file is never left out for a test or a doc`);
+  const shown = ["test/x.test.mjs", "test/fixtures/data.mjs", "docs/guide.md", "README.md", "src/logic.mjs", "lib/util.mjs"].filter((f) => !r.left_out.includes(f));
+  assert.equal(shown.length + r.left_out.length, 6, "each file is either inlined or listed as left out");
+  assert.deepEqual([M.weight({ file: "src/a.mjs" }), M.weight({ file: "hooks/h.mjs" }), M.weight({ file: "scripts/s.sh" }), M.weight({ file: "test/a.test.mjs" }), M.weight({ file: "test/fixtures/f.mjs" }), M.weight({ file: "README.md" }), M.weight({ file: "package-lock.json" })], [4, 4, 3, 2, 1, 1, 0]);
+  const p = M.milestonePrompt({ repo: dir, branch: "main", why: "given", range: r });
+  assert.match(p, new RegExp(`Not included below: ${r.left_out.map((f) => f.replace(/[.]/g, "\\.")).join(", ")}`));
+});
+
 test("rangeDiff: over ~150 KB, per-file stats and the important files' diffs; lockfiles left for the reviewer", async () => {
   const dir = repo(), start = sha(dir);
   const big = (n) => Array.from({ length: n }, (_, i) => `line ${i} ${"x".repeat(60)}`).join("\n") + "\n";
@@ -180,8 +205,24 @@ test("runReviewer: streamed progress, and a timeout says how far it got", async 
   assert.deepEqual(seen, ["checks running: npm test"]);
   const hung = await R.runReviewer({ cwd: dir, prompt: "p", settings: { ...R.DEFAULTS, timeout_ms: 400 }, env: { ...process.env, FAKE_REVIEW_MODE: "stream-hang" } });
   assert.equal(hung.verdict, "error");
-  assert.match(hung.summary, /timed out .*it got as far as: checks running: npm test, 1 step/);
+  assert.match(hung.summary, /timed out after 1 min \(got as far as: checks running: npm test, 1 step\)/);
 });
+
+const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === "EPERM"; } };
+const gone = async (pid) => { for (let i = 0; i < 100 && alive(pid); i++) await sleep(50); return !alive(pid); };
+for (const [mode, detached] of [["hang", "0"], ["stream-hang", "0"], ["hang", "1"]]) {
+  test(`runReviewer timeout (${mode}${detached === "1" ? ", the check in its own process group" : ""}): the reviewer and the processes it started are gone`, { skip: process.platform === "win32" }, async () => {
+    const dir = repo(), pids = join(base, `pids-${mode}-${detached}.json`);
+    const t0 = Date.now();
+    const r = await R.runReviewer({ cwd: dir, prompt: "p", settings: { ...R.DEFAULTS, timeout_ms: 600 }, env: { ...process.env, FAKE_REVIEW_MODE: mode, FAKE_REVIEW_PIDS: pids, FAKE_REVIEW_CHILD_DETACHED: detached } });
+    assert.ok(Date.now() - t0 < 5000, "ended at its limit");
+    assert.equal(r.verdict, "error");
+    assert.match(r.summary, /timed out after \d+ min \(got as far as: /);
+    const { pid, child } = JSON.parse(readFileSync(pids, "utf8"));
+    assert.ok(await gone(pid), "the reviewer is gone");
+    assert.ok(await gone(child), "the check it started is gone");
+  });
+}
 
 // ---------- the verifier <-> fixer loop ----------
 // The fake fixer: a session the test opens, drives (status) and makes commit, like a real one would
@@ -197,7 +238,7 @@ function harness() {
   h.tick = async (fixerStatus, extra = {}) => {
     const list = [h.cmd, ...(fixerStatus ? [{ id: "fx1", name: "fixer", mode: "claude", alive: true, status: fixerStatus, cwd: h.dir, ...extra }] : [])];
     M.tickMilestones(list); supervise(list);
-    await sleep(5); await M.milestonesSettled(); await sleep(5);
+    await M.milestonesSettled(); await M.milestonesSettled(); // the send to the fixer, then a re-review it starts
   };
   h.toFixer = () => h.sent.filter((m) => m.id === "fx1");
   h.toCommander = () => h.sent.filter((m) => m.id === "c1");
@@ -289,6 +330,48 @@ test("block x3: three fix rounds that still block -> the commander gets what's s
   await h.tick(null);
   assert.match(h.toCommander().at(-1).text, /milestone review repo-\w+: ✗ block after 3 fix rounds, still open: src\/a\.js:2 off by one .*the fixer session \(fx1\) is still open/);
   assert.equal(JSON.parse(readFileSync(join(axaHome, "milestones.json"), "utf8"))[`${realpathSync(dir)}#main`], undefined);
+});
+
+test("only an approve records a milestone: a warn keeps the base (its findings stay in the next range); an error never records", async () => {
+  const h = harness(), dir = (h.dir = repo(3)), key = `${realpathSync(dir)}#main`;
+  const stored = () => JSON.parse(existsSync(join(axaHome, "milestones.json")) ? readFileSync(join(axaHome, "milestones.json"), "utf8") : "{}")[key];
+  const first = M.pickBase(dir).base;
+  process.env.FAKE_REVIEW = verdict({ verdict: "warn", summary: "naming could be better", checks: [], findings: [{ ...FINDING, severity: "med", problem: "naming" }] });
+  const a = M.startMilestone({ cwd: dir });
+  await M.milestonesSettled();
+  assert.deepEqual([M.getMilestoneReview(a.id).state, M.getMilestoneReview(a.id).verdict], ["done", "warn"]);
+  assert.equal(stored(), undefined, "a warn is not a milestone");
+  assert.equal(M.pickBase(dir).base, first, "the next review covers the warned code again");
+  assert.deepEqual(h.opened, [], "no fixer for a warn without high findings");
+  process.env.FAKE_REVIEW_MODE = "crash";
+  try { const b = M.startMilestone({ cwd: dir }); await M.milestonesSettled(); assert.equal(M.getMilestoneReview(b.id).verdict, "error"); }
+  finally { delete process.env.FAKE_REVIEW_MODE; }
+  assert.equal(stored(), undefined, "an error is not a milestone");
+  process.env.FAKE_REVIEW = APPROVE;
+  const c = M.startMilestone({ cwd: dir });
+  await M.milestonesSettled();
+  assert.deepEqual([stored().sha, stored().verdict, M.getMilestoneReview(c.id).verdict], [sha(dir), "approve", "approve"]);
+  assert.equal(M.pickBase(dir).why, "last milestone");
+  // axa review --reset-milestone: forget it
+  const before = stored();
+  assert.deepEqual(M.forgetMilestone(dir), { key, removed: before });
+  assert.equal(stored(), undefined);
+  assert.equal(M.forgetMilestone(dir).removed, null, "nothing stored: nothing removed");
+  assert.equal(M.pickBase(dir).base, first);
+  assert.throws(() => M.forgetMilestone(base), /isn't a git repository/);
+});
+
+test("decide is awaited: a fixer that can't be opened ends the review as failed, seen by milestonesSettled", async () => {
+  const h = harness(), dir = (h.dir = repo(2));
+  M.mdeps.open = async () => { await new Promise((ok) => setTimeout(ok, 20)); throw new Error("no room for a session"); };
+  process.env.FAKE_REVIEW = BLOCK;
+  const { id } = M.startMilestone({ cwd: dir });
+  await M.milestonesSettled();
+  const r = M.getMilestoneReview(id);
+  assert.deepEqual([r.state, r.verdict], ["failed", "block"]);
+  assert.match(r.line, /the fixer couldn't be opened \(no room for a session\)/);
+  await h.tick(null);
+  assert.ok(h.toCommander().some((m) => /fixer couldn't be opened/.test(m.text)));
 });
 
 test("a warn with a confirmed high finding goes to the fixer too; a reviewer error goes to the commander", async () => {

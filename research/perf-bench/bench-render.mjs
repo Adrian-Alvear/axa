@@ -1,4 +1,8 @@
-const root = "/home/adrianwsl/axa/src/tui/";
+import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
+// the AXA checkout to measure: AXA_ROOT, else the repo this folder is in
+const ROOT = process.env.AXA_ROOT ? pathToFileURL(resolve(process.env.AXA_ROOT) + "/") : new URL("../../", import.meta.url);
+const root = new URL("src/tui/", ROOT).href;
 const D = await import(root + "draw.mjs");
 const { controlRows } = await import(root + "control.mjs");
 D.setTheme("axa");
