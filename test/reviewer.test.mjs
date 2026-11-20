@@ -23,6 +23,9 @@ const { deps, reviewsSettled, supervise, trackReviews } = await import("../src/c
 test.after(() => rmSync(base, { recursive: true, force: true }));
 
 const verdict = (v) => JSON.stringify(v);
+// the per-turn review runs only in "turn" mode (the default is "milestone": test/milestone.test.mjs)
+const TURN = { ...R.DEFAULTS, mode: "turn" };
+const turnMode = () => writeFileSync(join(axaHome, "policy.json"), JSON.stringify({ default: { reviewer: { mode: "turn" } } }));
 const FINDING = { severity: "high", file: "src/a.js", line: 2, quote: "return x + 1;", problem: "off by one", evidence: "node -e 'console.log(require(\"./src/a.js\")(1))' prints 2, expected 1" };
 const GOOD = { verdict: "warn", summary: "works; README out of date", checks: [{ cmd: "node --test", ok: true, tail: "# pass 4" }], findings: [{ ...FINDING, severity: "med" }] };
 
@@ -111,16 +114,19 @@ test("nextStep: block, block, then the third goes to the commander", () => {
 test("shouldReview: only a worker's finished turn that changed code", () => {
   const w = { id: "w", mode: "claude", alive: true, status: "done" };
   const run = { status: "done", edits: 2, prompt: "add x" };
-  assert.equal(R.shouldReview(w, run).review, true);
-  assert.equal(R.shouldReview(w, { ...run, edits: 0 }).review, false, "reading/research turn");
-  assert.equal(R.shouldReview(w, { ...run, edits: 0 }, { changed: false }).review, false);
-  assert.equal(R.shouldReview(w, { ...run, edits: 0 }, { changed: true }).review, true, "git moved (e.g. sed -i, a commit)");
-  assert.equal(R.shouldReview(w, { ...run, edits: 0, prompt: `${R.BLOCK_PREFIX} ...` }).review, true, "a fix round is always re-checked");
-  assert.equal(R.shouldReview({ ...w, mode: "axa" }, run).review, false, "the commander");
-  assert.equal(R.shouldReview({ ...w, mode: "shell" }, run).review, false, "a shell");
-  assert.equal(R.shouldReview({ ...w, status: "waiting" }, run).review, false);
-  assert.equal(R.shouldReview({ ...w, status: "stuck" }, run).review, false);
-  assert.equal(R.shouldReview(w, { ...run, status: "running" }).review, false);
+  assert.equal(R.shouldReview(w, run).review, false, "milestone mode (the default): no per-turn review");
+  assert.match(R.shouldReview(w, run).why, /milestone/);
+  const shouldReview = (s, r, o = {}) => R.shouldReview(s, r, { settings: TURN, ...o });
+  assert.equal(shouldReview(w, run).review, true);
+  assert.equal(shouldReview(w, { ...run, edits: 0 }).review, false, "reading/research turn");
+  assert.equal(shouldReview(w, { ...run, edits: 0 }, { changed: false }).review, false);
+  assert.equal(shouldReview(w, { ...run, edits: 0 }, { changed: true }).review, true, "git moved (e.g. sed -i, a commit)");
+  assert.equal(shouldReview(w, { ...run, edits: 0, prompt: `${R.BLOCK_PREFIX} ...` }).review, true, "a fix round is always re-checked");
+  assert.equal(shouldReview({ ...w, mode: "axa" }, run).review, false, "the commander");
+  assert.equal(shouldReview({ ...w, mode: "shell" }, run).review, false, "a shell");
+  assert.equal(shouldReview({ ...w, status: "waiting" }, run).review, false);
+  assert.equal(shouldReview({ ...w, status: "stuck" }, run).review, false);
+  assert.equal(shouldReview(w, { ...run, status: "running" }).review, false);
   assert.equal(R.shouldReview(w, run, { settings: { mode: "off" } }).review, false);
 });
 
@@ -154,7 +160,8 @@ test("runReviewer: claude's flags, AXA_ROLE=reviewer, never the worker's termina
   assert.ok(a.includes("-p"));
   assert.equal(flag("--model"), "claude-opus-5-5");
   assert.equal(flag("--effort"), "high");
-  assert.equal(flag("--output-format"), "json");
+  assert.equal(flag("--output-format"), "stream-json");
+  assert.ok(a.includes("--verbose"), "print mode needs --verbose for stream-json");
   assert.equal(flag("--allowedTools"), R.ALLOWED_TOOLS);
   assert.match(flag("--disallowedTools"), /^Edit,Write,.*NotebookEdit,WebFetch,WebSearch/);
   assert.match(flag("--append-system-prompt"), /EVIDENCE RULE|evidence rule/i);
@@ -206,6 +213,7 @@ test("policy, AXA_ROLE=reviewer: read-only plus the project's checks", () => {
 test("end to end with a fake reviewer: two block rounds to the worker, the third to the commander", async () => {
   const git = (cwd, ...a) => spawnSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...a], { cwd, encoding: "utf8" });
   const dir = project();
+  turnMode();
   git(dir, "init", "-q"); git(dir, "add", "."); git(dir, "commit", "-qm", "init");
   const callLog = join(base, "calls-e2e.jsonl");
   process.env.FAKE_REVIEW_LOG = callLog;
@@ -354,6 +362,7 @@ test("citedSpecs: a scratchpad or AXA task spec is read; anything else isn't", (
 
 test("end to end: a turn that commits its work is reviewed on the whole range, with its cited spec", async () => {
   const dir = repo();
+  turnMode();
   const scratch = join(realpathSync(mkdtempSync("/tmp/claude-axatest-")), "p", "scratchpad");
   mkdirSync(scratch, { recursive: true });
   writeFileSync(join(scratch, "spec.md"), "SPEC: f must return x unchanged.");
@@ -390,6 +399,7 @@ test("end to end: a turn that commits its work is reviewed on the whole range, w
 
 test("a turn the daemon only knows from replayed history: its start commit is unknown, never a mid-turn HEAD", async () => {
   const dir = repo();
+  turnMode();
   const callLog = join(base, "calls-replay.jsonl");
   process.env.FAKE_REVIEW_LOG = callLog;
   process.env.FAKE_REVIEW = verdict({ verdict: "approve", summary: "ok", checks: [], findings: [] });

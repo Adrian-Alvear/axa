@@ -17,6 +17,7 @@ export const files = {
   daemonLog: join(home, "console.log"),
   sessions: join(home, "sessions.json"),
   chains: join(home, "chains.json"),
+  milestones: join(home, "milestones.json"),
   policy: join(home, "policy.json"),
   ui: join(home, "ui.json"),
   roster: join(home, "roster.md"),

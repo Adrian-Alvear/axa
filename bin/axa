@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // axa: the AXA hub in your terminal, and a few commands around it.
 import { realpathSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 
@@ -19,6 +19,7 @@ const USAGE = `AXA: one place for all your Claude Code sessions, chats and agent
   axa web              open the web console in your browser
   axa status [--json]  what's running, what needs you first
   axa attach <name>    take over one session in this terminal (Ctrl-] detaches; it keeps running)
+  axa review [path] [--base <sha>]   a milestone review of a repo's recent work (base..HEAD + uncommitted)
   axa stop [--all]     stop the background daemon (--all also ends every session)
   axa restart          restart the daemon (sessions keep running)
   axa voice install kokoro [--yes]    a better, offline neural voice (~380 MB); uninstall kokoro removes it
@@ -74,6 +75,35 @@ async function attach(q) {
   p.onExit(() => { process.stdin.setRawMode(false); out.write("\x1b[0m\r\nDetached; the session keeps running.\r\n"); process.exit(0); });
 }
 
+// ---------- review: a milestone review, with its progress, through the daemon ----------
+async function review() {
+  const args = [...rest];
+  let base;
+  const b = args.indexOf("--base");
+  if (b >= 0) { base = args[b + 1]; if (!base || base.startsWith("--")) { console.error("--base needs a commit"); process.exit(1); } args.splice(b, 2); }
+  const cwd = resolve(args.find((a) => !a.startsWith("--")) || process.cwd());
+  let r;
+  try { r = await api("/api/review", { method: "POST", body: { cwd, base, source: "cli" } }); }
+  catch (e) { console.error(`axa review: ${e.message}`); process.exit(1); }
+  console.log(`${r.already ? "Already running" : "Milestone review"} [${r.id}] ${r.repo} (${r.branch}) ${String(r.base).slice(0, 12)}..HEAD · base: ${r.base_why}`);
+  let last = "";
+  for (;;) {
+    const now = `${r.state} ${r.round} ${r.progress}`;
+    if (now !== last) {
+      last = now;
+      const what = r.state === "reviewing" ? `${r.round ? `re-review ${r.round}/${r.max_rounds}` : "reviewing"}… (${r.progress})` : ["fixer-starting", "fixing"].includes(r.state) ? `fix round ${r.round}/${r.max_rounds}: ${r.progress}` : null;
+      if (what) console.log(`  ${new Date().toLocaleTimeString([], { hour12: false })}  ${one(what)}`);
+    }
+    if (["done", "failed"].includes(r.state)) break;
+    await new Promise((ok) => setTimeout(ok, 2000));
+    try { r = await api(`/api/review/${r.id}`); } catch (e) { console.error(`axa review: lost the daemon (${e.message})`); process.exit(1); }
+  }
+  console.log(one(r.line || r.state));
+  for (const c of r.checks || []) console.log(`  ${c.ok ? "pass" : "FAIL"}: ${one(c.cmd)}`);
+  for (const [i, f] of (r.findings || []).entries()) console.log(`  ${i + 1}. [${f.severity}] ${f.file}:${f.line} ${one(f.problem)}\n     evidence: ${one(f.evidence)}`);
+  process.exit(r.verdict === "approve" || r.verdict === "warn" ? 0 : 1);
+}
+
 switch (cmd) {
   case "hub": case "ui": {
     needTty("The hub");
@@ -95,6 +125,7 @@ switch (cmd) {
     openUrl(webUrl());
     break;
   case "status": await daemon(); await status(); break;
+  case "review": await daemon(); await review(); break;
   case "attach": needTty("axa attach"); await daemon(); await attach(rest.find((a) => !a.startsWith("--"))); break;
   case "stop": {
     const all = flags.has("--all");

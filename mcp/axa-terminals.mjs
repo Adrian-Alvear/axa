@@ -27,7 +27,7 @@ const fmtTokens = (n) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${
 // One line per session for the commander: what it is, its status, what it's doing or last said
 // the independent reviewer's verdict on its last turn, with the findings (file:line, problem, evidence)
 function reviewText(r) {
-  if (r.verdict === "reviewing") return "review: an independent reviewer is checking its last turn";
+  if (r.verdict === "reviewing") return `review: an independent reviewer is checking its last turn${r.progress ? ` (reviewing… ${r.progress})` : ""}`;
   const head = `review: ${r.verdict}${r.raw_verdict && r.raw_verdict !== r.verdict ? ` (reviewer said ${r.raw_verdict}; unconfirmed findings dropped)` : ""}${r.round ? `, block round ${r.round}` : ""} — ${r.summary || ""}`;
   const checks = (r.checks || []).map((c) => `${c.ok ? "pass" : "FAIL"}: ${c.cmd}`).join("; ");
   const fs = (r.findings || []).map((f, i) => `  ${i + 1}. [${f.severity}] ${f.file}:${f.line} ${f.problem} | quote: ${String(f.quote).replace(/\s+/g, " ").slice(0, 160)} | evidence: ${f.evidence}`);
@@ -35,7 +35,7 @@ function reviewText(r) {
 }
 function describe(s) {
   const flag = s.status === "waiting" ? " — NEEDS THE USER'S APPROVAL" : s.status === "stuck" ? ` — STUCK for ${s.stuck_minutes ?? "?"}m, may need the user` : "";
-  const head = `[${s.id}] ${s.name} (${s.mode}) · ${s.status}${flag} · idle ${s.idle_seconds}s · ${s.cwd}`;
+  const head = `[${s.id}] ${s.name} (${s.mode}${s.fixer ? `, fixer for milestone review ${s.fixer}` : ""}) · ${s.status}${flag} · idle ${s.idle_seconds}s · ${s.cwd}`;
   const said = [];
   if (s.doing) said.push(`now: ${s.doing}`);
   if (s.git) said.push(`git: ${gitLine(s.git)}`);
@@ -48,6 +48,13 @@ function describe(s) {
   return said.length ? `${head}\n${untrusted(said.join("\n"))}` : head;
 }
 
+// A milestone review, one line: "[id] axa (axa-v2) re-review 1/3 · reviewing… (checks running: npm test)"
+function milestoneText(r) {
+  const repo = String(r.repo || "").split("/").pop();
+  const what = r.state === "reviewing" ? `${r.round ? `re-review ${r.round}/${r.max_rounds}` : "reviewing"}… (${r.progress})` : r.state === "fixer-starting" || r.state === "fixing" ? `fix round ${r.round}/${r.max_rounds}: ${r.progress}${r.fixer ? ` (fixer session ${r.fixer.id})` : ""}` : r.line || r.state;
+  return `[${r.id}] ${repo} (${r.branch}) ${String(r.base || "").slice(0, 12)}..HEAD · ${what}`;
+}
+
 const TOOLS = [
   {
     name: "list_sessions",
@@ -55,11 +62,13 @@ const TOOLS = [
       "List every session open in AXA (usually one Claude Code session per project) with its status: starting, ready, working (and what it's doing), done (with its last report), waiting (needs the user's approval), or exited. Also lists the known projects you can open.",
     inputSchema: { type: "object", properties: {} },
     run: async () => {
-      const [sessions, projects, chains] = await Promise.all([api("/api/terms"), api("/api/projects"), api("/api/chains").catch(() => [])]);
+      const [sessions, projects, chains, mreviews] = await Promise.all([api("/api/terms"), api("/api/projects"), api("/api/chains").catch(() => []), api("/api/review").catch(() => [])]);
       const open = sessions.length ? sessions.map(describe).join("\n") : "No sessions open.";
       const active = chains.filter((c) => !c.fired && !c.failed);
       const links = active.length ? `\n\nLinks (fire when the first session finishes): ${active.map((c) => `[${c.id}] ${c.from_name} → ${c.to_name}`).join("; ")}` : "";
-      return `${open}${links}\n\nProjects: ${projects.map((p) => `${p.name} (${p.path})`).join(", ") || "none found"}${sessions.length ? `\n\n${UNTRUSTED_NOTE}` : ""}`;
+      const running = mreviews.filter((r) => !["done", "failed"].includes(r.state));
+      const ms = running.length ? `\n\nMilestone reviews running: ${running.map(milestoneText).join("; ")}` : "";
+      return `${open}${links}${ms}\n\nProjects: ${projects.map((p) => `${p.name} (${p.path})`).join(", ") || "none found"}${sessions.length ? `\n\n${UNTRUSTED_NOTE}` : ""}`;
     },
   },
   {
@@ -96,6 +105,24 @@ const TOOLS = [
       if (s.error) return `${describe(s)}\n---\n${s.error}`;
       const extra = s.untracked_total ? `\nNew files (${s.untracked_total}): ${s.untracked.join(", ")}` : "";
       return `${describe(s)}\n---\n${untrusted((s.diff || "(no changes to tracked files)") + extra + (s.truncated ? "\n(diff cut: too long)" : ""))}\n\n${UNTRUSTED_NOTE}`;
+    },
+  },
+  {
+    name: "review_changes",
+    description:
+      "Start a milestone review: an independent, read-only reviewer checks a batch of work in one repo as a whole (base..HEAD plus uncommitted and new files). Use it at milestones: before a push, or when a batch of work is done. base defaults to the last approved milestone of that repo and branch, else the upstream's merge-base, else HEAD~20. If it blocks, AXA opens a \"fixer\" session that fixes exactly the confirmed findings and the reviewer re-checks (up to 3 rounds). Returns an id at once; the verdict arrives later as a supervisor update (\"milestone review <repo>: ✓ approve / ⚠ warn / ✗ block · summary\"). list_sessions shows running reviews. Each review is a real, billed model run.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        project: { type: "string", description: "Project name, e.g. launches" },
+        cwd: { type: "string", description: "Or a folder in the repo, e.g. ~/launches" },
+        base: { type: "string", description: "Optional commit to review from (default: the last milestone)" },
+        goal: { type: "string", description: "Optional: what this batch of work was for (may cite a task spec file)" },
+      },
+    },
+    run: async ({ project, cwd, base, goal }) => {
+      const r = await api("/api/review", { method: "POST", body: { project, cwd, base, goal, source: "commander" } });
+      return r.already ? `A milestone review is already running there: ${milestoneText(r)}` : `Milestone review [${r.id}] started on ${r.repo} (${r.branch}), ${String(r.base).slice(0, 12)}..HEAD (base: ${r.base_why}). The verdict arrives as a supervisor update; don't push until it approves or the user accepts the open findings.`;
     },
   },
   {

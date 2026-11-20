@@ -216,6 +216,7 @@ function said(e) {
     case "UserAnswer": return [`you answered: ${clean(e.answer)}`, "accent"];
     case "SupervisorWake": return ["woke the commander", "accent"];
     case "ChainFired": return [`link fired → ${clean(e.to)}`, "accent"];
+    case "MilestoneReview": return [clean(e.summary || "milestone review"), { approve: "done", warn: "waitSoft", block: "stuck", error: "stuck" }[e.verdict] || "accent"];
     case "Review": return [`review: ${e.verdict} (${e.findings ?? 0} finding${e.findings === 1 ? "" : "s"})${e.raw_verdict && e.raw_verdict !== e.verdict ? `, reviewer said ${e.raw_verdict}` : ""}`, { approve: "done", warn: "waitSoft", block: "stuck" }[e.verdict] || "dim"];
   }
   return null;
@@ -601,7 +602,7 @@ export function controlRows(ctx, W, B) {
   const evs = (act?.events || []).map((e) => [e, said(e)]).filter(([, d]) => d).slice(-(botH - 2));
   for (const [e, [text, role]] of evs) {
     const t = new Date(e.ts).toLocaleTimeString([], { hour12: false });
-    lb.push(line([[` ${t} `, "dim"], [`${cut(names.get(e.terminal) || "?", 10)} `, "accent"], [text, role]], lw));
+    lb.push(line([[` ${t} `, "dim"], [`${cut(names.get(e.terminal) || (e.event === "MilestoneReview" ? "review" : "?"), 10)} `, "accent"], [text, role]], lw));
   }
   if (!evs.length) lb.push(line([["  quiet: nothing has happened in the last hour", "dim"]], lw));
   const logPanel = panel("Log", R, botH, lb, { tag: "live" });

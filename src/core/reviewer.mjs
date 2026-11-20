@@ -1,13 +1,15 @@
-// The independent reviewer: when a worker finishes a turn that changed code, a separate, read-only
-// `claude -p` (its own process, model and prompt, AXA_ROLE=reviewer so hooks/policy.mjs keeps it read-only)
-// checks the work before AXA counts it as done. The supervisor (supervisor.mjs) decides when to run it
-// and what to do with the verdict; this file holds the parts that don't need the live sessions:
-// settings, the skip rules, running the reviewer, reading its verdict strictly, confirming "block"
-// findings against the files, and the round counting.
+// The independent reviewer: a separate, read-only `claude -p` (its own process, model and prompt,
+// AXA_ROLE=reviewer so hooks/policy.mjs keeps it read-only) that checks work before AXA counts it as done.
+// Two modes: "milestone" (the default: a batch of work is reviewed as a whole when the commander or the
+// user asks, see milestone.mjs) and "turn" (every code-changing worker turn is reviewed, supervisor.mjs).
+// This file holds the parts that don't need the live sessions: settings, the skip rules, running the
+// reviewer, reading its verdict strictly, confirming "block" findings against the files, and the rounds.
 //
 // Settings in ~/.axa/policy.json, per project like the other keys:
-//   { "default": { "reviewer": { "mode": "on", "model": "claude-opus-5-5", "effort": "high" } },
+//   { "default": { "reviewer": { "mode": "milestone", "model": "claude-opus-5-5", "effort": "high" } },
 //     "projects": { "scratch": { "reviewer": { "mode": "off" } } } }
+// mode: "milestone" | "turn" | "off" ("on", the old name, means "turn"). timeout_ms (a turn review, 15 min),
+// milestone_timeout_ms (30 min), milestone_rounds (fixer rounds, 3).
 // AXA_REVIEWER=0 turns it off everywhere; AXA_REVIEWER_CMD replaces the `claude` command (tests).
 import { readFileSync, realpathSync, statSync } from "node:fs";
 import { spawn, spawnSync } from "node:child_process";
@@ -16,7 +18,8 @@ import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import { expand, files, home as axaHome, pluginRoot } from "../paths.mjs";
 import { clip, safe } from "./text.mjs";
 
-export const DEFAULTS = { mode: "on", model: "claude-opus-5-5", effort: "high", timeout_ms: 10 * 60_000, rounds: 2 };
+export const MODES = new Set(["milestone", "turn", "off"]);
+export const DEFAULTS = { mode: "milestone", model: "claude-opus-5-5", effort: "high", timeout_ms: 15 * 60_000, milestone_timeout_ms: 30 * 60_000, rounds: 2, milestone_rounds: 3 };
 export const EDIT_TOOLS = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"]);
 export const ALLOWED_TOOLS = "Read,Grep,Glob,Bash(git diff:*),Bash(git status:*),Bash(git log:*),Bash(node --test:*),Bash(node --check:*),Bash(npm test:*),Bash(npm run build:*),Bash(npx tsc:*)";
 export const DISALLOWED_TOOLS = "Edit,Write,MultiEdit,NotebookEdit,WebFetch,WebSearch,Agent,Task";
@@ -31,21 +34,29 @@ export function reviewSettings(cwd, policyFile = files.policy) {
   const proj = String(cwd || "").replace(/\/\.claude\/worktrees\/[^/]+$/, "");
   const hit = Object.entries(p.projects || {}).find(([k]) => (/^[~/]/.test(k) ? expand(k) === proj : k === basename(proj)));
   const s = { ...DEFAULTS, ...(p.reviewer || {}), ...(p.default?.reviewer || {}), ...(hit?.[1]?.reviewer || {}) };
-  if (process.env.AXA_REVIEWER === "0" || s.mode !== "on") s.mode = "off";
+  if (s.mode === "on") s.mode = "turn"; // the old name
+  if (!MODES.has(s.mode)) s.mode = DEFAULTS.mode;
+  if (process.env.AXA_REVIEWER === "0") s.mode = "off";
   if (!["low", "medium", "high", "xhigh", "max"].includes(s.effort)) s.effort = DEFAULTS.effort;
   if (typeof s.model !== "string" || !/^[\w.:-]+$/.test(s.model)) s.model = DEFAULTS.model;
   s.timeout_ms = Number(s.timeout_ms) > 0 ? Number(s.timeout_ms) : DEFAULTS.timeout_ms;
+  s.milestone_timeout_ms = Number(s.milestone_timeout_ms) > 0 ? Number(s.milestone_timeout_ms) : DEFAULTS.milestone_timeout_ms;
   s.rounds = Number.isInteger(s.rounds) && s.rounds >= 0 ? s.rounds : DEFAULTS.rounds;
+  s.milestone_rounds = Number.isInteger(s.milestone_rounds) && s.milestone_rounds >= 0 ? s.milestone_rounds : DEFAULTS.milestone_rounds;
   return s;
 }
 
 // ---------- skip rules ----------
-// Review a worker's finished turn only when it changed code. run: the run (events.mjs) that just ended;
+// In "turn" mode, review a worker's finished turn only when it changed code ("milestone" mode reviews
+// batches of work on request instead; a fixer's turns are re-reviewed by the milestone loop).
+// run: the run (events.mjs) that just ended;
 // changed: whether git moved since the run started (null when unknown)
 export function shouldReview(s, run, { changed = null, settings = DEFAULTS } = {}) {
   if (!s || s.mode !== "claude" || !s.alive) return { review: false, why: "not a worker session" };
   if (s.status !== "done") return { review: false, why: `status is ${s.status}` };
   if (settings.mode === "off") return { review: false, why: "reviewer is off" };
+  if (settings.mode !== "turn") return { review: false, why: "milestone mode: reviewed at milestones, not per turn" };
+  if (fixerOf(s.id)) return { review: false, why: "a fixer: the milestone review re-checks it" };
   if (!run || run.status !== "done") return { review: false, why: "no finished run" };
   // a turn answering our block message is always checked again, even if it changed nothing
   if (!(run.edits > 0) && !changed && !String(run.prompt || "").startsWith(BLOCK_PREFIX)) return { review: false, why: "no code changed" };
@@ -61,6 +72,11 @@ export function gitState(cwd) {
   const diff = g("diff", "HEAD", "--no-color", "--no-ext-diff");
   return createHash("sha1").update(st.stdout).update(diff.stdout || "").digest("hex");
 }
+
+// ---------- fixer sessions (milestone.mjs opens them; the hub labels them, the per-turn review skips them) ----------
+const fixers = new Map(); // session id -> milestone review id
+export const fixerOf = (id) => fixers.get(id) || null;
+export const setFixer = (id, reviewId) => (reviewId ? fixers.set(id, reviewId) : fixers.delete(id));
 
 // ---------- the latest review per session (the hub's badges, list_sessions) ----------
 const reviews = new Map();
@@ -214,28 +230,57 @@ export function reviewPrompt({ goal, report, diff, untracked = [], truncated = f
 
 // ---------- running it ----------
 // The command line: AXA_REVIEWER_CMD (tests: a fake reviewer) or claude, plus the reviewer's flags
+// stream-json (with --verbose, which print mode needs for it) so a long review shows what it's doing
 export function reviewerArgs(settings) {
-  return ["-p", "--output-format", "json", "--model", settings.model, "--effort", settings.effort,
+  return ["-p", "--output-format", "stream-json", "--verbose", "--model", settings.model, "--effort", settings.effort,
     "--plugin-dir", pluginRoot, "--append-system-prompt", gatePrompt(),
     "--allowedTools", ALLOWED_TOOLS, "--disallowedTools", DISALLOWED_TOOLS];
 }
-export function runReviewer({ cwd, prompt, settings = DEFAULTS, env = process.env }) {
+// What one stream-json line says the reviewer is doing ("checks running: npm test"), or null
+export function progressOf(line) {
+  let o;
+  try { o = JSON.parse(line); } catch { return null; }
+  if (o?.type !== "assistant" || !Array.isArray(o.message?.content)) return null;
+  const use = o.message.content.filter((c) => c?.type === "tool_use").at(-1);
+  if (!use) return o.message.content.some((c) => c?.type === "text") ? "writing the verdict" : null;
+  if (use.name === "Bash") {
+    const cmd = squash(use.input?.command || "");
+    return /^(?:git|cat|ls|head|tail|grep|wc|find)\b/.test(cmd) ? "reading git and files" : `checks running: ${safe(clip(cmd, 80))}`;
+  }
+  return use.name === "Read" ? "reading files" : use.name === "Grep" || use.name === "Glob" ? "searching the code" : clip(String(use.name), 40);
+}
+// The verdict is the stream's last "result" line (or the whole output: a plain json run, a fake reviewer)
+const resultOf = (out) => out.split("\n").reverse().find((l) => /^\s*\{.*"type"\s*:\s*"result"/.test(l)) || out;
+// onProgress(text, steps): each step the reviewer takes. On a timeout the verdict is "error" and says
+// how far it got.
+export function runReviewer({ cwd, prompt, settings = DEFAULTS, env = process.env, onProgress = () => {} }) {
   const cmd = (env.AXA_REVIEWER_CMD || "claude").trim().split(/\s+/);
   const childEnv = { ...env, AXA_ROLE: "reviewer" };
   delete childEnv.AXA_TERMINAL_ID; delete childEnv.TMUX; delete childEnv.TMUX_PANE; // never traced as the worker's session
   return new Promise((done) => {
-    let out = "", err = "", finished = false;
+    let out = "", err = "", finished = false, line = "", progress = "starting", steps = 0;
     const end = (r) => { if (!finished) { finished = true; clearTimeout(timer); done(r); } };
     let child;
     try { child = spawn(cmd[0], [...cmd.slice(1), ...reviewerArgs(settings)], { cwd, env: childEnv, stdio: ["pipe", "pipe", "pipe"] }); }
     catch (e) { return end({ verdict: "error", summary: `couldn't start the reviewer: ${e.message}`, checks: [], findings: [] }); }
-    const timer = setTimeout(() => { child.kill("SIGTERM"); setTimeout(() => child.kill("SIGKILL"), 5000).unref?.(); end({ verdict: "error", summary: `the reviewer timed out after ${Math.round(settings.timeout_ms / 60000)} min`, checks: [], findings: [] }); }, settings.timeout_ms);
-    child.stdout.on("data", (c) => { if (out.length < 4 << 20) out += c; });
+    const timer = setTimeout(() => { child.kill("SIGTERM"); setTimeout(() => child.kill("SIGKILL"), 5000).unref?.(); end({ verdict: "error", summary: `the reviewer timed out after ${Math.round(settings.timeout_ms / 60000)} min (it got as far as: ${progress}, ${steps} step${steps === 1 ? "" : "s"})`, checks: [], findings: [] }); }, settings.timeout_ms);
+    child.stdout.on("data", (c) => {
+      c = String(c);
+      if (out.length < 8 << 20) out += c;
+      const lines = (line + c).split("\n");
+      line = lines.pop().slice(-(1 << 20));
+      for (const l of lines) {
+        const p = progressOf(l);
+        if (!p) continue;
+        steps++; progress = p;
+        try { onProgress(p, steps); } catch {}
+      }
+    });
     child.stderr.on("data", (c) => { if (err.length < 64 << 10) err += c; });
     child.on("error", (e) => end({ verdict: "error", summary: `couldn't start the reviewer: ${e.message}`, checks: [], findings: [] }));
     child.on("close", (code) => {
       if (code !== 0 && !out.trim()) return end({ verdict: "error", summary: `the reviewer exited with ${code}: ${clip(safe(err.trim().split("\n").pop() || ""), 160)}`, checks: [], findings: [] });
-      end(parseVerdict(out));
+      end(parseVerdict(resultOf(out)));
     });
     child.stdin.on("error", () => {});
     child.stdin.end(prompt);

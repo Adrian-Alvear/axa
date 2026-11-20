@@ -7,11 +7,12 @@ import { createServer } from "node:http";
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { randomBytes, timingSafeEqual } from "node:crypto";
-import { files, pluginRoot, port, srcDir } from "../paths.mjs";
+import { expand, files, inHome, pluginRoot, port, srcDir } from "../paths.mjs";
 import { activity, historyLines, logEvent, onChatSeen, onCommanderReply, onLine, runsSince, startTail, statusOf } from "./events.mjs";
 import * as V from "./voice.mjs";
 import * as S from "./sessions.mjs";
 import { addLink, listLinks, removeLink, startSupervisor } from "./supervisor.mjs";
+import { getMilestoneReview, listMilestoneReviews, startMilestone } from "./milestone.mjs";
 import { listAgents, listProjects, readRoster } from "./catalog.mjs";
 import { chatMessages, findChat, listChats } from "./claude-data.mjs";
 import { safe } from "./text.mjs";
@@ -104,6 +105,20 @@ const routes = [
     const r = await S.sendText(m[1], b.text, { enter: b.enter !== false, confirmed: b.confirmed_by_user === true });
     if (r.ok && fromUser(req)) S.noteInput(m[1]);
     return [r.ok ? 200 : 409, r];
+  }],
+  // milestone reviews (milestone.mjs): the commander's review_changes and `axa review`
+  ["GET", /^\/api\/review$/, () => [200, listMilestoneReviews()]],
+  ["GET", /^\/api\/review\/([\w-]+)$/, (m) => { const r = getMilestoneReview(m[1]); return [r ? 200 : 404, r || { error: "no such review" }]; }],
+  ["POST", /^\/api\/review$/, async (m, req) => {
+    const b = await readBody(req);
+    let cwd = typeof b.cwd === "string" && b.cwd.trim() ? expand(b.cwd.trim()) : "";
+    if (!cwd && b.project) {
+      const ps = listProjects(), p = ps.find((x) => x.name.toLowerCase() === String(b.project).toLowerCase());
+      if (!p) return [404, { error: `No project called "${b.project}". Known: ${ps.map((x) => x.name).join(", ") || "none"}` }];
+      cwd = p.path;
+    }
+    if (!cwd || !inHome(cwd) || !existsSync(cwd)) return [400, { error: "Give a project, or a folder in your home folder (cwd)." }];
+    return [200, startMilestone({ cwd, base: b.base || undefined, goal: b.goal, source: b.source === "cli" ? "cli" : "commander" })];
   }],
   ["GET", /^\/api\/voice$/, async () => [200, await V.info()]],
   ["POST", /^\/api\/voice\/stop$/, () => { V.stop(); return [200, {}]; }],

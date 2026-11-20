@@ -12,10 +12,11 @@
 import { chmodSync, readFileSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { files } from "../paths.mjs";
-import { lastInputAt, listSessions, sendText } from "./sessions.mjs";
+import { closeSession, createSession, lastInputAt, listSessions, sendText } from "./sessions.mjs";
 import { lastRun, logEvent, onRunStart } from "./events.mjs";
 import { diffOf, headOf } from "./git.mjs";
-import { BLOCK_PREFIX, blockMessage, citedSpecs, confirmBlock, gitState, nextStep, reviewOf, reviewPrompt, reviewSettings, runReviewer, setReview, shouldReview, verdictLine } from "./reviewer.mjs";
+import { mdeps, tickMilestones } from "./milestone.mjs";
+import { BLOCK_PREFIX, blockMessage, citedSpecs, confirmBlock, fixerOf, gitState, nextStep, reviewOf, reviewPrompt, reviewSettings, runReviewer, setReview, shouldReview, verdictLine } from "./reviewer.mjs";
 import { clip } from "./text.mjs";
 
 const SUPERVISE = process.env.AXA_SUPERVISOR !== "0";
@@ -91,7 +92,8 @@ function gateDone(p, s) {
     let raw;
     try {
       const d = await diff(s.cwd, since);
-      raw = await review({ cwd: s.cwd, settings, prompt: reviewPrompt({ goal, report: s.last_report || run.report, diff: d.diff, untracked: d.untracked || [], truncated: d.truncated, since: d.since, head: d.head, commits: d.commits || [], specs: citedSpecs(goal), round: fix ? rounds.get(s.id).blocks : 0 }) });
+      const onProgress = (progress) => { const cur = reviewOf(s.id); if (cur?.verdict === "reviewing" && cur.run === run.id) setReview(s.id, { ...cur, progress }); };
+      raw = await review({ cwd: s.cwd, settings, onProgress, prompt: reviewPrompt({ goal, report: s.last_report || run.report, diff: d.diff, untracked: d.untracked || [], truncated: d.truncated, since: d.since, head: d.head, commits: d.commits || [], specs: citedSpecs(goal), round: fix ? rounds.get(s.id).blocks : 0 }) });
     } catch (e) { raw = { verdict: "error", summary: `the reviewer failed: ${e.message}`, checks: [], findings: [] }; }
     const r = confirmBlock(raw, s.cwd);
     const step = nextStep(rounds, s.id, run, r.verdict, settings.rounds);
@@ -146,6 +148,8 @@ export function supervise(list) {
     if (primed && s.usage?.over_budget && !budgetTold.has(s.id)) { budgetTold.add(s.id); pending.set(`${s.id}:budget`, { id: s.id, name: s.name, status: "over_budget", since: Date.now() }); }
     // the first pass only learns the current states; afterwards, report changes into a notable state
     if (!primed || prev === undefined || prev === s.status) continue;
+    // a fixer's finished turn belongs to its milestone review (milestone.mjs), not to the commander
+    if (s.status === "done" && fixerOf(s.id)) { pending.delete(s.id); continue; }
     if (NOTABLE[s.status]) pending.set(s.id, { id: s.id, name: s.name, status: s.status, since: Date.now() });
     else pending.delete(s.id);
   }
@@ -164,7 +168,7 @@ export function supervise(list) {
   if (Date.now() - deps.lastInputAt(cmd.id) < QUIET_MS) return;
   while (wakes.length && Date.now() - wakes[0] > 3600_000) wakes.shift();
   if (wakes.length >= WAKES_PER_HOUR) return; // a runaway loop: updates wait (the needs-you badge still shows them)
-  const items = ready.map(([, p]) => `${p.name} (${p.id}) ${NOTABLE[p.status]}${p.line ? ` · ${p.line}` : ""}`);
+  const items = ready.map(([, p]) => p.text || `${p.name} (${p.id}) ${NOTABLE[p.status]}${p.line ? ` · ${p.line}` : ""}`);
   const text = `[AXA supervisor: automatic update from the console, not typed by the user] ${items.join("; ")}. Handle this under your supervisor rules: check each one, verify any claims, take the next step if it is within what the user asked, and end with a short report for the user.`;
   deps.send(cmd.id, text).then((r) => {
     if (!r.ok) return;
@@ -174,11 +178,24 @@ export function supervise(list) {
   });
 }
 
+// A milestone review's result (milestone.mjs) wakes the commander like a session update does
+export function notifyCommander(key, text) {
+  if (!SUPERVISE) return;
+  pending.set(key, { id: key, name: "milestone review", status: "milestone", text, since: Date.now() });
+}
+Object.assign(mdeps, {
+  open: ({ cwd, name }) => createSession({ cwd, mode: "claude", name }),
+  close: (id) => closeSession(id),
+  send: (id, text) => deps.send(id, text),
+  notify: notifyCommander,
+});
+
 export function startSupervisor() {
   setInterval(() => {
     const list = listSessions();
     for (const s of list) { const c = since.get(s.id); if (!c || c.status !== s.status) since.set(s.id, { status: s.status, at: Date.now() }); }
     runLinks(list);
+    tickMilestones(list);
     if (SUPERVISE) { trackReviews(list); supervise(list); }
   }, 3000);
 }

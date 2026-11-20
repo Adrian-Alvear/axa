@@ -139,6 +139,7 @@ axa                  the hub
 axa chat             talk to the commander here, as a plain Claude Code session
 axa web              the web console in your browser (same sessions, also works on your phone)
 axa status [--json]  what's running, what needs you first
+axa review [path] [--base <sha>]   a milestone review of a repo's recent work
 axa attach <name>    one session in this terminal, no hub around it (Ctrl-] detaches)
 axa stop [--all]     stop the background daemon (--all also ends every session)
 axa restart          restart the daemon; sessions keep running
@@ -157,13 +158,14 @@ src/
     events.mjs         status of each session from the hook events; helper agents; run history
     supervisor.mjs     wakes the commander when a session finishes, gets stuck or needs you; links
     reviewer.mjs       the independent reviewer: runs it, reads its verdict, confirms block findings
+    milestone.mjs      milestone reviews: the range, the base, the verifier/fixer loop
     claude-data.mjs    your past chats and token usage, read from ~/.claude/projects
     catalog.mjs        projects and agents
     git.mjs            branch and changes, diffs, worktrees
     screen.mjs         reading Claude's prompts off the screen
   tui/               the hub: app.mjs (screens, keys), live.mjs (a session view), draw.mjs, ...
   web/index.html     the web console
-mcp/                 the commander's session tools (list, read, send, goal, open, close, link)
+mcp/                 the commander's session tools (list, read, send, goal, open, close, link, review)
 hooks/               event log, permission policy, approver, verify gate
 agents/ skills/      axa:builder / reviewer / researcher, the review gate's prompt; the axa, verify and web skills
 ```
@@ -187,7 +189,7 @@ agents/ skills/      axa:builder / reviewer / researcher, the review gate's prom
   writing to `~/.axa` or answering prompts. Details: `hooks/policy.mjs`, tests in `test/`.
 - **"Done" means checked.** If a session edits code and tries to finish without running a check,
   AXA's verify gate sends it back once. `"verifyGate": "off"` in `~/.axa/policy.json` turns it off.
-- **An independent review before "done".** See [Independent review](#independent-review).
+- **An independent review at milestones** (or after every turn, if you choose), with a fixer loop. See [Independent review](#independent-review).
 - **AXA wakes itself.** When a session finishes, gets stuck or needs you, the daemon tells the
   commander (only when it's idle and you aren't typing in it), so it can check the work and report.
   `AXA_SUPERVISOR=0` turns it off.
@@ -196,11 +198,35 @@ agents/ skills/      axa:builder / reviewer / researcher, the review gate's prom
 
 ## Independent review
 
-When a project session finishes a turn that changed code (it edited files, or git moved), the daemon
-runs a separate reviewer before the commander hears about it: a headless `claude -p` in the project
-folder, on `claude-opus-5-5` at high effort, with its own prompt (`agents/reviewer-gate.md`). It is
-read-only (`AXA_ROLE=reviewer` in `hooks/policy.mjs`): it reads files, looks at git diff/status/log and
-runs the project's own checks (tests, type-check, build). It never edits, pushes or goes on the web.
+A separate reviewer checks the work: a headless `claude -p` in the project folder, on `claude-opus-5-5`
+at high effort, with its own prompt (`agents/reviewer-gate.md`). It is read-only (`AXA_ROLE=reviewer` in
+`hooks/policy.mjs`): it reads files, looks at git diff/status/log and runs the project's own checks
+(tests, type-check, build) once per review. It never edits, pushes or goes on the web. When it runs
+depends on `reviewer.mode`:
+
+- **`"milestone"` (the default): a batch of work, on request.** The commander calls `review_changes`
+  (before a push, or when a batch of work is done), or you run `axa review [path] [--base <sha>]`
+  (the same engine, through the daemon's `POST /api/review`; it prints the progress and the verdict, and
+  the commander isn't woken for it). The reviewer gets the range base..HEAD plus uncommitted and new
+  files: the commit subjects and the diff (over ~150 KB: per-file stats and the most important files'
+  diffs, and it reads the rest itself), and is asked to review the batch as a whole: does each commit do
+  what its message says, problems across commits, regressions, missing tests, docs, security, leftovers.
+  The base is `--base` if given, else the last milestone of that repo and branch (`~/.axa/milestones.json`),
+  else the merge-base with the upstream (`@{upstream}`, or `origin/<branch>`), else `HEAD~20`.
+  Worker turns get no model review in this mode; the verify gate still runs.
+- **The fixer loop.** When the confirmed verdict is `block` (or a `warn` with confirmed high findings),
+  the daemon opens a new worker session named **fixer** in that repo (like `open_session`: accept-edits,
+  the normal policy) and sends it one self-contained instruction: the confirmed findings (file:line,
+  quote, problem, evidence), fix exactly these, add or adjust tests, run the checks, commit locally as
+  `Fix review findings: …`, change nothing else, never push. When the fixer finishes, the reviewer
+  re-reviews the same base..new HEAD with the previous findings listed. At most 3 fix rounds
+  (`milestone_rounds`); then the commander hears what's still open (the fixer stays open). On approve
+  (or a warn with nothing serious) the milestone is recorded, the fixer is closed and the commander gets
+  the verdict and the fix commits: `milestone review <repo>: ✓ approve · …`. The fixer never reviews;
+  the reviewer never edits.
+- **`"turn"`: every code-changing turn.** When a project session finishes a turn that changed code (it
+  edited files, or git moved), the reviewer runs before the commander hears about it (below).
+- **`"off"`**, or `AXA_REVIEWER=0` in the daemon's environment: no reviews.
 
 - **What it checks:** that the diff does what was asked (checked against the instruction, not the
   session's report), that the checks pass, and what's around the change: side effects and unrelated
@@ -215,16 +241,19 @@ runs the project's own checks (tests, type-check, build). It never edits, pushes
   as a failed review.
 - **Blocks are double-checked.** Before a block counts, the daemon itself looks for each serious
   finding's quoted snippet in that file near that line. Findings it can't find are dropped, and with
-  none left the block becomes a warning. A confirmed block goes back to the session to fix (at most two
-  rounds per instruction); the third time, the commander gets the findings instead.
-- **Where you see it:** a badge on the session (`… reviewing`, `✓ reviewed`, `⚠ review`, `✗ blocked`)
-  on the Control map and in the Sessions list, `review: …` in the log, the verdict line in the
-  commander's update, and the findings in `list_sessions`. If the reviewer times out (10 minutes) or
-  fails, AXA carries on as before and says the turn wasn't reviewed.
+  none left the block becomes a warning. In turn mode a confirmed block goes back to the session to fix
+  (at most two rounds per instruction); the third time, the commander gets the findings instead. In
+  milestone mode it goes to the fixer (above).
+- **Where you see it:** a badge on the session (`… reviewing`, `✓ reviewed`, `⚠ review`, `✗ blocked`,
+  `fixer (milestone review)`) on the Control map and in the Sessions list, `review: …` and
+  `milestone review: …` in the log, the verdict line in the commander's update, and the findings and
+  running milestone reviews (with their round) in `list_sessions`. A running review shows what it is
+  doing (`reviewing… (checks running: npm test)`). If the reviewer times out (a turn review after 15
+  minutes, a milestone review after 30) or fails, AXA carries on, says the work wasn't reviewed and how
+  far the reviewer got.
 - **Settings** in `~/.axa/policy.json`, for all projects or one:
-  `{ "default": { "reviewer": { "model": "claude-opus-5-5", "effort": "high" } }, "projects": { "notes": { "reviewer": { "mode": "off" } } } }`.
-  **Turn it off** with `"reviewer": { "mode": "off" }`, or `AXA_REVIEWER=0` in the daemon's environment.
-  Each review is a real, billed model run.
+  `{ "default": { "reviewer": { "mode": "milestone", "model": "claude-opus-5-5", "effort": "high", "timeout_ms": 900000, "milestone_timeout_ms": 1800000, "milestone_rounds": 3 } }, "projects": { "notes": { "reviewer": { "mode": "off" } } } }`
+  (`"mode": "on"`, the old name, means `"turn"`). Each review is a real, billed model run.
 
 ## Make it yours
 

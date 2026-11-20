@@ -13,7 +13,7 @@ import { expand, files, home, inHome, pluginRoot } from "../paths.mjs";
 import { SOCKET, TMUX_CONF, tmuxEnv } from "./tmux-client.mjs";
 import { safe } from "./text.mjs";
 import { gitInfo, diffOf, makeWorktree, removeWorktree } from "./git.mjs";
-import { reviewOf } from "./reviewer.mjs";
+import { fixerOf, reviewOf } from "./reviewer.mjs";
 import { CHAT_ID, usageOf } from "./claude-data.mjs";
 import { parseChoices, promptOnScreen } from "./screen.mjs";
 
@@ -111,6 +111,7 @@ function summary(t) {
     worktree: m.worktree,
     recovered: !!t.recovered,
     review: t.mode === "claude" ? reviewOf(t.id) : null, // the independent reviewer's latest verdict
+    fixer: fixerOf(t.id) || undefined, // the milestone review (id) this session fixes findings for
   };
 }
 export const listSessions = () => [...terms.values()].map(summary);

@@ -9,12 +9,13 @@ import { safe } from "./text.mjs";
 
 // GIT_OPTIONAL_LOCKS=0 keeps `git status` from taking the index lock while a session itself runs git
 const gitEnv = () => ({ ...cleanEnv(), GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0" });
-const git = (cwd, args, max = 1 << 20) => new Promise((ok) =>
-  execFile("git", args, { cwd, env: gitEnv(), timeout: 5000, maxBuffer: max }, (err, out) => ok(err ? null : out)));
+const git = (cwd, args, max = 1 << 20, timeout = 5000) => new Promise((ok) =>
+  execFile("git", args, { cwd, env: gitEnv(), timeout, maxBuffer: max }, (err, out) => ok(err ? null : out)));
+export { git as gitAsync };
 export const gitSync = (cwd, ...args) => spawnSync("git", args, { cwd, encoding: "utf8", env: gitEnv(), timeout: 15_000 });
 
 // Secret files never show in a diff
-const NO_SECRETS = ["--", ".", ":(exclude,glob)**/.env*", ":(glob,exclude)**/*.pem", ":(glob,exclude)**/*.key", ":(glob,exclude)**/id_rsa*", ":(glob,exclude)**/credentials*"];
+export const NO_SECRETS = ["--", ".", ":(exclude,glob)**/.env*", ":(glob,exclude)**/*.pem", ":(glob,exclude)**/*.key", ":(glob,exclude)**/id_rsa*", ":(glob,exclude)**/credentials*"];
 
 // ---------- status: { branch, files, untracked, added, removed, ahead, behind }, refreshed every GIT_MS ----------
 const GIT_MS = 10_000;
