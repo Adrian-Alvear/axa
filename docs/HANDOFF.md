@@ -1,4 +1,4 @@
-# AXA handoff (2026-11-19, work laptop -> home Mac)
+# AXA handoff (updated 2026-11-23, work laptop -> home Mac)
 
 Branch: `axa-v2-hub` on GitHub (pushed from the local `axa-v2`). GitHub's own `axa-v2` is a separate, older line of work
 (33 commits under `console/`) and was left untouched on purpose: the two branches rebuilt AXA differently.
@@ -48,20 +48,48 @@ axa                                                     # then tell the commande
   any more (out-of-vocabulary fallback); closing phrase "You can read the rest on screen." (523f3e0, dcbc297).
 - Kokoro is installed on the work laptop (`~/.axa/voices/kokoro`, resident mode, voice af_heart).
 
+## Also done (2026-11-23), all pushed to `axa-v2-hub` (last commit ca5956d, 290 tests passing)
+- Sessions start unattended: the terminals MCP server is declared in `.claude-plugin/plugin.json` (root `.mcp.json` gone),
+  only the commander (AXA_ROLE=commander) gets the tools, a "needs trust" status, `axa trust <project>` (run by the user),
+  no typing before a session has started, `open_session` `wait`; a new commander runs in `~/.axa/commander/` (0d1edfe).
+- Status detection: exited / failed / limited (with reset time), notification types, AskUserQuestion menus, submit check
+  (retype once, then error), permission waits don't count as stuck (7af0581). Fixed after: Claude runs as a child of the
+  pane's bash, so "exited" checks the pane pid has no child (6634e62); a "waiting" with nothing on screen for 10 s becomes
+  ready, because Esc on a question menu fires no hook (staleWait, b9af9da).
+- Safety: no leading "!" and only /goal /compact /clear /context /cost in typed text; workers can't run the axa CLI, read or
+  write ~/.claude.json, or start Claude without permission checks (0ab5553). Not done: proving an answer comes from the hub
+  (sessions run as the same OS user; needs sandboxing with bubblewrap + socat) -> `docs/tasks/answer-auth.md`.
+- Notifications (b9af9da): every session event -> "⚙ notice" lines in the commander chat, the ◎ bell (`n` opens the list,
+  `N` is now new session), spoken (rate-limited) when voice is on, desktop toast for needs-you. `GET /api/notifications`.
+- Projects review (419c2dc): `axa projects`, the commander's review_projects, `GET /api/projects`, Projects tab cards
+  (g goal, r review, h handoff). Daily brief: `axa brief HH:MM|off|now` or the settings row (ca5956d); off until set.
+- Spoken summaries (fc41192): long replies are spoken as a 2-5 sentence Haiku summary (10 s limit, falls back to whole
+  sentences + "There's more detail in the chat."); a question for the user is always said.
+- Mute silences every speaking path; the approver treats the latest /goal as the task and reads the spec .md it cites,
+  and no longer reuses decisions across a new goal; `npm run check` (syntax + both suites, PASS/FAIL table) (6cb5a23).
+- Kokoro speaks sentence by sentence (starts in ~1 s), new words load once, a slow chunk is retried then skipped, never
+  falls back to the Windows voice unless Kokoro can't start (`voiceFallback`: silent default) (1bef559).
+- Milestone review of the batch: warn, 4 findings fixed (WSL player hang, Esc cancels summary, brief once a day, README);
+  hub white lines fixed (✉ drawn 2 columns wide by Windows Terminal -> ◎; autowrap off; rows cleared to end) (405a3bf).
+
+## Other projects (same day)
+- feed (`~/feed`, pushed to GitHub `main`, a5cfba8): QA round 2 phone/UI polish; undated Anthropic items no longer fill
+  "Today" (real dates, quiet-day widening, one story per source in Top stories); Refresh froze (a shared feed parser was
+  poisoned by a Google sign-in page during source suggestions) -> now ~0.5 s. Its own docs/HANDOFF.md is current.
+  The local database on the work laptop was created fresh today (7 default sources); the Mac has its own.
+
 ## Waiting on the user
 - Make `axa-v2-hub` the main line: GitHub's `main` (8bab5e3) is an ancestor, so it's a clean fast-forward. Only on the
   user's explicit "yes, update main"; optionally rename GitHub's old `axa-v2` to `axa-v2-console-archive`.
-- Reset the stored warn milestone: `axa review --reset-milestone /home/adrianwsl/axa`, then run a milestone review.
-- On the Mac: `axa voice install kokoro`; the personal Claude Code status line isn't in this repo.
+- Pick a daily brief time (`,` -> Daily brief, or `axa brief 09:00`); try `axa brief now`.
+- On the Mac: `axa voice install kokoro`; optionally `axa trust <project>` per project; the personal Claude Code status
+  line isn't in this repo.
 
-## Next (agreed with the user)
-3. (done) Milestone reviews with a verifier <-> fixer loop: `docs/tasks/milestone-review.md` (milestone mode becomes the default;
-   per-turn reviews only cheap checks; one Opus review per batch, a fresh fixer session fixes confirmed findings, re-check,
-   max 3 rounds; longer timeouts).
-4. Run the first milestone review over everything since the last push, fix what it confirms, then push again.
-5. Later, from the research (recommended order): unattended session start (no trust/MCP prompts: move the MCP server into
-   plugin.json, launch workers with --settings), correct status detection (SessionEnd, StopFailure, AskUserQuestion,
-   exited Claude), then the approval card / safer approving, cheaper status polling and hooks, desktop notifications.
+## Next up
+1. A visual check of the new hub screens with screenshots (bell + Notifications list, Projects tab actions, settings row).
+2. Kokoro installer: links for linux-aarch64 / win-x64, detect a half-finished install.
+3. Proving answers come from the hub (sandboxed workers): see `docs/tasks/answer-auth.md`.
+4. Later (user's call): voice input (talk to AXA instead of typing).
 
 ## Decisions to keep
 - Reviewer model: Opus 5.5 (the user chose it over Fable/Sonnet). Reviews at milestones, not every turn.
