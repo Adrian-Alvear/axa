@@ -419,7 +419,8 @@ const dur = (ms) => { const m = Math.floor(ms / 60000); return m < 60 ? `${m}m` 
 // Pieces drop from the right when it's narrow. `on` ("bar") draws it as a status bar.
 export function axaStatusLine(cmd, sessions, w, maxRows = 2, { mode = "", on = null, voice = false } = {}) {
   const u = cmd.usage || {}, segs = [];
-  if (voice) segs.push(["voice on", "accent"]);
+  // voice: true (on) or what it's doing now ("speaking summary")
+  if (voice) segs.push([voice === true ? "voice on" : `🔊 ${voice}`, "accent"]);
   if (mode) segs.push([`${mode.startsWith("plan") ? "⏸" : "⏵⏵"} ${mode}`, mode.startsWith("bypass") ? "stuck" : "accent"]);
   if (u.model) segs.push([`◆ ${modelName(u.model)}`, "accent"]);
   if (u.context) {

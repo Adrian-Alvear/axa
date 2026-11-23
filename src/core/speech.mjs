@@ -172,7 +172,8 @@ const tidy = (p) => p.replace(/\s+/g, " ")
   .replace(/^[\s,.;:]+/, "").trim();
 
 // opts.more: false drops the closing "there's more on screen" sentence (ui.json "voiceMoreHint": false)
-export function toSpeech(md, { more = true } = {}) {
+// opts.full: every paragraph, nothing cut (a spoken summary, voiceSummary "full")
+export function toSpeech(md, { more = true, full = false } = {}) {
   let t = String(md || "").replace(/\r\n?/g, "\n");
   let saidCode = false, saidTable = false;
   const mark = (kind) => {
@@ -203,6 +204,7 @@ export function toSpeech(md, { more = true } = {}) {
     else { cur.text += " " + x; cur.head = cur.head && (heading || label); }
   }
   if (!paras.length) return "";
+  if (full) return pronounce(tidy(paras.map((p) => p.text).join(" "))).trim();
   // the short version: the first paragraph (with the next ones while it's very short or only a heading), cut at a sentence
   let said = "", used = 0, last = null;
   while (used < paras.length && (!last || said.length < 40 || last.head)) { last = paras[used++]; said = (said ? said + " " : "") + last.text; }

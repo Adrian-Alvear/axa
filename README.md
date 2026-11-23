@@ -70,9 +70,16 @@ It needs a window of about 100×26 or more; smaller, it shows the sessions list 
 AXA can read the commander's finished replies aloud, Jarvis-style, with your computer's own voices: `say` on
 macOS, Windows' built-in voices (System.Speech through `powershell.exe`) on Windows and WSL, `spd-say` or
 `espeak` on Linux. It's off by default: press `m` on Control (or turn on **Voice** in `,` settings, where you
-also pick the voice and speed and can test it). `AXA_VOICE=1` / `AXA_VOICE=0` forces it on or off. It says the
-short version (the first paragraph, code and tables replaced by "code on screen", paths and links by "a file
-path" / "a link") and ends with "The details are on screen." when there's more. `Esc` on Control stops it.
+also pick the voice and speed and can test it). `AXA_VOICE=1` / `AXA_VOICE=0` forces it on or off. A short
+reply is said as it is. A long one is said as a **spoken summary**: a fast model (`claude -p --model
+claude-haiku-5-5`, no tools, no MCP servers, in an empty temp folder, 10 s limit) rewrites it into 2-5
+sentences that keep every decision, number that matters, result and any question you must answer (with its
+options), then the usual speech clean-up runs on it (paths and links become "a file path" / "a link"). If
+the summary fails or takes too long, it says the first sentences that fit (never a cut mid-sentence) and
+"There's more detail in the chat."; a question for you is always said. `"voiceSummary"` in `ui.json` (or
+`,` settings): `model` (default), `first-paragraph` (the old short version) or `full`. Summaries are cached by
+reply, the hub never waits for one, the status bar shows "🔊 speaking summary", and `Esc` on Control stops it
+(also one still being written). Batches of notifications and the daily brief are summarised the same way.
 The daemon does the speaking, so it works from the hub or the web console, and only the commander ever talks:
 never a worker session. To talk back, turn on Claude Code's own hold-to-talk dictation (`/config`,
 `"voiceEnabled": true`) in the commander's session.

@@ -29,6 +29,8 @@ const SPEEDS = { "-2": "slowest", "-1": "slow", 0: "normal", 1: "fast", 2: "fast
 const MOTIONS = ["full", "reduced", "off"];
 // notifications (notify.mjs): ui.json "notify": { voice, desktop }
 const NOTIFY_LEVELS = ["needs-you", "all", "off"];
+// spoken summaries (summary.mjs): ui.json "voiceSummary"
+const SUMMARY_HINT = { model: "a short summary (a fast model writes it)", "first-paragraph": "their first paragraph", full: "all of it" };
 const NOTIFY_HINT = { "needs-you": "what needs you (and finished work, spoken)", all: "everything", off: "off" };
 const PANELS = ["control", "sessions", "chats", "agents", "projects"];
 const TITLES = { control: "Control", sessions: "Sessions", chats: "Chats", agents: "Agents", projects: "Projects" };
@@ -92,8 +94,10 @@ export async function runTui() {
   // what a click on Approve would approve: this session and this very prompt
   const armKey = (s) => `${s.id}\n${s.choices?.question}\n${yesOpt(s.choices)?.n}`;
 
+  let voiceState = null; // what the daemon's voice is doing ("speaking summary"), shown in the status bar
   async function pollSessions() {
     try { data.sessions = await call("/api/terms"); err = ""; } catch (e) { err = e.message; }
+    if (voiceOn()) call("/api/voice/now").then((v) => { if (v.now !== voiceState) { voiceState = v.now; schedule(); } }, () => {});
     afterPoll();
   }
   async function pollNotes() {
@@ -440,7 +444,7 @@ export async function runTui() {
       if (cmdSel && cmdSel.scroll !== cmdScroll) cmdSel = null; // the conversation scrolled: the selection goes
       // one full-width status bar under it: mode · model · context · tokens · agents · sessions
       const c = commander();
-      rowsOut.push(c ? axaStatusLine(c, data.sessions, W, 1, { mode: ctl.cmdStatus.mode, on: "bar", voice: voiceOn() })[0] : line([[" AXA is offline · press a to start it", "barDim"]], W, [], "bar"));
+      rowsOut.push(c ? axaStatusLine(c, data.sessions, W, 1, { mode: ctl.cmdStatus.mode, on: "bar", voice: voiceOn() && (voiceState || true) })[0] : line([[" AXA is offline · press a to start it", "barDim"]], W, [], "bar"));
       return rowsOut;
     }
     if (W < 90) { listArea = { x0: 1, x1: W, y0, y1: y0 + h - 1, panel }; return listRows(panel, 1, y0, W, h); }
@@ -772,6 +776,7 @@ export async function runTui() {
       { label: "Voice speed", hint: SPEEDS[cfg.voiceRate] || "normal", value: "voiceRate" },
       { label: "Say when there's more on screen", hint: cfg.voiceMoreHint === false ? "off" : "on", value: "voiceMoreHint" },
       { label: "Test the voice", hint: "says \"AXA voice check.\"", value: "voiceTest" },
+      { label: "Long replies are spoken as", hint: SUMMARY_HINT[cfg.voiceSummary] || SUMMARY_HINT.model, value: "voiceSummary" },
       { label: "Speak notifications", hint: NOTIFY_HINT[cfg.notify?.voice || "needs-you"], value: "notifyVoice" },
       { label: "Desktop notifications", hint: NOTIFY_HINT[cfg.notify?.desktop || "needs-you"], value: "notifyDesktop" },
     ];
@@ -783,6 +788,7 @@ export async function runTui() {
       if (o.value === "bell") cfg.bell = !cfg.bell;
       if (o.value === "motion") { cfg.motion = cycle(MOTIONS, MOTIONS.includes(cfg.motion) ? cfg.motion : "full"); setMotion(motionNow()); }
       if (o.value === "voice") { if (voiceEnv) flash(`voice is forced ${voiceEnv} by AXA_VOICE`); else { cfg.voice = voiceOn() ? "off" : "on"; if (cfg.voice === "off") stopVoice(); } }
+      if (o.value === "voiceSummary") cfg.voiceSummary = cycle(Object.keys(SUMMARY_HINT), SUMMARY_HINT[cfg.voiceSummary] ? cfg.voiceSummary : "model");
       if (o.value === "notifyVoice") cfg.notify = { ...cfg.notify, voice: cycle(NOTIFY_LEVELS, cfg.notify?.voice || "needs-you") };
       if (o.value === "notifyDesktop") cfg.notify = { ...cfg.notify, desktop: cycle(NOTIFY_LEVELS, cfg.notify?.desktop || "needs-you") };
       if (o.value === "voiceMoreHint") cfg.voiceMoreHint = cfg.voiceMoreHint === false;

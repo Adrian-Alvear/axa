@@ -18,6 +18,8 @@ import { chatMessages, findChat, listChats } from "./claude-data.mjs";
 import { safe } from "./text.mjs";
 import { notifier, notifySettings, voiceHooks } from "./notify.mjs";
 import { briefDue, briefText, reviewProjects } from "./projects.mjs";
+import { spokenReply, summaryMode } from "./summary.mjs";
+import { SHORT } from "./speech.mjs";
 import { readMilestones } from "./milestone.mjs";
 
 // every project in progress (projects.mjs; cached 60 s, sessions always fresh)
@@ -50,15 +52,39 @@ const fromUser = (req) => (req.headers["sec-fetch-site"] === "same-origin" && re
 S.setStatusSource(statusOf);
 // notifications (notify.mjs): from the live event log; spoken when the voice is on and idle
 onLine((line) => { try { notifier.event(JSON.parse(line)); } catch {} });
-Object.assign(voiceHooks, { on: () => V.settings().on, busy: () => V.speaking(), speak: (text) => { const t = V.toSpeech(safe(text), { more: false }); if (t) V.speak(t); } });
+Object.assign(voiceHooks, { on: () => V.settings().on, busy: () => V.speaking() || summarizing > 0, speak: (text, items = []) => speakNotes(text, items) });
 onChatSeen(S.noteChat);
 // AXA's voice: only the commander's own session, only when voice is on (re-read from ui.json each time)
+// A long reply is spoken as a summary a fast model writes (summary.mjs); the hub never waits for it, and Esc
+// (POST /api/voice/stop) cancels one still being written. voiceNow is what the status bar shows.
+let summarizing = 0, voiceGen = 0, voiceNow = null;
+async function say(plan, gen) {
+  if (gen !== voiceGen || !plan.text) return;
+  voiceNow = plan.how === "summary" ? "speaking summary" : "speaking";
+  try { await V.speak(plan.text); } finally { if (gen === voiceGen && !V.speaking()) voiceNow = null; }
+}
+async function planned(fn) {
+  const gen = ++voiceGen;
+  summarizing++; voiceNow = "writing summary";
+  let plan;
+  try { plan = await fn(); } catch { plan = { text: "" }; } finally { summarizing--; if (gen === voiceGen) voiceNow = null; }
+  return say(plan, gen);
+}
 onCommanderReply((id, message) => {
   const vs = V.settings();
   if (S.listSessions().find((s) => s.id === id)?.mode !== "axa" || !vs.on) return;
-  const text = V.toSpeech(safe(message), { more: vs.moreHint });
-  if (text) V.speak(text);
+  planned(() => spokenReply(safe(message), { more: vs.moreHint }));
 });
+// notifications: one is said as it is; a batch, or one long one (the daily brief), is summarised the same way
+function speakNotes(text, items) {
+  const long = items.length > 1 || V.toSpeech(text, { full: true }).length > SHORT;
+  if (!long || summaryMode() !== "model") return planned(async () => ({ text: V.toSpeech(safe(text), { more: false }), how: "short" }));
+  const md = items.map((n) => `- ${n.title}${n.body ? `: ${n.body}` : ""}`).join("\n");
+  return planned(async () => {
+    const r = await spokenReply(safe(md), { mode: "model" });
+    return r.how === "summary" ? r : { text: items.length > 1 ? V.toSpeech(safe(text), { more: false }) : r.text, how: "fallback" };
+  });
+}
 
 // ---------- http ----------
 const json = (res, code, body) => { res.writeHead(code, { "content-type": "application/json" }); res.end(JSON.stringify(body)); };
@@ -145,7 +171,9 @@ const routes = [
   ["GET", /^\/api\/notifications$/, (m, req, u) => { const since = Number(u.searchParams.get("since")) || 0, all = notifier.list(); return [200, { items: all.filter((n) => n.at > since).slice(-Math.min(200, Number(u.searchParams.get("limit")) || 200)), total: all.length }]; }],
   ["POST", /^\/api\/notifications\/clear$/, () => { notifier.clear(); return [200, {}]; }],
   ["GET", /^\/api\/voice$/, async () => [200, await V.info()]],
-  ["POST", /^\/api\/voice\/stop$/, () => { V.stop(); return [200, {}]; }],
+  ["POST", /^\/api\/voice\/stop$/, () => { voiceGen++; voiceNow = null; V.stop(); return [200, {}]; }],
+  // what the voice is doing now, for the status bar: "writing summary" | "speaking summary" | "speaking" | null
+  ["GET", /^\/api\/voice\/now$/, () => [200, { now: voiceNow }]],
   ["POST", /^\/api\/voice\/test$/, () => {
     const b = V.detect(), { engine } = V.settings();
     if (engine !== "kokoro" && !b.name) return [409, { error: b.why }];
