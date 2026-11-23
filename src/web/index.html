@@ -1031,7 +1031,7 @@ const PLANET_R = 300;
 let terms = []; // latest /api/terms
 const projectSessions = () => terms.filter((t) => t.mode !== "axa");
 const planetEls = new Map();
-const STATUS_TEXT = { starting: "starting", ready: "ready", working: "working", done: "✓ done", waiting: "⚠ needs you", needs_trust: "⚠ needs trust", stuck: "⏳ stuck", exited: "exited" };
+const STATUS_TEXT = { starting: "starting", ready: "ready", working: "working", done: "✓ done", waiting: "⚠ needs you", needs_trust: "⚠ needs trust", stuck: "⏳ stuck", limited: "⏸ limited", failed: "✗ failed", exited: "exited" };
 const ago = (ms) => { const s = Math.round(ms / 1000); return s < 60 ? `${s}s` : s < 3600 ? `${Math.round(s / 60)}m` : `${Math.round(s / 3600)}h`; };
 function planetPos(i, n, p) {
   if (p && mapLayout.planets[p.name]) return mapLayout.planets[p.name];
@@ -1045,6 +1045,8 @@ function planetDetail(p) {
   if (p.status === "stuck") return `No activity for a while · running ${p.stuck_minutes ?? "?"}m: ${humanAction(p.tool, p.summary, p.skill) || "a step"}`;
   if (p.status === "done") return p.last_report ? p.last_report.replace(/\s+/g, " ") : "Finished";
   if (p.status === "exited") return "Session ended";
+  if (p.status === "limited") return `Usage limit reached${p.limit_resets ? ` · resets ${p.limit_resets}` : ""}`;
+  if (p.status === "failed") return `The turn failed${p.error ? `: ${p.error}` : ""}`;
   return p.mode === "shell" ? "Shell" : "Waiting for instructions";
 }
 function renderPlanets() {
@@ -1117,7 +1119,7 @@ async function answer(p, b) {
 }
 
 // ---------- sessions list: urgency first (needs you, stuck, working, done, idle, ended) ----------
-const URGENCY = { waiting: 0, needs_trust: 0, stuck: 1, working: 2, done: 3, ready: 4, starting: 5, exited: 6 };
+const URGENCY = { waiting: 0, needs_trust: 0, stuck: 1, failed: 1, limited: 1, working: 2, done: 3, ready: 4, starting: 5, exited: 6 };
 const inboxEls = new Map();
 const isPhone = () => matchMedia("(max-width: 860px)").matches;
 function openSession(p) {

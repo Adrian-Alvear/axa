@@ -27,6 +27,7 @@ function summarize(tool, input = {}) {
     case "WebSearch": return clip(input.query, 160);
     case "Skill": return input.skill;
     case "Agent": case "Task": return clip(input.description || input.prompt, 160);
+    case "AskUserQuestion": return clip((input.questions || []).map((q) => q?.question).filter(Boolean).join(" / ") || input.question, 300);
     default: return clip(JSON.stringify(input), 160);
   }
 }
@@ -51,7 +52,11 @@ process.stdin.on("end", () => {
       subagent_type: ["Agent", "Task"].includes(e.tool_name) ? input.subagent_type || "general-purpose" : undefined,
       prompt: logText ? clip(e.prompt || (["Agent", "Task"].includes(e.tool_name) ? input.prompt : undefined), 8000) : undefined, // room for a whole /goal (4000) plus context
       message: logText ? clip(e.last_assistant_message ?? (e.hook_event_name === "Notification" ? e.message : undefined), 2000) : undefined,
-      error: clip(e.error, 500),
+      error: clip(typeof e.error === "string" ? e.error : e.error && JSON.stringify(e.error), 500),
+      // StopFailure: what failed (rate limit, server error...) and its details (a usage limit's reset time)
+      error_details: clip(typeof e.error_details === "string" ? e.error_details : e.error_details && JSON.stringify(e.error_details), 500),
+      // SessionEnd: why it ended (clear, logout, prompt_input_exit, other)
+      reason: typeof e.reason === "string" ? clip(e.reason, 60) : undefined,
       duration_ms: e.duration_ms,
       source: e.source,
       notification_type: e.notification_type,

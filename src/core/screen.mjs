@@ -4,7 +4,8 @@
 // Any of Claude Code's choice dialogs (permission, folder trust, new MCP server...): they end with
 // "Enter to confirm · Esc to cancel/exit" and number their options. The traced PermissionRequest and
 // Notification events are the main signal; this is a backup.
-export const PERMISSION_RE = /Do you want to (proceed|make this edit|create|allow)|Do you trust the files|trust this folder|Yes, and don't ask again|❯\s*1\.\s*Yes|MCP servers? found|Enter to confirm · Esc to (cancel|exit)/i;
+// AskUserQuestion's menus end with "Enter to select · ↑/↓ to navigate · Esc to cancel" (no "confirm").
+export const PERMISSION_RE = /Do you want to (proceed|make this edit|create|allow)|Do you trust the files|trust this folder|Yes, and don't ask again|❯\s*1\.\s*Yes|MCP servers? found|Enter to confirm · Esc to (cancel|exit)|Enter to select\b.*(?:navigate|Esc to cancel)|Type something\.?\s*$|Chat about this/im;
 
 // A dialog is open only while it's at the bottom of the screen: its "Enter to confirm / Esc to cancel"
 // line is among the last few lines (an answered prompt can stay visible higher up, e.g. above a shell)

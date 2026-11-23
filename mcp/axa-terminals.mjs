@@ -35,7 +35,7 @@ function reviewText(r) {
   return [head, checks && `checks: ${checks}`, ...fs].filter(Boolean).join("\n");
 }
 function describe(s) {
-  const flag = s.status === "waiting" ? " — NEEDS THE USER'S APPROVAL" : s.status === "needs_trust" ? ` — NEEDS TRUST: ${s.hint || "the user must answer the trust prompt"}` : s.status === "stuck" ? ` — STUCK for ${s.stuck_minutes ?? "?"}m, may need the user` : "";
+  const flag = s.status === "waiting" ? " — NEEDS THE USER'S APPROVAL" : s.status === "needs_trust" ? ` — NEEDS TRUST: ${s.hint || "the user must answer the trust prompt"}` : s.status === "limited" ? ` — USAGE LIMIT${s.limit_resets ? `, resets ${s.limit_resets}` : ""}: give it no work until then` : s.status === "failed" ? " — ITS LAST TURN FAILED (API error, see last error)" : s.status === "exited" && s.alive ? " — CLAUDE EXITED (a shell is left): don't send it text" : s.status === "stuck" ? ` — STUCK for ${s.stuck_minutes ?? "?"}m, may need the user` : "";
   const head = `[${s.id}] ${s.name} (${s.mode}${s.fixer ? `, fixer for milestone review ${s.fixer}` : ""}) · ${s.status}${flag} · idle ${s.idle_seconds}s · ${s.cwd}`;
   const said = [];
   if (s.doing) said.push(`now: ${s.doing}`);
@@ -60,7 +60,7 @@ const TOOLS = [
   {
     name: "list_sessions",
     description:
-      "List every session open in AXA (usually one Claude Code session per project) with its status: starting, needs_trust (the folder-trust prompt is open: only the user can answer it, or run `axa trust <project>`), ready, working (and what it's doing), done (with its last report), waiting (needs the user's approval), or exited. Also lists the known projects you can open.",
+      "List every session open in AXA (usually one Claude Code session per project) with its status: starting, needs_trust (the folder-trust prompt is open: only the user can answer it, or run `axa trust <project>`), ready, working (and what it's doing), done (with its last report), waiting (needs the user's approval or answer), limited (hit a usage limit, with its reset time), failed (its turn ended on an API error), or exited (Claude Code ended). Also lists the known projects you can open.",
     inputSchema: { type: "object", properties: {} },
     run: async () => {
       const [sessions, projects, chains, mreviews] = await Promise.all([api("/api/terms"), api("/api/projects"), api("/api/chains").catch(() => []), api("/api/review").catch(() => [])]);

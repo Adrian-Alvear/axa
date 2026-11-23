@@ -24,7 +24,7 @@ const WAIT_MS = 15_000; // a prompt must stay open this long to count as needing
 const QUIET_MS = 30_000; // don't type while you're typing in the commander
 const DONE_MS = Number(process.env.AXA_DONE_MS) || 6_000; // "done" must hold this long
 const WAKES_PER_HOUR = Number(process.env.AXA_WAKES_PER_HOUR) || 30;
-const NOTABLE = { done: "finished its turn", waiting: "needs the user's approval", needs_trust: "is waiting for the user to answer its folder-trust prompt (or to run `axa trust <project>` themselves)", stuck: "looks stuck", exited: "exited", over_budget: "went over its token budget: don't give it more work; report its usage to the user" };
+const NOTABLE = { done: "finished its turn", failed: "stopped on an API error", limited: "hit a usage limit (it can't work until the limit resets)", waiting: "needs the user's approval", needs_trust: "is waiting for the user to answer its folder-trust prompt (or to run `axa trust <project>` themselves)", stuck: "looks stuck", exited: "exited", over_budget: "went over its token budget: don't give it more work; report its usage to the user" };
 
 // ---------- links ----------
 let chains = [];
@@ -57,13 +57,14 @@ function runLinks(list) {
   for (const ch of chains) {
     if (ch.fired || ch.failed || ch.sending) continue;
     const from = list.find((s) => s.id === ch.from), to = list.find((s) => s.id === ch.to);
-    if (!from || !to || !to.alive) { ch.failed = !from ? "the first session was closed" : "the next session was closed"; saveChains(); continue; }
+    if (!from || !to || !to.alive || to.status === "exited") { ch.failed = !from ? "the first session was closed" : to?.status === "exited" ? "Claude exited in the next session" : "the next session was closed"; saveChains(); continue; }
     if (from.status !== "done" || (from.last_event_at || 0) <= ch.created || now - since.get(from.id).at < DONE_MS) continue;
     if (!["ready", "done"].includes(to.status) || to.awaiting_permission) continue; // busy: wait
     ch.sending = true;
     sendText(to.id, to.mode === "shell" ? ch.text : `[AXA link: ${from.name} just finished] ${ch.text}`).then((r) => {
       ch.sending = false;
-      if (!r.ok) { if (/dangerous/i.test(r.error || "")) { ch.failed = r.error; saveChains(); } return; }
+      // (typed but not confirmed submitted: the text may sit in its input box, so it's never typed again)
+      if (!r.ok) { if (/dangerous/i.test(r.error || "") || r.unsubmitted) { ch.failed = r.error; saveChains(); } return; }
       ch.fired = Date.now(); saveChains();
       logEvent({ event: "ChainFired", terminal: to.id, role: "console", from: from.name, to: to.name, text: clip(ch.text, 200) });
     });
@@ -150,7 +151,8 @@ export function supervise(list) {
     if (!primed || prev === undefined || prev === s.status) continue;
     // a fixer's finished turn belongs to its milestone review (milestone.mjs), not to the commander
     if (s.status === "done" && fixerOf(s.id)) { pending.delete(s.id); continue; }
-    if (NOTABLE[s.status]) pending.set(s.id, { id: s.id, name: s.name, status: s.status, since: Date.now() });
+    // (a usage limit's reset time comes from Claude Code's own error, never from the session's screen)
+    if (NOTABLE[s.status]) pending.set(s.id, { id: s.id, name: s.name, status: s.status, since: Date.now(), ...(s.status === "limited" && s.limit_resets ? { line: `resets ${clip(String(s.limit_resets).replace(/[^\w :./()+-]/g, ""), 60)}` } : {}) });
     else pending.delete(s.id);
   }
   for (const id of lastSeen.keys()) if (!list.some((s) => s.id === id)) { lastSeen.delete(id); pending.delete(id); pending.delete(`${id}:budget`); budgetTold.delete(id); }
@@ -171,6 +173,8 @@ export function supervise(list) {
   const items = ready.map(([, p]) => p.text || `${p.name} (${p.id}) ${NOTABLE[p.status]}${p.line ? ` · ${p.line}` : ""}`);
   const text = `[AXA supervisor: automatic update from the console, not typed by the user] ${items.join("; ")}. Handle this under your supervisor rules: check each one, verify any claims, take the next step if it is within what the user asked, and end with a short report for the user.`;
   deps.send(cmd.id, text).then((r) => {
+    // typed but not confirmed: it may sit in the commander's input box; don't type it again
+    if (!r.ok && r.unsubmitted) { for (const [k] of ready) pending.delete(k); deps.log({ event: "SupervisorWake", terminal: cmd.id, role: "console", items, unsubmitted: true, error: r.error }); return; }
     if (!r.ok) return;
     wakes.push(Date.now());
     for (const [k] of ready) pending.delete(k);

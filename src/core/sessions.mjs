@@ -84,6 +84,14 @@ const paneWidth = (t) => {
   return t.width.n;
 };
 const promptOpen = (t) => promptOnScreen(screenLines(t, 40));
+// What runs in the pane now (tmux #{pane_current_command}). Claude sessions run `claude ...; exec $SHELL`,
+// so once Claude has exited a shell is left, and typed English would run as shell commands.
+const paneCommand = (t, fresh = false) => {
+  if (fresh || !(t.cmd && Date.now() - t.cmd.at < 1000)) t.cmd = { at: Date.now(), name: (tmux("display-message", "-p", "-t", pane(t.id), "#{pane_current_command}").stdout || "").trim() };
+  return t.cmd.name;
+};
+const SHELL_NAMES = new Set(["bash", "zsh", "sh", "dash", "ksh", "mksh", "fish", "tcsh", "csh", "nu", "xonsh"]);
+export const claudeGone = (cmd, shell = process.env.SHELL) => !!cmd && (SHELL_NAMES.has(cmd.replace(/^-/, "")) || cmd === basename(shell || "/bin/bash"));
 function choicesOf(t) {
   const c = parseChoices(screenLines(t, 40), paneWidth(t));
   return c && { ...c, question: safe(c.question), options: c.options.map((o) => ({ ...o, label: safe(o.label) })) };
@@ -94,8 +102,10 @@ export const TRUST_HINT = "the user must answer the trust prompt (or run axa tru
 // A session's status from what's known about it (pure, for tests). tr: its traced status; trust: the
 // folder-trust dialog is on screen; prompt: any choice dialog is; restored: it was already running when
 // the daemon started (its SessionStart may be older than the replayed history).
-export function deriveStatus({ alive, mode, tr, trust, prompt, restored }) {
+export function deriveStatus({ alive, mode, tr, trust, prompt, restored, gone }) {
   if (!alive) return "exited";
+  // Claude Code ended (SessionEnd), or a started session's pane is back to its shell (no SessionEnd)
+  if (mode !== "shell" && (tr?.status === "exited" || gone)) return "exited";
   if (mode !== "shell" && trust) return "needs_trust";
   // While AXA's approver is deciding, the prompt is already on screen: not your turn yet
   if (tr?.status === "waiting" || (!tr?.asking && prompt)) return "waiting";
@@ -104,8 +114,10 @@ export function deriveStatus({ alive, mode, tr, trust, prompt, restored }) {
 // Why typing into this session now is refused (null: it may be typed into). Text typed while Claude
 // Code starts can land in the trust or MCP dialog and answer it, so nothing is typed before the
 // session's first SessionStart, nor while it's starting or waits on the trust prompt.
+const CLAUDE_EXITED = "Not sent: Claude has exited in this session (only a shell is left there, which would run the text as commands). Nothing was typed; open a new session or ask the user.";
 export function inputRefusal(s) {
   if (!s.alive) return "the session has exited";
+  if (s.mode !== "shell" && s.status === "exited") return CLAUDE_EXITED;
   if (s.status === "needs_trust") return `Not sent: this session is waiting on the folder-trust prompt; ${TRUST_HINT}. Nothing was typed.`;
   if (s.mode !== "shell" && (s.status === "starting" || !s.started)) return "Not sent: this session is still starting (Claude Code hasn't reported its start yet). Nothing was typed; try again when it's ready (open_session with wait: true returns then).";
   return null;
@@ -113,14 +125,18 @@ export function inputRefusal(s) {
 function summary(t) {
   const tr = traced(t.id) || null;
   const lines = t.alive && t.mode !== "shell" ? screenLines(t, 40) : [];
-  const status = deriveStatus({ alive: t.alive, mode: t.mode, tr, trust: lines.length > 0 && trustOnScreen(lines), prompt: t.alive && promptOpen(t), restored: t.restored });
+  const started = t.mode === "shell" || !!tr?.started || !!t.restored;
+  // (before it has started, the pane runs the shell that launches Claude: that isn't an exit)
+  const gone = t.alive && t.mode !== "shell" && started && claudeGone(paneCommand(t));
+  const status = deriveStatus({ alive: t.alive, mode: t.mode, tr, trust: lines.length > 0 && trustOnScreen(lines), prompt: t.alive && promptOpen(t), restored: t.restored, gone });
   const waiting = status === "waiting" || status === "needs_trust";
   const m = meta.get(t.id) || {};
   return {
     id: t.id, name: t.name, cwd: t.cwd, mode: t.mode, alive: t.alive, created: t.created,
     status,
     hint: status === "needs_trust" ? TRUST_HINT : undefined,
-    started: t.mode === "shell" || !!tr?.started || !!t.restored,
+    started,
+    limit_resets: status === "limited" ? safe(tr?.limit_resets) : undefined,
     stuck_minutes: tr?.stuck_minutes,
     doing: safe(tr?.doing), tool: tr?.tool, skill: tr?.skill,
     last_report: safe(tr?.report), error: safe(tr?.error), last_event_at: tr?.at,
@@ -176,16 +192,44 @@ export async function sendText(id, text, { enter = true, confirmed = false } = {
   const t = terms.get(id);
   if (!t) return { ok: false, error: "no such session" };
   t.capture = null; // judge from a fresh screen
-  const refused = inputRefusal(summary(t));
+  const s = summary(t);
+  const refused = inputRefusal(s);
   if (refused) return { ok: false, error: refused };
+  // Claude gone, its shell left (no SessionEnd seen): checked right before typing
+  if (t.mode !== "shell" && claudeGone(paneCommand(t, true))) return { ok: false, error: CLAUDE_EXITED };
   // Shells run whatever is typed, so dangerous commands need your explicit OK (Claude has its own checks)
   const danger = t.mode === "shell" && dangerousShell(text);
   if (danger && !confirmed) return { ok: false, error: `Not sent: this looks dangerous (${danger}). Ask the user to approve this exact command first, then resend with confirmed_by_user: true.` };
   if (promptOpen(t) || traced(t.id)?.status === "waiting") return { ok: false, error: "This session is waiting on a permission/trust prompt. Only the user may answer it: tell them which session needs attention." };
+  const since = Date.now();
   typeText(t, text);
+  if (!enter) return { ok: true };
   // submit separately so TUIs treat it as Enter, not part of a paste
-  if (enter) { await new Promise((r) => setTimeout(r, 60)); tmux("send-keys", "-t", pane(t.id), "Enter"); t.capture = null; }
-  return { ok: true };
+  const pressEnter = () => { tmux("send-keys", "-t", pane(t.id), "Enter"); t.capture = null; };
+  await sleep(60);
+  pressEnter();
+  // A Claude session confirms with its UserPromptSubmit event. Not checked: shells (no events), a busy
+  // session (the text is queued for its next turn) and built-in slash commands (/clear, /cost... send
+  // no prompt; /goal does start a turn, so any event of the session counts for it)
+  if (t.mode === "shell" || s.status === "working" || (/^\//.test(text.trim()) && !/^\/goal\b/.test(text.trim()))) return { ok: true };
+  const anyEvent = /^\/goal\b/.test(text.trim());
+  return confirmSubmit({
+    seen: () => { const tr = traced(t.id); return !!tr && ((tr.promptAt || 0) >= since || (anyEvent && (tr.at || 0) >= since)); },
+    pressEnter, promptOpen: () => { t.capture = null; return promptOpen(t); },
+  });
+}
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+export const SUBMIT_MS = Number(process.env.AXA_SUBMIT_MS) || 5000;
+// Wait up to ms for the submit to be seen; if not, press Enter once more (unless a dialog opened: then
+// Enter would answer it) and wait again. Unconfirmed: an error, and callers (links, the supervisor)
+// don't count it as sent. (exported for tests)
+export async function confirmSubmit({ seen, pressEnter, promptOpen, ms = SUBMIT_MS, every = 100 }) {
+  const waitSeen = async () => { const end = Date.now() + ms; for (;;) { if (seen()) return true; if (Date.now() >= end) return false; await sleep(every); } };
+  if (await waitSeen()) return { ok: true, submitted: true };
+  if (promptOpen()) return { ok: false, unsubmitted: true, error: "Typed, but a prompt opened before it was submitted: only the user may answer it. The text may still be in the session's input box." };
+  pressEnter();
+  if (await waitSeen()) return { ok: true, submitted: true, retried: true };
+  return { ok: false, unsubmitted: true, error: `Typed, but Claude Code didn't confirm the submit (no UserPromptSubmit within ${Math.round((2 * ms) / 1000)} s, Enter pressed twice). The text may still be in the session's input box: check it with read_session before sending again.` };
 }
 // You picked option n (and saw `label`): move the menu cursor there and press Enter, only if the same
 // menu is still on screen, so an answer never lands on a different prompt

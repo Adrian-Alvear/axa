@@ -206,6 +206,13 @@ agents/ skills/      axa:builder / reviewer / researcher, the review gate's prom
 - **"Done" means checked.** If a session edits code and tries to finish without running a check,
   AXA's verify gate sends it back once. `"verifyGate": "off"` in `~/.axa/policy.json` turns it off.
 - **An independent review at milestones** (or after every turn, if you choose), with a fixer loop. See [Independent review](#independent-review).
+- **Statuses you can trust.** From the hook events: **exited** when Claude Code ends (SessionEnd; also
+  when a started session's pane is back to its shell, and nothing is typed into that shell), **failed**
+  or **limited** when a turn ends on an API error or a usage limit (StopFailure, with the reset time when
+  Claude Code gives it), **needs you** on permission prompts, MCP input dialogs and AskUserQuestion
+  menus, and **ready** when Claude has gone idle waiting for input. Text typed into a Claude session
+  must be confirmed by its UserPromptSubmit within 5 s (Enter is pressed once more, then it's an error,
+  and a link isn't counted as fired). Time spent waiting on a permission never makes a step look stuck.
 - **AXA wakes itself.** When a session finishes, gets stuck or needs you, the daemon tells the
   commander (only when it's idle and you aren't typing in it), so it can check the work and report.
   `AXA_SUPERVISOR=0` turns it off.
