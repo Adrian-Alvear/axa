@@ -4,7 +4,8 @@
 // "In progress" sections of its handoff file (docs/HANDOFF.md, HANDOFF.md or TODO.md). No network, no
 // builds. Cached 60 s. Used by GET /api/projects, the commander's review_projects, `axa projects`, the
 // hub's Projects tab and the daily brief.
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { home } from "../paths.mjs";
 import { basename, join, relative } from "node:path";
 import { gitAsync } from "./git.mjs";
 import { clip, safe } from "./text.mjs";
@@ -145,6 +146,25 @@ export function briefDue(brief_at, now, lastBriefAt) {
   if (!brief_at) return false;
   const [h, m] = brief_at.split(":").map(Number), d = new Date(now), at = new Date(d.getFullYear(), d.getMonth(), d.getDate(), h, m).getTime();
   return now >= at && !(lastBriefAt && lastBriefAt >= at);
+}
+// Once a day, kept in the daemon's own state (<AXA home>/brief.json: { "last_at": ms }), not derived from the
+// notification list, which you can clear and which rolls past 200: neither may bring a second brief that day.
+// fallbackLast(): the last brief's time from before this file existed (the notification list), read only when
+// the file is missing. Resolves true when a brief went out.
+export const briefFile = () => join(home, "brief.json");
+export function lastBriefAt(file = briefFile()) {
+  try { return Number(JSON.parse(readFileSync(file, "utf8")).last_at) || 0; } catch { return null; }
+}
+export async function briefTick({ brief_at, now = Date.now(), file = briefFile(), review, push, fallbackLast = () => 0 }) {
+  if (!brief_at) return false;
+  const last = lastBriefAt(file) ?? (fallbackLast() || 0);
+  if (!briefDue(brief_at, now, last)) return false;
+  // recorded first: a slow or failing review can't send it twice
+  const tmp = `${file}.${process.pid}.tmp`;
+  writeFileSync(tmp, JSON.stringify({ last_at: now }) + "\n", { mode: 0o600 });
+  renameSync(tmp, file);
+  push({ kind: "brief", session: null, project: "", title: "Daily brief", body: briefText(await review()), needsUser: false });
+  return true;
 }
 // One notification's text: what changed in the last day, what's waiting on you, the top "Next up" per project
 export function briefText(list) {

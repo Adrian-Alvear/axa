@@ -481,7 +481,9 @@ export async function runTui() {
     W = out.columns || 120; H = out.rows || 36;
     const rows = frame();
     let o = `${ESC}[?25l`;
-    rows.forEach((r, y) => { if (prevRows[y] !== r) o += `${ESC}[${y + 1};1H${r}${ESC}[0m`; });
+    // autowrap is off in the hub (?7l): a glyph the terminal draws wider than counted can't spill onto the next
+    // row, and each changed row is cleared to its end (K) so nothing from the previous screen is left behind
+    rows.forEach((r, y) => { if (prevRows[y] !== r) o += `${ESC}[${y + 1};1H${r}${ESC}[0m${ESC}[K`; });
     prevRows = rows;
     // the cursor: in a text box, or where the live session has it
     if (overlay?.cursorAt) o += `${ESC}[${overlay.cursorAt.y + 1};${overlay.cursorAt.x + 1}H${ESC}[?25h`;
@@ -1257,8 +1259,8 @@ export async function runTui() {
 
   // ---------- start and stop ----------
   // mouse: clicks and wheel (1000), drags (1002), SGR form (1006)
-  const enter = () => { out.write(`${ESC}[?1049h${ESC}[?2004h${ESC}[?1000h${ESC}[?1002h${ESC}[?1006h${ESC}[?25l${ESC}[2J`); process.stdin.setRawMode(true); process.stdin.resume(); };
-  const leave = () => { out.write(`${ESC}[?2004l${ESC}[?1002l${ESC}[?1000l${ESC}[?1006l${ESC}[0m${ESC}[?25h${ESC}[?1049l`); try { process.stdin.setRawMode(false); } catch {} };
+  const enter = () => { out.write(`${ESC}[?1049h${ESC}[?2004h${ESC}[?1000h${ESC}[?1002h${ESC}[?1006h${ESC}[?25l${ESC}[?7l${ESC}[2J`); process.stdin.setRawMode(true); process.stdin.resume(); };
+  const leave = () => { out.write(`${ESC}[?2004l${ESC}[?1002l${ESC}[?1000l${ESC}[?1006l${ESC}[0m${ESC}[?7h${ESC}[?25h${ESC}[?1049l`); try { process.stdin.setRawMode(false); } catch {} };
   function quit() {
     quitting = true;
     live?.close();

@@ -40,11 +40,12 @@ export function runSummary(text, { env = process.env, timeoutMs = SUMMARY_TIMEOU
   const childEnv = { ...env, AXA_ROLE: "reviewer" };
   delete childEnv.AXA_TERMINAL_ID; delete childEnv.TMUX; delete childEnv.TMUX_PANE;
   return new Promise((done) => {
-    let out = "", finished = false, child, timer;
-    const end = (v) => { if (finished) return; finished = true; clearTimeout(timer); done(v); };
+    let out = "", finished = false, child, timer, kill = () => {};
+    const end = (v) => { if (finished) return; finished = true; clearTimeout(timer); signal?.removeEventListener?.("abort", kill); done(v); };
+    if (signal?.aborted) return end(null);
     try { child = spawn(cmd[0], [...cmd.slice(1), ...summaryArgs(model)], { cwd, env: childEnv, stdio: ["pipe", "pipe", "ignore"], detached: process.platform !== "win32" }); }
     catch { return end(null); }
-    const kill = () => { try { killTree(child.pid); } catch {} end(null); };
+    kill = () => { try { killTree(child.pid); } catch {} end(null); };
     timer = setTimeout(kill, timeoutMs);
     signal?.addEventListener?.("abort", kill, { once: true });
     child.stdout.on("data", (c) => { if (out.length < 64 << 10) out += c; });
@@ -90,7 +91,8 @@ export function shortSpeech(md, question = null) {
 // summarize(text) -> Promise<string|null> (runSummary, or a fake in tests). Returns { text, how }:
 // how = "short" (said as is) | "summary" | "fallback" | "first-paragraph" | "full".
 const cache = new Map(); // hash -> summary
-export async function spokenReply(md, { mode = summaryMode(), summarize = runSummary, more = true } = {}) {
+// signal: an AbortSignal (Esc, mute): the summariser's process is killed at once and nothing is said
+export async function spokenReply(md, { mode = summaryMode(), summarize = runSummary, more = true, signal } = {}) {
   const all = toSpeech(md, { full: true });
   if (!all) return { text: "", how: "short" };
   if (mode === "full") return { text: all, how: "full" };
@@ -101,7 +103,8 @@ export async function spokenReply(md, { mode = summaryMode(), summarize = runSum
   const key = createHash("sha256").update(md).digest("hex");
   let sum = cache.get(key);
   if (!sum) {
-    sum = await Promise.resolve(summarize(md)).catch(() => null);
+    sum = await Promise.resolve(summarize(md, { signal })).catch(() => null);
+    if (signal?.aborted) return { text: "", how: "stopped" };
     if (sum) { cache.set(key, sum); if (cache.size > 100) cache.delete(cache.keys().next().value); }
   }
   const said = sum ? toSpeech(sum, { full: true }) : "";

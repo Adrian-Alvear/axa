@@ -17,7 +17,7 @@ import { listAgents, listProjects, readRoster } from "./catalog.mjs";
 import { chatMessages, findChat, listChats } from "./claude-data.mjs";
 import { safe } from "./text.mjs";
 import { clearVoiceQueue, notifier, notifySettings, voiceHooks, voicePending } from "./notify.mjs";
-import { briefDue, briefText, reviewProjects } from "./projects.mjs";
+import { briefTick, reviewProjects } from "./projects.mjs";
 import { spokenReply, summaryMode } from "./summary.mjs";
 import { SHORT } from "./speech.mjs";
 import { readMilestones } from "./milestone.mjs";
@@ -27,9 +27,9 @@ const projectReview = (fresh = false) => reviewProjects({ projects: listProjects
 // the daily brief (ui.json "notify": { "brief_at": "09:00" }): one notification a day about all projects
 setInterval(async () => {
   try {
-    const at = notifySettings().brief_at, last = notifier.list().filter((n) => n.kind === "brief").at(-1)?.at;
-    if (!briefDue(at, Date.now(), last)) return;
-    notifier.push({ kind: "brief", session: null, project: "", title: "Daily brief", body: briefText(await projectReview(true)), needsUser: false });
+    // (when it last went out is the daemon's own state, brief.json: clearing notifications doesn't resend it)
+    await briefTick({ brief_at: notifySettings().brief_at, review: () => projectReview(true), push: (n) => notifier.push(n),
+      fallbackLast: () => notifier.list().filter((n) => n.kind === "brief").at(-1)?.at || 0 });
   } catch {}
 }, 30_000).unref();
 
@@ -57,40 +57,43 @@ onChatSeen(S.noteChat);
 // AXA's voice: only the commander's own session, only when voice is on (re-read from ui.json each time)
 // A long reply is spoken as a summary a fast model writes (summary.mjs); the hub never waits for it, and Esc
 // (POST /api/voice/stop) cancels one still being written. voiceNow is what the status bar shows.
-let summarizing = 0, voiceGen = 0, voiceNow = null;
+let summarizing = 0, voiceGen = 0, voiceNow = null, voiceAbort = new AbortController();
 async function say(plan, gen) {
   if (gen !== voiceGen || !plan.text) return;
   voiceNow = plan.how === "summary" ? "speaking summary" : "speaking";
   try { await V.speak(plan.text); } finally { if (gen === voiceGen && !V.speaking()) voiceNow = null; }
 }
+// fn(signal): Esc and mute abort the signal, which kills a summary still being written (its claude -p child)
 async function planned(fn) {
   const gen = ++voiceGen;
+  const signal = voiceAbort.signal;
   summarizing++; voiceNow = "writing summary";
   let plan;
-  try { plan = await fn(); } catch { plan = { text: "" }; } finally { summarizing--; if (gen === voiceGen) voiceNow = null; }
+  try { plan = await fn(signal); } catch { plan = { text: "" }; } finally { summarizing--; if (gen === voiceGen) voiceNow = null; }
   return say(plan, gen);
 }
 // Stop everything: what's speaking (the player is killed), a summary still being written, queued notifications
-function hush() { voiceGen++; voiceNow = null; clearVoiceQueue(); V.stop(); }
+function hush() { cancelSummaries(); voiceGen++; voiceNow = null; clearVoiceQueue(); V.stop(); }
+function cancelSummaries() { voiceAbort.abort(); voiceAbort = new AbortController(); }
 // Muting takes effect at once however it's done (the hub's m or settings, or ui.json edited): checked every
 // 500 ms while anything is speaking, written or queued
 setInterval(() => {
   if (!(V.speaking() || summarizing > 0 || voicePending() > 0) || V.settings().on) return;
   if (V.speaking() && !V.silenceIfMuted()) return; // (the settings screen's forced voice test plays on)
-  voiceGen++; voiceNow = null; clearVoiceQueue();
+  cancelSummaries(); voiceGen++; voiceNow = null; clearVoiceQueue();
 }, 500).unref();
 onCommanderReply((id, message) => {
   const vs = V.settings();
   if (S.listSessions().find((s) => s.id === id)?.mode !== "axa" || !vs.on) return;
-  planned(() => spokenReply(safe(message), { more: vs.moreHint }));
+  planned((signal) => spokenReply(safe(message), { more: vs.moreHint, signal }));
 });
 // notifications: one is said as it is; a batch, or one long one (the daily brief), is summarised the same way
 function speakNotes(text, items) {
   const long = items.length > 1 || V.toSpeech(text, { full: true }).length > SHORT;
   if (!long || summaryMode() !== "model") return planned(async () => ({ text: V.toSpeech(safe(text), { more: false }), how: "short" }));
   const md = items.map((n) => `- ${n.title}${n.body ? `: ${n.body}` : ""}`).join("\n");
-  return planned(async () => {
-    const r = await spokenReply(safe(md), { mode: "model" });
+  return planned(async (signal) => {
+    const r = await spokenReply(safe(md), { mode: "model", signal });
     return r.how === "summary" ? r : { text: items.length > 1 ? V.toSpeech(safe(text), { more: false }) : r.text, how: "fallback" };
   });
 }

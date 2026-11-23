@@ -318,16 +318,11 @@ async function wavPlayer(job, temp) {
   if (!(process.platform === "win32" || wslNow())) return { play: (out) => playWav(out, job, null), close() {} };
   const t = process.platform === "win32" ? null : await temp;
   if (process.platform !== "win32" && !t) throw new Error("couldn't find the Windows temp folder");
-  const child = spawn(process.platform === "win32" ? "powershell" : "powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", residentPlayScript()], { stdio: ["pipe", "pipe", "ignore"] });
-  child.stdin.on("error", () => {});
-  let buf = "", waiting = null, flags = new Set(), copies = new Set();
-  child.stdout.on("data", (d) => { buf += d; let i; while ((i = buf.indexOf("\n")) >= 0) { buf = buf.slice(i + 1); const w = waiting; waiting = null; w?.resolve(); } });
-  const gone = new Promise((r) => child.on("close", r));
-  gone.then(() => { const w = waiting; waiting = null; w?.reject(Object.assign(new Error(job.stopped ? "stopped" : "the player stopped"), { stopped: job.stopped })); });
-  child.on("error", () => {});
+  const lp = linePlayer(() => spawn(process.platform === "win32" ? "powershell" : "powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", residentPlayScript()], { stdio: ["pipe", "pipe", "ignore"] }), job);
+  const flags = new Set(), copies = new Set();
   const rmAll = () => { for (const f of [...flags, ...copies]) try { unlinkSync(f); } catch {} flags.clear(); copies.clear(); };
   // stopping: the flag files go (the Windows side stops at once), then the player ends
-  const kill = () => { rmAll(); try { child.stdin.end(); } catch {} setTimeout(() => { try { child.kill(); } catch {} }, 1500).unref?.(); };
+  const kill = () => { rmAll(); lp.kill(); };
   job.kills.add(kill);
   return {
     play(out) {
@@ -339,12 +334,52 @@ async function wavPlayer(job, temp) {
         winWav = c.win; winFlag = c.winFlag; flag = c.unixFlag;
       }
       writeFileSync(flag, "", { mode: 0o600 }); flags.add(flag);
+      return lp.send(`${winWav}|${winFlag}|${Math.round(ms)}\n`)
+        .finally(() => { try { unlinkSync(flag); } catch {} flags.delete(flag); if (copy) { try { unlinkSync(copy); } catch {} copies.delete(copy); } });
+    },
+    close() { job.kills.delete(kill); lp.close(); rmAll(); },
+  };
+}
+// The resident player's line protocol (spawnChild injected: tested with a fake child). send(line) writes one
+// "wav|flag|ms" line and resolves on its "done". Every play settles: a child that exited (between chunks or
+// during one), errored, or whose stdin write failed rejects at once; the next send starts a new child (at most
+// RESPAWNS times per reply), so a dead PowerShell never leaves the queue hanging.
+export const RESPAWNS = 2;
+export function linePlayer(spawnChild, job) {
+  let child = null, buf = "", waiting = null, spawned = 0;
+  const fail = (c, why) => {
+    if (c && child !== c) return;
+    child = null;
+    const w = waiting; waiting = null;
+    w?.reject(Object.assign(new Error(job.stopped ? "stopped" : why), { stopped: job.stopped }));
+  };
+  const alive = (c) => !!c && c.exitCode == null && c.signalCode == null && !c.killed && c.stdin?.writable !== false && !c.stdin?.destroyed;
+  const start = () => {
+    const c = spawnChild();
+    child = c; buf = ""; spawned++;
+    c.stdin?.on?.("error", () => fail(c, "the player's input closed"));
+    c.stdout?.on?.("data", (d) => { if (child !== c) return; buf += d; let i; while ((i = buf.indexOf("\n")) >= 0) { buf = buf.slice(i + 1); const w = waiting; waiting = null; w?.resolve(); } });
+    c.on?.("close", () => fail(c, "the player stopped"));
+    c.on?.("error", (e) => fail(c, `the player failed: ${e?.message || e}`));
+    return c;
+  };
+  return {
+    send(line) {
+      if (job.stopped) return Promise.reject(Object.assign(new Error("stopped"), { stopped: true }));
+      if (!alive(child)) {
+        if (spawned > RESPAWNS) return Promise.reject(new Error("the player keeps stopping"));
+        start();
+      }
+      const c = child;
       return new Promise((resolve, reject) => {
         waiting = { resolve, reject };
-        child.stdin.write(`${winWav}|${winFlag}|${Math.round(ms)}\n`);
-      }).finally(() => { try { unlinkSync(flag); } catch {} flags.delete(flag); if (copy) { try { unlinkSync(copy); } catch {} copies.delete(copy); } });
+        try { c.stdin.write(line, (err) => { if (err) fail(c, `couldn't reach the player (${err.message})`); }); }
+        catch (e) { fail(c, `couldn't reach the player (${e.message})`); }
+      });
     },
-    close() { job.kills.delete(kill); try { child.stdin.end(); } catch {} rmAll(); },
+    get alive() { return alive(child); },
+    close() { try { child?.stdin.end(); } catch {} },
+    kill() { const c = child; try { c?.stdin.end(); } catch {} setTimeout(() => { try { c?.kill(); } catch {} }, 1500).unref?.(); fail(c, "stopped"); },
   };
 }
 // Reads "wav|flag|ms" lines; plays each to its end (or until its flag file disappears); answers "done" per line

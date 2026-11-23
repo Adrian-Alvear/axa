@@ -52,7 +52,7 @@ test("every speaking path goes through speak(); only the voice test forces it", 
 
 test("stop and mute clear everything: the player, a summary being written, queued notifications", () => {
   const s = src("src/core/server.mjs");
-  assert.match(s, /function hush\(\) \{ voiceGen\+\+; voiceNow = null; clearVoiceQueue\(\); V\.stop\(\); \}/);
+  assert.match(s, /function hush\(\) \{ cancelSummaries\(\); voiceGen\+\+; voiceNow = null; clearVoiceQueue\(\); V\.stop\(\); \}/);
   assert.match(s, /\["POST", \/\^\\\/api\\\/voice\\\/stop\$\/, \(\) => \{ hush\(\);/);
   // muted however it's done (ui.json edited too): checked while anything speaks, is written or queued
   assert.match(s, /if \(!\(V\.speaking\(\) \|\| summarizing > 0 \|\| voicePending\(\) > 0\) \|\| V\.settings\(\)\.on\) return;/);

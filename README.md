@@ -22,7 +22,7 @@ and reports back.
    ~/launches  ⎇ v7 +12 -3        48k │   ⠹ axa:builder  Edit · src/app.tsx              12 steps
                                       │   SCREEN ──────────────────────────────────────────────
                                       │   (the session's live screen, in color)
- ⏎ open  d changes  g goal  v checks  r rename  X close       Tab switch  a AXA  n new  ? help  q quit
+ ⏎ open  d changes  g goal  v checks  r rename  X close  Tab switch  a AXA  n notifications  N new  ? help  q quit
 ```
 
 Tabs across the top, the list on the left, and a live preview of whatever is selected on the right:
