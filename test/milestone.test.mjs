@@ -397,3 +397,30 @@ test("a warn with a confirmed high finding goes to the fixer too; a reviewer err
   writeFileSync(join(axaHome, "policy.json"), JSON.stringify({ default: { reviewer: { mode: "off" } } }));
   try { assert.throws(() => M.startMilestone({ cwd: repo() }), /reviewer is off/); } finally { rmSync(join(axaHome, "policy.json")); }
 });
+
+test("runReviewer: a verdict after more than 8 MB of stream lines still counts", async () => {
+  const dir = repo(), seen = [];
+  const r = await R.runReviewer({ cwd: dir, prompt: "p", env: { ...process.env, FAKE_REVIEW_MODE: "stream-big", FAKE_REVIEW: BLOCK }, onProgress: (p) => seen.push(p) });
+  assert.equal(r.verdict, "block", r.summary);
+  assert.equal(r.findings.length, 1);
+  assert.deepEqual(seen, ["checks running: npm test"]);
+});
+
+test("a fix instruction typed but not confirmed submitted is never typed again; the commander hears of it", async () => {
+  const h = harness(), dir = (h.dir = repo(3));
+  deps.send = async (id, text) => { h.sent.push({ id, text }); return id === "fx1" ? { ok: false, unsubmitted: true, error: "no UserPromptSubmit" } : { ok: true }; };
+  await h.tick(null);
+  process.env.FAKE_REVIEW = BLOCK;
+  const started = M.startMilestone({ cwd: dir, goal: "the off-by-one fix" });
+  await M.milestonesSettled();
+  assert.equal(M.getMilestoneReview(started.id).state, "fixer-starting");
+  await h.tick("ready");
+  await h.tick("ready");
+  assert.equal(h.toFixer().length, 1, "the instruction was typed once");
+  const r = M.getMilestoneReview(started.id);
+  assert.equal(r.state, "failed");
+  assert.match(r.line, /submit wasn't confirmed/);
+  await h.tick("ready");
+  assert.equal(h.toFixer().length, 1);
+  assert.ok(h.toCommander().some((m) => /milestone review repo-\w+: the fix instruction for round 1 was typed into the fixer/.test(m.text)));
+});

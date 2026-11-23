@@ -250,7 +250,8 @@ export function progressOf(line) {
   return use.name === "Read" ? "reading files" : use.name === "Grep" || use.name === "Glob" ? "searching the code" : clip(String(use.name), 40);
 }
 // The verdict is the stream's last "result" line (or the whole output: a plain json run, a fake reviewer)
-const resultOf = (out) => out.split("\n").reverse().find((l) => /^\s*\{.*"type"\s*:\s*"result"/.test(l)) || out;
+const RESULT_LINE = /^\s*\{.*"type"\s*:\s*"result"/;
+const resultOf = (out) => out.split("\n").reverse().find((l) => RESULT_LINE.test(l)) || out;
 // onProgress(text, steps): each step the reviewer takes. On a timeout the verdict is "error" and says
 // how far it got.
 // The limit is a wall-clock deadline (Date.now(), checked every few seconds as well as by a plain timer:
@@ -263,7 +264,9 @@ export function runReviewer({ cwd, prompt, settings = DEFAULTS, env = process.en
   const childEnv = { ...env, AXA_ROLE: "reviewer" };
   delete childEnv.AXA_TERMINAL_ID; delete childEnv.TMUX; delete childEnv.TMUX_PANE; // never traced as the worker's session
   return new Promise((done) => {
-    let out = "", err = "", finished = false, line = "", progress = "starting", steps = 0, timer = null, poll = null, child;
+    // result: the stream's "result" line, kept as it streams by: `out` stops growing at 8 MB and the
+    // result line comes last, so a long review's verdict would otherwise be cut off
+    let out = "", err = "", finished = false, line = "", result = "", progress = "starting", steps = 0, timer = null, poll = null, child;
     const end = (r) => { if (!finished) { finished = true; clearTimeout(timer); clearInterval(poll); done(r); } };
     try { child = spawn(cmd[0], [...cmd.slice(1), ...reviewerArgs(settings)], { cwd, env: childEnv, stdio: ["pipe", "pipe", "pipe"], detached: process.platform !== "win32" }); }
     catch (e) { return end({ verdict: "error", summary: `couldn't start the reviewer: ${e.message}`, checks: [], findings: [] }); }
@@ -281,6 +284,7 @@ export function runReviewer({ cwd, prompt, settings = DEFAULTS, env = process.en
       const lines = (line + c).split("\n");
       line = lines.pop().slice(-(1 << 20));
       for (const l of lines) {
+        if (RESULT_LINE.test(l)) result = l;
         const p = progressOf(l);
         if (!p) continue;
         steps++; progress = p;
@@ -291,7 +295,8 @@ export function runReviewer({ cwd, prompt, settings = DEFAULTS, env = process.en
     child.on("error", (e) => end({ verdict: "error", summary: `couldn't start the reviewer: ${e.message}`, checks: [], findings: [] }));
     child.on("close", (code) => {
       if (code !== 0 && !out.trim()) return end({ verdict: "error", summary: `the reviewer exited with ${code}: ${clip(safe(err.trim().split("\n").pop() || ""), 160)}`, checks: [], findings: [] });
-      end(parseVerdict(resultOf(out)));
+      if (RESULT_LINE.test(line)) result = line; // a last line without its newline
+      end(parseVerdict(result || resultOf(out)));
     });
     child.stdin.on("error", () => {});
     child.stdin.end(prompt);

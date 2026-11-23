@@ -261,3 +261,19 @@ test("work right after a long wait isn't stuck", () => {
   ev(t, "UserAnswer", { answer: "Yes", ts: Date.now() - 5 * MIN, role: "console" });
   assert.equal(statusOf(t).status, "working");
 });
+
+test("a shell wrapper with Claude still running as its child is not an exit", async () => {
+  assert.equal(S.paneCommandOf("bash", "123", () => true), "claude");
+  assert.equal(S.claudeGone(S.paneCommandOf("bash", "123", () => true), "/bin/bash"), false);
+  assert.equal(S.claudeGone(S.paneCommandOf("bash", "123", () => false), "/bin/bash"), true);
+  assert.equal(S.paneCommandOf("node", "123", () => false), "node");
+  // a $SHELL outside the known names is child-checked too
+  assert.equal(S.paneCommandOf("mysh", "123", () => true, "/opt/bin/mysh"), "claude");
+  assert.equal(S.claudeGone(S.paneCommandOf("mysh", "123", () => false, "/opt/bin/mysh"), "/opt/bin/mysh"), true);
+  // the real child check (pgrep -P): this process has a child while one runs
+  const { spawn } = await import("node:child_process");
+  const kid = spawn("sleep", ["5"]);
+  assert.equal(S.paneCommandOf("bash", String(process.pid)), "claude");
+  kid.kill();
+  await new Promise((r) => kid.on("exit", r));
+});

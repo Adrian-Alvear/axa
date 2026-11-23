@@ -4,7 +4,8 @@
 //   FAKE_REVIEW: the verdict text to return (default: an approve)
 //   FAKE_REVIEW_LOG: a file to append { args, role, cwd, prompt } to, one JSON line per call
 //   FAKE_REVIEW_MODE: "crash" (exit 1, no output), "hang" (never answers), "raw" (print FAKE_REVIEW as is),
-//     "stream" (stream-json: a step running `npm test`, then the result line), "stream-hang" (that step, then hangs)
+//     "stream" (stream-json: a step running `npm test`, then the result line), "stream-hang" (that step, then hangs),
+//     "stream-big" (like stream, with over 8 MB of stream lines before the result line)
 //   FAKE_REVIEW_PIDS: in the hang modes, a file that gets {"pid","child"}: its own pid and a child process it
 //     starts (like a check that hangs), so a test can see both are gone after the timeout;
 //     FAKE_REVIEW_CHILD_DETACHED=1 starts that child in a process group of its own
@@ -31,8 +32,12 @@ process.stdin.on("end", () => {
   if (mode === "hang") return hang();
   const step = JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", name: "Bash", input: { command: "npm test" } }] } });
   if (mode === "stream-hang") { process.stdout.write(step + "\n"); return hang(); }
+  if (mode === "stream-big") {
+    const pad = JSON.stringify({ type: "user", message: { content: [{ type: "tool_result", content: "x".repeat(4000) }] } }) + "\n";
+    process.stdout.write(step + "\n" + pad.repeat(Math.ceil((9 << 20) / pad.length)));
+  }
   if (mode === "stream") process.stdout.write(JSON.stringify({ type: "system", subtype: "init" }) + "\n" + step + "\n");
   const text = process.env.FAKE_REVIEW || JSON.stringify({ verdict: "approve", summary: "does what was asked; tests pass", checks: [{ cmd: "node --test", ok: true, tail: "# pass 3" }], findings: [] });
   if (mode === "raw") process.stdout.write(text);
-  else process.stdout.write(JSON.stringify({ type: "result", subtype: "success", is_error: false, result: text, total_cost_usd: 0 }) + (mode === "stream" ? "\n" : ""));
+  else process.stdout.write(JSON.stringify({ type: "result", subtype: "success", is_error: false, result: text, total_cost_usd: 0 }) + (mode === "stream" || mode === "stream-big" ? "\n" : ""));
 });

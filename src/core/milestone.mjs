@@ -287,6 +287,9 @@ export function tickMilestones(list) {
         r.sending = true;
         track(Promise.resolve().then(() => mdeps.send(s.id, fixerInstruction(r, r.fixFindings))).then((sent) => {
           r.sending = false;
+          // typed but the submit wasn't confirmed: the instruction may sit in the fixer's input box, so it's
+          // never typed again (like links and supervisor wakes); the commander hears of it
+          if (!sent?.ok && sent?.unsubmitted) return finish(r, "failed", `the fix instruction for round ${r.round} was typed into the fixer (${s.id}) but its submit wasn't confirmed (${clip(sent.error || "", 160)}); the fixer is still open, check its input box. Still open: ${clip(r.fixFindings.map((f) => `${where(f)} ${f.problem}`).join("; "), 300)}`);
           if (!sent?.ok) return; // retried next tick (a prompt on screen, say)
           r.state = "fixing"; r.sentAt = Date.now(); r.sawWork = false; r.progress = `fix round ${r.round}: the fixer is working`;
         }, () => { r.sending = false; })); // a failed send is retried next tick

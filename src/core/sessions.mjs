@@ -86,8 +86,22 @@ const paneWidth = (t) => {
 const promptOpen = (t) => promptOnScreen(screenLines(t, 40));
 // What runs in the pane now (tmux #{pane_current_command}). Claude sessions run `claude ...; exec $SHELL`,
 // so once Claude has exited a shell is left, and typed English would run as shell commands.
+// Claude is started by `bash -l -c "claude ...; exec $SHELL"` without job control, so it stays in the wrapper
+// shell's process group and tmux reports that shell as the pane's command while Claude runs. A shell name only
+// means Claude is gone when the pane's process has no child left (after `exec $SHELL`, an idle shell has none).
+// (pgrep -P works on Linux and macOS; if it can't run, don't claim Claude exited)
+const hasChild = (pid) => {
+  if (!/^\d+$/.test(String(pid || ""))) return false;
+  const r = spawnSync("pgrep", ["-P", String(pid)], { stdio: "ignore", timeout: 2000 });
+  return r.error || r.status === null ? true : r.status === 0;
+};
+// (any shell claudeGone counts, the user's $SHELL included, is child-checked)
+export const paneCommandOf = (name, pid, childCheck = hasChild, shell = process.env.SHELL) => (claudeGone(name, shell) && childCheck(pid) ? "claude" : name);
 const paneCommand = (t, fresh = false) => {
-  if (fresh || !(t.cmd && Date.now() - t.cmd.at < 1000)) t.cmd = { at: Date.now(), name: (tmux("display-message", "-p", "-t", pane(t.id), "#{pane_current_command}").stdout || "").trim() };
+  if (fresh || !(t.cmd && Date.now() - t.cmd.at < 1000)) {
+    const [name = "", pid] = (tmux("display-message", "-p", "-t", pane(t.id), "#{pane_current_command} #{pane_pid}").stdout || "").trim().split(" ");
+    t.cmd = { at: Date.now(), name: paneCommandOf(name, pid) };
+  }
   return t.cmd.name;
 };
 const SHELL_NAMES = new Set(["bash", "zsh", "sh", "dash", "ksh", "mksh", "fish", "tcsh", "csh", "nu", "xonsh"]);
