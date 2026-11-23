@@ -290,7 +290,7 @@ export function tickMilestones(list) {
           if (!sent?.ok) return; // retried next tick (a prompt on screen, say)
           r.state = "fixing"; r.sentAt = Date.now(); r.sawWork = false; r.progress = `fix round ${r.round}: the fixer is working`;
         }, () => { r.sending = false; })); // a failed send is retried next tick
-      } else if (Date.now() - r.fixerOpened > FIXER_START_MS && s.status !== "waiting") finish(r, "failed", `the fixer never got ready (status ${s.status}); still open: ${clip(r.fixFindings.map((f) => `${where(f)} ${f.problem}`).join("; "), 300)}`);
+      } else if (Date.now() - r.fixerOpened > FIXER_START_MS && !["waiting", "needs_trust"].includes(s.status)) finish(r, "failed", `the fixer never got ready (status ${s.status}); still open: ${clip(r.fixFindings.map((f) => `${where(f)} ${f.problem}`).join("; "), 300)}`);
       continue;
     }
     // fixing: wait for a finished turn after the instruction, held DONE_MS

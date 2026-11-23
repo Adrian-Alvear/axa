@@ -140,7 +140,7 @@
   .sess { --c: var(--st-idle); border: 1px solid var(--line); border-left: 3px solid var(--c); background: var(--panel); padding: 7px 10px 8px; margin-bottom: 6px; cursor: pointer; }
   .sess:hover { border-color: var(--line2); border-left-color: var(--c); }
   .sess[data-state=working] { --c: var(--st-work); } .sess[data-state=done] { --c: var(--st-done); }
-  .sess[data-state=waiting] { --c: var(--st-wait); background: color-mix(in srgb, var(--st-wait) 9%, var(--bg)); }
+  .sess[data-state=waiting], .sess[data-state=needs_trust] { --c: var(--st-wait); background: color-mix(in srgb, var(--st-wait) 9%, var(--bg)); }
   .sess[data-state=stuck] { --c: var(--st-stuck); background: color-mix(in srgb, var(--st-stuck) 8%, var(--bg)); }
   .sess[data-state=exited] { --c: var(--st-off); opacity: .7; }
   .sess .sh { display: flex; align-items: baseline; gap: 8px; }
@@ -221,7 +221,7 @@
   .planet.done { --c: #5ef2c2; } .planet.ready, .planet.starting { --c: #8fb3c4; } .planet.exited { --c: #4f6b7a; opacity: .6; }
   .planet.stuck { --c: #ff8a5c; box-shadow: 0 0 0 1px #ff8a5c; animation: stuckpulse 3s ease-in-out infinite; }
   @keyframes stuckpulse { 50% { box-shadow: 0 0 0 1px rgba(255,138,92,.4), 0 0 14px rgba(255,138,92,.25); } }
-  .planet.waiting { --c: var(--amber); box-shadow: 0 0 0 1px var(--amber), 0 0 22px rgba(255,181,71,.35); animation: needs 1.6s ease-in-out infinite; }
+  .planet.waiting, .planet.needs_trust { --c: var(--amber); box-shadow: 0 0 0 1px var(--amber), 0 0 22px rgba(255,181,71,.35); animation: needs 1.6s ease-in-out infinite; }
   @keyframes blink { 50% { opacity: .2; } }
   @keyframes needs { 50% { box-shadow: 0 0 0 1px var(--amber), 0 0 6px rgba(255,181,71,.15); } }
   #now { position: absolute; left: 0; right: 0; bottom: 0; display: flex; align-items: center; gap: 12px; padding: 10px 18px 12px;
@@ -965,7 +965,7 @@ function renderChrome(g) {
   $("s-running").textContent = projects.filter((p) => p.status === "working").length;
   $("s-calls").textContent = projects.filter((p) => p.status === "done").length;
   // "Needs you": waiting on an approval, or stuck long enough to need a look
-  const waiting = projects.filter((p) => p.status === "waiting" || p.status === "stuck");
+  const waiting = projects.filter((p) => p.status === "waiting" || p.status === "needs_trust" || p.status === "stuck");
   $("needs").classList.toggle("on", waiting.length > 0);
   $("needsn").textContent = waiting.length;
   $("needs").title = waiting.length ? waiting.map((p) => `${p.name}: ${p.status === "stuck" ? "stuck" : "waiting for your approval"}`).join(" · ") : "";
@@ -1031,7 +1031,7 @@ const PLANET_R = 300;
 let terms = []; // latest /api/terms
 const projectSessions = () => terms.filter((t) => t.mode !== "axa");
 const planetEls = new Map();
-const STATUS_TEXT = { starting: "starting", ready: "ready", working: "working", done: "✓ done", waiting: "⚠ needs you", stuck: "⏳ stuck", exited: "exited" };
+const STATUS_TEXT = { starting: "starting", ready: "ready", working: "working", done: "✓ done", waiting: "⚠ needs you", needs_trust: "⚠ needs trust", stuck: "⏳ stuck", exited: "exited" };
 const ago = (ms) => { const s = Math.round(ms / 1000); return s < 60 ? `${s}s` : s < 3600 ? `${Math.round(s / 60)}m` : `${Math.round(s / 3600)}h`; };
 function planetPos(i, n, p) {
   if (p && mapLayout.planets[p.name]) return mapLayout.planets[p.name];
@@ -1039,6 +1039,7 @@ function planetPos(i, n, p) {
   return [Math.cos(a) * PLANET_R, Math.sin(a) * PLANET_R * 0.78];
 }
 function planetDetail(p) {
+  if (p.status === "needs_trust") return `Trust prompt open: ${p.hint || "answer it in its terminal"}`;
   if (p.status === "waiting") return humanAction(p.tool, p.summary) ? `Wants to: ${humanAction(p.tool, p.summary)}` : "Waiting for your approval in its terminal";
   if (p.status === "working") return humanAction(p.tool, p.summary, p.skill) || "Thinking";
   if (p.status === "stuck") return `No activity for a while · running ${p.stuck_minutes ?? "?"}m: ${humanAction(p.tool, p.summary, p.skill) || "a step"}`;
@@ -1116,7 +1117,7 @@ async function answer(p, b) {
 }
 
 // ---------- sessions list: urgency first (needs you, stuck, working, done, idle, ended) ----------
-const URGENCY = { waiting: 0, stuck: 1, working: 2, done: 3, ready: 4, starting: 5, exited: 6 };
+const URGENCY = { waiting: 0, needs_trust: 0, stuck: 1, working: 2, done: 3, ready: 4, starting: 5, exited: 6 };
 const inboxEls = new Map();
 const isPhone = () => matchMedia("(max-width: 860px)").matches;
 function openSession(p) {
@@ -1150,14 +1151,14 @@ function renderInbox() {
     el.querySelector(".sd").textContent = planetDetail(p) + (p.error && p.status !== "done" ? ` · last error: ${p.error}` : "");
     el.querySelector(".sg").innerHTML = [gitHtml(p.git), usageHtml(p.usage)].filter(Boolean).join(" · ");
     // The prompt it's waiting on, answerable here: a tap arms an option, a second tap sends it
-    const c = p.status === "waiting" ? p.choices : null, sig = c ? c.question + c.options.map((o) => o.label).join("|") : "";
+    const c = p.status === "waiting" || p.status === "needs_trust" ? p.choices : null, sig = c ? c.question + c.options.map((o) => o.label).join("|") : "";
     if (el.dataset.sig !== sig) {
       el.dataset.sig = sig;
       el.querySelector(".sq").textContent = c ? c.question : "";
       el.querySelector(".sc").innerHTML = c ? c.options.map((o) => `<button data-n="${o.n}" title="${esc(o.label)}">${o.n}. ${esc(o.label)}</button>`).join("") : "";
     }
-    el.querySelector("[data-a=open]").textContent = p.status === "waiting" ? (c ? "Terminal" : "Answer it") : p.status === "stuck" ? "Look" : "Open";
-    el.querySelector("[data-a=open]").classList.toggle("hot", p.status === "waiting" || p.status === "stuck");
+    el.querySelector("[data-a=open]").textContent = p.status === "waiting" || p.status === "needs_trust" ? (c ? "Terminal" : "Answer it") : p.status === "stuck" ? "Look" : "Open";
+    el.querySelector("[data-a=open]").classList.toggle("hot", p.status === "waiting" || p.status === "needs_trust" || p.status === "stuck");
     el.querySelector("[data-a=diff]").hidden = !p.git?.files;
     el.title = `${p.name} · ${p.cwd}`;
   }

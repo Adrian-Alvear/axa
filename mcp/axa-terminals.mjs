@@ -1,12 +1,13 @@
 // AXA session tools: a zero-dependency MCP server (stdio) that lets the AXA commander see and drive
 // the Claude Code sessions running in AXA, one per project. It talks to the console's
 // local API with the token in ~/.axa/console-token, and starts the console if it isn't running.
-// Project sessions also load the AXA plugin (for tracing) but get no tools here (AXA_ROLE=worker),
-// so only the commander can drive other sessions.
+// Every session AXA starts loads the AXA plugin (for tracing), and with it this server (declared in
+// .claude-plugin/plugin.json), but only the commander (AXA_ROLE=commander) gets tools: project sessions,
+// the reviewer and your own sessions (no AXA_ROLE) see none, so only the commander can drive sessions.
 import { createInterface } from "node:readline";
 import { api as daemonApi, ensureDaemon } from "../src/daemon.mjs";
 
-const isWorker = process.env.AXA_ROLE === "worker";
+const isCommander = process.env.AXA_ROLE === "commander";
 const GOAL_LIMIT = 4000; // Claude Code's /goal condition limit
 
 async function api(path, opts) {
@@ -34,7 +35,7 @@ function reviewText(r) {
   return [head, checks && `checks: ${checks}`, ...fs].filter(Boolean).join("\n");
 }
 function describe(s) {
-  const flag = s.status === "waiting" ? " — NEEDS THE USER'S APPROVAL" : s.status === "stuck" ? ` — STUCK for ${s.stuck_minutes ?? "?"}m, may need the user` : "";
+  const flag = s.status === "waiting" ? " — NEEDS THE USER'S APPROVAL" : s.status === "needs_trust" ? ` — NEEDS TRUST: ${s.hint || "the user must answer the trust prompt"}` : s.status === "stuck" ? ` — STUCK for ${s.stuck_minutes ?? "?"}m, may need the user` : "";
   const head = `[${s.id}] ${s.name} (${s.mode}${s.fixer ? `, fixer for milestone review ${s.fixer}` : ""}) · ${s.status}${flag} · idle ${s.idle_seconds}s · ${s.cwd}`;
   const said = [];
   if (s.doing) said.push(`now: ${s.doing}`);
@@ -59,7 +60,7 @@ const TOOLS = [
   {
     name: "list_sessions",
     description:
-      "List every session open in AXA (usually one Claude Code session per project) with its status: starting, ready, working (and what it's doing), done (with its last report), waiting (needs the user's approval), or exited. Also lists the known projects you can open.",
+      "List every session open in AXA (usually one Claude Code session per project) with its status: starting, needs_trust (the folder-trust prompt is open: only the user can answer it, or run `axa trust <project>`), ready, working (and what it's doing), done (with its last report), waiting (needs the user's approval), or exited. Also lists the known projects you can open.",
     inputSchema: { type: "object", properties: {} },
     run: async () => {
       const [sessions, projects, chains, mreviews] = await Promise.all([api("/api/terms"), api("/api/projects"), api("/api/chains").catch(() => []), api("/api/review").catch(() => [])]);
@@ -152,7 +153,7 @@ const TOOLS = [
   {
     name: "open_session",
     description:
-      "Open a new session in AXA for a project: by project name (from list_sessions) or folder. mode 'claude' (default) starts a traced Claude Code session in auto mode; 'shell' starts a plain shell. worktree (true or a short name like 'fix-login') runs it in its own git worktree of that repo, on branch axa/<name>: use it when another session already works in the same project, or for risky or experimental work, so changes can't collide; its work stays on that branch until someone merges it. Returns the session id. The first time Claude opens in a folder it shows a trust prompt only the user can answer.",
+      "Open a new session in AXA for a project: by project name (from list_sessions) or folder. mode 'claude' (default) starts a traced Claude Code session in auto mode; 'shell' starts a plain shell. worktree (true or a short name like 'fix-login') runs it in its own git worktree of that repo, on branch axa/<name>: use it when another session already works in the same project, or for risky or experimental work, so changes can't collide; its work stays on that branch until someone merges it. Returns the session (its id and status). Nothing can be typed into it until it's ready: pass wait: true to return only once it's ready or waiting on something (at most 60 s). The first time Claude opens in a folder it shows a trust prompt only the user can answer (status needs_trust); tell the user to answer it in the hub, or to run `axa trust <project>` themselves.",
     inputSchema: {
       type: "object",
       properties: {
@@ -160,9 +161,10 @@ const TOOLS = [
         cwd: { type: "string", description: "Or a folder, e.g. ~/launches" },
         mode: { type: "string", enum: ["claude", "shell"] },
         worktree: { type: ["boolean", "string"], description: "true or a short name: run in its own git worktree on branch axa/<name>" },
+        wait: { type: "boolean", description: "Return only once the session is ready, or waiting on a prompt or the trust dialog (at most 60 s)" },
       },
     },
-    run: async ({ project, cwd, mode, worktree }) => api("/api/terms", { method: "POST", body: { project, cwd, mode: mode || "claude", worktree: worktree || undefined } }),
+    run: async ({ project, cwd, mode, worktree, wait }) => api("/api/terms", { method: "POST", body: { project, cwd, mode: mode || "claude", worktree: worktree || undefined, wait: wait === true } }),
   },
   {
     name: "close_session",
@@ -195,15 +197,15 @@ createInterface({ input: process.stdin }).on("line", async (line) => {
       protocolVersion: params?.protocolVersion || "2025-06-18",
       capabilities: { tools: {} },
       serverInfo: { name: "axa-sessions", version: "0.5.0" },
-      instructions: isWorker
-        ? "This is a project session started by AXA; session tools are only available to the AXA commander."
+      instructions: !isCommander
+        ? "Session tools are only available to the AXA commander."
         : "Tools to see and drive the sessions open in AXA, usually one Claude Code session per project. Never answer another session's permission prompt.",
     });
   }
   if (method === "ping") return reply(id, {});
-  if (method === "tools/list") return reply(id, { tools: isWorker ? [] : TOOLS.map(({ run, ...t }) => t) });
+  if (method === "tools/list") return reply(id, { tools: !isCommander ? [] : TOOLS.map(({ run, ...t }) => t) });
   if (method === "tools/call") {
-    const tool = !isWorker && TOOLS.find((t) => t.name === params?.name);
+    const tool = isCommander && TOOLS.find((t) => t.name === params?.name);
     if (!tool) return fail(id, -32602, `unknown tool ${params?.name}`);
     try {
       const out = await tool.run(params.arguments || {});

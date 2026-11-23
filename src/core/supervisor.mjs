@@ -24,7 +24,7 @@ const WAIT_MS = 15_000; // a prompt must stay open this long to count as needing
 const QUIET_MS = 30_000; // don't type while you're typing in the commander
 const DONE_MS = Number(process.env.AXA_DONE_MS) || 6_000; // "done" must hold this long
 const WAKES_PER_HOUR = Number(process.env.AXA_WAKES_PER_HOUR) || 30;
-const NOTABLE = { done: "finished its turn", waiting: "needs the user's approval", stuck: "looks stuck", exited: "exited", over_budget: "went over its token budget: don't give it more work; report its usage to the user" };
+const NOTABLE = { done: "finished its turn", waiting: "needs the user's approval", needs_trust: "is waiting for the user to answer its folder-trust prompt (or to run `axa trust <project>` themselves)", stuck: "looks stuck", exited: "exited", over_budget: "went over its token budget: don't give it more work; report its usage to the user" };
 
 // ---------- links ----------
 let chains = [];

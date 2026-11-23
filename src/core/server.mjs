@@ -78,7 +78,9 @@ const routes = [
       if (!p) return [404, { error: `No project called "${b.project}". Known: ${ps.map((x) => x.name).join(", ") || "none"}` }];
       b.cwd = p.path;
     }
-    return [200, S.createSession(b)];
+    const s = S.createSession(b);
+    // wait: return once it's ready or waiting on something (a prompt, the trust dialog), at most 60 s
+    return [200, b.wait === true ? await S.waitReady(s.id, { timeoutMs: 60_000 }) : s];
   }],
   ["GET", /^\/api\/projects$/, () => [200, listProjects()]],
   ["GET", /^\/api\/chats$/, (m, req, u) => [200, listChats({ limit: Math.min(500, Number(u.searchParams.get("limit")) || 50), q: u.searchParams.get("q") || "" })]],

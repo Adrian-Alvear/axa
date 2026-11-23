@@ -90,7 +90,7 @@ function track(e, live = false) {
   s.at = e.ts;
   if (e.session && e.role) s.session = e.session;
   switch (e.event) {
-    case "SessionStart": s.status = "ready"; s.inflight.clear(); break;
+    case "SessionStart": s.status = "ready"; s.started = true; s.inflight.clear(); break;
     case "UserPromptSubmit": Object.assign(s, { status: "working", doing: "reading the instruction", tool: undefined, error: undefined, asking: null, stopAt: null, gateAt: null }); s.inflight.clear(); break;
     case "PreToolUse":
       if (e.agent_id) break; // a helper's step: tracked under its helper

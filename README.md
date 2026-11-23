@@ -144,7 +144,12 @@ axa review --reset-milestone [path]   forget the repo's stored milestone (the ne
 axa attach <name>    one session in this terminal, no hub around it (Ctrl-] detaches)
 axa stop [--all]     stop the background daemon (--all also ends every session)
 axa restart          restart the daemon; sessions keep running
+axa trust <path>     trust a project (its git repo root) in ~/.claude.json, so sessions AXA starts
+                     there don't stop on Claude Code's folder-trust prompt. Never the home folder.
 ```
+
+`axa trust` is yours to run: trusting a folder is your decision, so AXA's sessions (the commander
+included) are never allowed to run it.
 
 ## How it works
 
@@ -174,6 +179,16 @@ agents/ skills/      axa:builder / reviewer / researcher, the review gate's prom
 - **Sessions survive everything.** Each runs in tmux on AXA's own socket (`tmux -L axa-4747`; your
   tmux is untouched). Quitting the hub or restarting the daemon leaves them running. After a machine
   restart, Claude sessions come back resuming their chat.
+- **Sessions start unattended.** The commander's session tools come from the plugin itself
+  (`.claude-plugin/plugin.json`), so no session shows a "New MCP server found" prompt, and only the
+  commander (`AXA_ROLE=commander`) gets them. The first time Claude Code opens in a folder it asks
+  whether you trust it: that session shows **needs trust** in the hub, `axa status` and the
+  commander's list ("the user must answer the trust prompt (or run axa trust <project>)"). Nothing is
+  typed into a session before it has started (its first SessionStart event), while it starts or
+  while the trust prompt is open, so typed text can't answer a dialog; the commander's `open_session`
+  takes `wait: true` to return once the session is ready or waiting (at most 60 s). A new commander
+  runs in its own folder, `~/.axa/commander/` (Claude Code never saves trust for the home folder):
+  answer its trust prompt once, or run `axa trust ~/.axa/commander`.
 - **Project sessions run in accept-edits mode** under AXA's permission policy: safe actions are
   approved, dangerous ones refused, the rest goes to AXA's approver. Only one-way doors (shipping to
   main, deploying, publishing, accounts, spending) wait for you, in the yellow bar.

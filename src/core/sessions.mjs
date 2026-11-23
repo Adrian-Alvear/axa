@@ -15,7 +15,7 @@ import { safe } from "./text.mjs";
 import { gitInfo, diffOf, makeWorktree, removeWorktree } from "./git.mjs";
 import { fixerOf, reviewOf } from "./reviewer.mjs";
 import { CHAT_ID, usageOf } from "./claude-data.mjs";
-import { parseChoices, promptOnScreen } from "./screen.mjs";
+import { parseChoices, promptOnScreen, trustOnScreen } from "./screen.mjs";
 
 const require = createRequire(import.meta.url);
 const pty = require("node-pty");
@@ -90,14 +90,37 @@ function choicesOf(t) {
 }
 
 // ---------- the summary every client sees ----------
+export const TRUST_HINT = "the user must answer the trust prompt (or run axa trust <project>)";
+// A session's status from what's known about it (pure, for tests). tr: its traced status; trust: the
+// folder-trust dialog is on screen; prompt: any choice dialog is; restored: it was already running when
+// the daemon started (its SessionStart may be older than the replayed history).
+export function deriveStatus({ alive, mode, tr, trust, prompt, restored }) {
+  if (!alive) return "exited";
+  if (mode !== "shell" && trust) return "needs_trust";
+  // While AXA's approver is deciding, the prompt is already on screen: not your turn yet
+  if (tr?.status === "waiting" || (!tr?.asking && prompt)) return "waiting";
+  return tr?.status || (mode === "shell" || restored ? "ready" : "starting");
+}
+// Why typing into this session now is refused (null: it may be typed into). Text typed while Claude
+// Code starts can land in the trust or MCP dialog and answer it, so nothing is typed before the
+// session's first SessionStart, nor while it's starting or waits on the trust prompt.
+export function inputRefusal(s) {
+  if (!s.alive) return "the session has exited";
+  if (s.status === "needs_trust") return `Not sent: this session is waiting on the folder-trust prompt; ${TRUST_HINT}. Nothing was typed.`;
+  if (s.mode !== "shell" && (s.status === "starting" || !s.started)) return "Not sent: this session is still starting (Claude Code hasn't reported its start yet). Nothing was typed; try again when it's ready (open_session with wait: true returns then).";
+  return null;
+}
 function summary(t) {
   const tr = traced(t.id) || null;
-  // While AXA's approver is deciding, the prompt is already on screen: not your turn yet
-  const waiting = t.alive && (tr?.status === "waiting" || (!tr?.asking && promptOpen(t)));
+  const lines = t.alive && t.mode !== "shell" ? screenLines(t, 40) : [];
+  const status = deriveStatus({ alive: t.alive, mode: t.mode, tr, trust: lines.length > 0 && trustOnScreen(lines), prompt: t.alive && promptOpen(t), restored: t.restored });
+  const waiting = status === "waiting" || status === "needs_trust";
   const m = meta.get(t.id) || {};
   return {
     id: t.id, name: t.name, cwd: t.cwd, mode: t.mode, alive: t.alive, created: t.created,
-    status: !t.alive ? "exited" : waiting ? "waiting" : tr?.status || (t.mode === "shell" ? "ready" : "starting"),
+    status,
+    hint: status === "needs_trust" ? TRUST_HINT : undefined,
+    started: t.mode === "shell" || !!tr?.started || !!t.restored,
     stuck_minutes: tr?.stuck_minutes,
     doing: safe(tr?.doing), tool: tr?.tool, skill: tr?.skill,
     last_report: safe(tr?.report), error: safe(tr?.error), last_event_at: tr?.at,
@@ -115,6 +138,19 @@ function summary(t) {
   };
 }
 export const listSessions = () => [...terms.values()].map(summary);
+// Resolves once a session is ready, waiting on something (a prompt, the trust dialog) or gone, or after
+// timeoutMs, with its summary and timed_out (open_session / POST /api/terms with wait)
+export const settled = (s) => !s.alive || ["needs_trust", "waiting"].includes(s.status) || (s.status !== "starting" && s.started);
+export async function waitReady(id, { timeoutMs = 60_000, every = 500 } = {}) {
+  const end = Date.now() + timeoutMs;
+  for (;;) {
+    const s = getSession(id);
+    if (!s) return { id, alive: false, status: "exited", timed_out: false };
+    if (settled(s)) return { ...s, timed_out: false };
+    if (Date.now() >= end) return { ...s, timed_out: true };
+    await new Promise((r) => setTimeout(r, every));
+  }
+}
 export const getSession = (id) => (terms.has(id) ? summary(terms.get(id)) : null);
 export const lastInputAt = (id) => terms.get(id)?.lastInput || 0;
 
@@ -139,7 +175,9 @@ function typeText(t, text) {
 export async function sendText(id, text, { enter = true, confirmed = false } = {}) {
   const t = terms.get(id);
   if (!t) return { ok: false, error: "no such session" };
-  if (!t.alive) return { ok: false, error: "the session has exited" };
+  t.capture = null; // judge from a fresh screen
+  const refused = inputRefusal(summary(t));
+  if (refused) return { ok: false, error: refused };
   // Shells run whatever is typed, so dangerous commands need your explicit OK (Claude has its own checks)
   const danger = t.mode === "shell" && dangerousShell(text);
   if (danger && !confirmed) return { ok: false, error: `Not sent: this looks dangerous (${danger}). Ask the user to approve this exact command first, then resend with confirmed_by_user: true.` };
@@ -176,14 +214,19 @@ const claudeCmd = (role) =>
     ? `claude --plugin-dir ${shq(pluginRoot)} --append-system-prompt-file ${shq(join(pluginRoot, "commander.md"))}`
     : `claude --plugin-dir ${shq(pluginRoot)} --permission-mode acceptEdits`;
 const isDir = (p) => { try { return statSync(p).isDirectory(); } catch { return false; } };
+// The commander's own folder (the daemon creates it; it may write AXA's home)
+export const commanderDir = () => { const d = join(home, "commander"); try { mkdirSync(d, { recursive: true, mode: 0o700 }); } catch {} return d; };
 
 // mode: claude | axa (the commander) | shell. resume: a chat id to continue. worktree: true or a name.
 export function createSession({ cwd, mode = "claude", cols = 100, rows = 30, resume, worktree, name }) {
   if (!hasTmux) throw new Error("AXA needs tmux: install it (sudo apt install tmux / brew install tmux) and try again");
   if (!["claude", "axa", "shell"].includes(mode)) throw new Error("mode must be claude, axa or shell");
   if (resume !== undefined && resume !== null && !CHAT_ID.test(String(resume))) throw new Error("not a chat id");
-  let dir = expand(cwd || homedir());
-  if (!inHome(dir) || !isDir(dir)) throw new Error("cwd must be an existing folder in your home folder");
+  // A new commander runs in its own folder in AXA's home: Claude Code never saves trust for the home
+  // folder itself, so a commander there would ask again every time. (Resuming a chat keeps its folder.)
+  const cmdDir = mode === "axa" && !resume ? commanderDir() : null;
+  let dir = cmdDir || expand(cwd || homedir());
+  if (!(cmdDir || inHome(dir)) || !isDir(dir)) throw new Error("cwd must be an existing folder in your home folder");
   let wt = null;
   if (worktree && mode !== "axa") { wt = makeWorktree(dir, worktree); dir = wt.path; }
   const id = randomUUID().slice(0, 8);
@@ -249,7 +292,8 @@ export function restoreSessions() {
     if (!meta.has(id)) meta.set(id, { id, name: basename(s.path), cwd: s.path, mode: "shell", created: s.created, resume: null });
     const m = meta.get(id);
     m.recovered = false;
-    const t = { id, name: m.name, cwd: m.cwd, mode: m.mode, buf: "", alive: true, created: m.created, lastOutput: Date.now(), sockets: new Set(), recovered: false };
+    // (already running: its start may be older than the history the daemon replayed)
+    const t = { id, name: m.name, cwd: m.cwd, mode: m.mode, buf: "", alive: true, created: m.created, lastOutput: Date.now(), sockets: new Set(), recovered: false, restored: true };
     attachStream(t, s.cols, s.rows);
     terms.set(id, t);
     restored.push(id);

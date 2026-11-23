@@ -124,6 +124,48 @@ const deny = (reason) => ({ decision: "deny", reason });
 // a session could drive the console, e.g. answer its own permission prompts
 const AXA_PRIVATE = "AXA's own files (~/.axa) and the console's controls belong to you and the commander; a project session can't use them";
 
+// The axa CLI run by a command: its subcommand ("hub" when none), or null. Reads the program of every
+// segment past VAR=value prefixes and wrappers (env, nohup, xargs...), `node <path>/axa`, and the
+// script of `sh -c` / `bash -c`. The plugin's bin/ is on every session's PATH, so `axa` is in reach.
+const WRAPPERS = new Set(["env", "command", "nice", "nohup", "time", "exec", "builtin", "xargs", "timeout", "stdbuf", "setsid", "sudo", "doas"]);
+const SHELLS = new Set(["sh", "bash", "zsh", "dash", "ksh", "fish"]);
+export function axaCli(cmd, depth = 0) {
+  const segments = split(String(cmd || ""));
+  if (segments) for (const words of segments) {
+    const args = words.filter((w) => !/^[0-9]?(?:>>?|<)/.test(w));
+    let i = 0;
+    for (;;) {
+      const w = args[i];
+      if (w === undefined) break;
+      if (/^\w+=/.test(w) || (i > 0 && /^-/.test(w) && WRAPPERS.has(basename(args[0] || "")))) { i++; continue; }
+      if (WRAPPERS.has(basename(w))) { i++; if (basename(w) === "timeout" && /^\d/.test(args[i] || "")) i++; continue; }
+      break;
+    }
+    const [prog, ...rest] = args.slice(i);
+    if (!prog) continue;
+    const name = basename(prog);
+    const sub = (list) => list.find((a) => !a.startsWith("-")) || "hub";
+    if (name === "axa") return sub(rest);
+    if (/^node(?:js)?$/.test(name)) {
+      const script = rest.find((a) => !a.startsWith("-"));
+      if (script && basename(script) === "axa") return sub(rest.slice(rest.indexOf(script) + 1));
+    }
+    if (SHELLS.has(name) && depth < 3) {
+      const c = rest.findIndex((a) => /^-\w*c\w*$/.test(a));
+      if (c >= 0 && rest[c + 1] !== undefined) { const inner = axaCli(rest[c + 1], depth + 1); if (inner) return inner; }
+    }
+  }
+  // what a token reading can't see (eval, substitutions, unparseable quoting): the plain spelling,
+  // outside heredoc bodies (data such as a commit message; a heredoc fed to a shell gets no allow anyway)
+  const code = String(cmd || "").replace(/<<-?\s*(['"]?)(\w+)\1[^\n]*\n[\s\S]*?\n\s*\2(?=\s*$|\s*\n)/g, "");
+  if (!segments || /\beval\b|\$\(|`/.test(code)) {
+    const m = /(?:^|[\s;&|(`'"$])(?:[\w./~-]*\/)?axa\s+(trust|stop|restart|attach|chat|web|console|status|review|voice|hub|ui)\b/.exec(code);
+    if (m) return m[1];
+  }
+  return null;
+}
+const AXA_TRUST = "`axa trust` is the user's decision: only the user runs it, in their own terminal, never a session";
+
 function decide(tool, input, ctx) {
   const strict = ctx.settings.mode === "strict"; // strict: only ever denies
   const ok = (reason) => (strict ? null : allow(reason));
@@ -161,6 +203,7 @@ function decide(tool, input, ctx) {
 function bash(cmd, ctx, ok) {
   const danger = dangerousShell(cmd);
   if (danger) return deny(`blocked: ${danger}. Ask the user if this is really needed`);
+  if (axaCli(cmd) === "trust") return deny(AXA_TRUST);
   // (a pattern check, so a speed bump against a determined session rather than a wall; together with
   // sessions not inheriting $TMUX it keeps project sessions off AXA's controls)
   if (AXA_CONTROLS.test(cmd) || reachesAxaTmux(cmd) || (home !== join(homedir(), ".axa") && cmd.includes(home))) return deny(AXA_PRIVATE);
@@ -487,7 +530,8 @@ const AXA_WRITE = "changing AXA's own files (~/.axa) is for the user; the comman
 const PLUGIN = real(join(dirname(fileURLToPath(import.meta.url)), ".."));
 // Readable by the commander without asking: in the home folder, not a secret or private place; in
 // AXA's folder only the three files above
-const readable = (p) => { const axa = real(home); return inside(p, axa) ? AXA_READABLE.has(relative(axa, p)) : inside(p, real(homedir())) && !isSecret(p) && !isPrivatePath(p); };
+// (the commander's own folder, where it starts, holds nothing of AXA's: readable too)
+const readable = (p) => { const axa = real(home); return inside(p, axa) ? AXA_READABLE.has(relative(axa, p)) || inside(p, join(axa, "commander")) : inside(p, real(homedir())) && !isSecret(p) && !isPrivatePath(p); };
 
 // Bash that answers a prompt through the console: the /answer route or the page/TUI headers, with
 // anything that can make a request (quotes and backslashes dropped first: x-axa-"client" counts)
@@ -522,7 +566,7 @@ export function commanderRead(tool, input, ctx) {
   // a Glob pattern can climb out of its folder: check the fixed part before the first wildcard
   const pattern = tool === "Glob" ? String(input.pattern || "") : "";
   if (pattern) { const fixed = pattern.split(/[*?[{]/)[0]; paths.push(pathOf(fixed.includes("/") ? fixed.slice(0, fixed.lastIndexOf("/") + 1) || "/" : ".", { ...ctx, cwd: base })); }
-  if (paths.some((p) => inside(p, axa))) return tool === "Read" && AXA_READABLE.has(relative(axa, base)) ? allow("reading AXA's event log, session list or console token (the commander's own console)") : null;
+  if (paths.some((p) => inside(p, axa) && !inside(p, join(axa, "commander")))) return tool === "Read" && AXA_READABLE.has(relative(axa, base)) ? allow("reading AXA's event log, session list or console token (the commander's own console)") : null;
   if (tool === "Read" && isSecret(base)) return deny(`reading a secret file (${basename(base)}) isn't allowed`);
   if (!paths.every(readable)) return null;
   // Grep reads contents across a tree and a Glob lists names: not from a folder holding private
@@ -538,6 +582,7 @@ function commanderBash(cmd, ctx, ok) {
   const danger = dangerousShell(cmd);
   if (danger) return deny(`blocked: ${danger}. Ask the user if this is really needed`);
   if (answersPrompt(cmd)) return deny(NO_ANSWER);
+  if (axaCli(cmd) === "trust") return deny(AXA_TRUST);
   for (const re of ctx.settings.denyBash || []) if (safeRe(re)?.test(cmd)) return deny(`blocked by your policy (${re})`);
   const segments = split(cmd);
   const w = segments && commanderWrites(segments, ctx);

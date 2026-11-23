@@ -80,7 +80,7 @@ export async function runTui() {
   const nameOf = (s) => (s.mode === "axa" ? "AXA commander" : clean(s.name));
   const where = (cwd) => (cwd === homedir() ? "~" : tilde(cwd));
   // sessions waiting on a prompt, other than the one you're looking at
-  const waitingOthers = () => data.sessions.filter((s) => s.status === "waiting" && s.choices && !(screen === "live" && s.id === live?.id));
+  const waitingOthers = () => data.sessions.filter((s) => ["waiting", "needs_trust"].includes(s.status) && s.choices && !(screen === "live" && s.id === live?.id));
   const question = (c) => { const ls = c.question.split("\n").map(clean).filter(Boolean); return [...ls].reverse().find((l) => l.includes("?")) || ls.at(-1) || "a prompt"; };
   const yesOpt = (c) => c.options.find((o) => /^yes\b/i.test(o.label)) || c.options[0];
   const noOpt = (c) => c.options.find((o) => /^no\b/i.test(o.label)) || c.options.at(-1);
@@ -97,7 +97,7 @@ export async function runTui() {
   }
   function afterPoll() {
     const now = new Map(data.sessions.map((s) => [s.id, s.status]));
-    if (cfg.bell && prevStatus && data.sessions.some((s) => ["waiting", "stuck"].includes(s.status) && prevStatus.get(s.id) !== s.status)) out.write("\x07");
+    if (cfg.bell && prevStatus && data.sessions.some((s) => ["waiting", "needs_trust", "stuck"].includes(s.status) && prevStatus.get(s.id) !== s.status)) out.write("\x07");
     prevStatus = now;
     if (live && !live.dead && !data.sessions.some((s) => s.id === live.id && s.alive)) live.dead = "This session has ended.";
     if (pendingSend) {
@@ -126,7 +126,7 @@ export async function runTui() {
     if (panel === "agents") return data.agents.filter((a) => match(`${a.name} ${a.source} ${a.description}`, q)).map((a) => ({ kind: "agent", a }));
     return [...data.projects.filter((p) => match(`${p.name} ${p.path}`, q)).map((p) => ({ kind: "project", p })), ...(q ? [] : [{ kind: "home" }])];
   }
-  const counts = () => ({ control: data.sessions.filter((s) => s.status === "waiting" || s.status === "stuck").length || "", sessions: data.sessions.filter((s) => s.alive).length, chats: data.chats.length, agents: data.agents.length, projects: data.projects.length });
+  const counts = () => ({ control: data.sessions.filter((s) => ["waiting", "needs_trust", "stuck"].includes(s.status)).length || "", sessions: data.sessions.filter((s) => s.alive).length, chats: data.chats.length, agents: data.agents.length, projects: data.projects.length });
 
   // a list entry: two lines, [left segments, right segments] each
   function entry(it) {
@@ -261,7 +261,7 @@ export async function runTui() {
       head(s.mode === "axa" ? I.axa : s.mode === "shell" ? I.shell : I.session, s.mode === "axa" ? "title" : look(s)[2], nameOf(s), chipOf(s));
       meta([where(s.cwd), gitText(s.git), s.usage?.tokens ? `${I.tokens} ${fmtTok(s.usage.tokens)} tokens${s.usage.budget ? ` of ${fmtTok(s.usage.budget)}` : ""}` : "", s.worktree ? `${I.worktree} worktree` : ""].filter(Boolean).join("   "));
       gap();
-      if (s.status === "waiting" && s.choices) {
+      if (["waiting", "needs_trust"].includes(s.status) && s.choices) {
         para(question(s.choices), "wait");
         P.push([[["  ", ""], [" y ", "keycap"], [` ${cut(yesOpt(s.choices).label, 30)}   `, "waitSoft"], [" x ", "keycap"], [` ${cut(noOpt(s.choices).label, 30)}`, "waitSoft"]], [], "pv"]);
         gap();
@@ -338,7 +338,7 @@ export async function runTui() {
   let timer = null, prevRows = [], hits = [], tabHits = [];
   const schedule = () => { if (!timer && !quitting) timer = setTimeout(() => { timer = null; draw(); }, 16); };
   function titleBar() {
-    const n = (st) => data.sessions.filter((s) => s.status === st).length, needs = n("waiting") + n("stuck"), work = n("working");
+    const n = (st) => data.sessions.filter((s) => s.status === st).length, needs = n("waiting") + n("needs_trust") + n("stuck"), work = n("working");
     const clock = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
     const right = [[needs ? ` ${I.wait} ${needs} NEED${needs > 1 ? "" : "S"} YOU ` : "", "chipWait"], [needs && work ? " " : "", "bar"], [work ? ` ${spinner()} ${work} WORKING ` : "", "chipWork"], [!needs && !work ? `${I.done} all quiet` : "", "barDim"], [`   ${clock}`, "barDim"]];
     titleHits = [];
@@ -1033,7 +1033,7 @@ export async function runTui() {
     // a click outside the commander panel stops typing to it
     if (press && focusInput && !(onControl() && inCommander(x, y - ctl.y0))) focusInput = false;
     if (y === 1) {
-      if (press && hitAt(titleHits, x, y)) { const w = data.sessions.filter((s) => ["waiting", "stuck"].includes(s.status)).sort(byUrgency)[0]; if (w) openLive(w); }
+      if (press && hitAt(titleHits, x, y)) { const w = data.sessions.filter((s) => ["waiting", "needs_trust", "stuck"].includes(s.status)).sort(byUrgency)[0]; if (w) openLive(w); }
       return schedule();
     }
     if (y === 2) { const t = tabHits.find((h) => x >= h.x0 && x <= h.x1); if (t && press) focus = t.i; return schedule(); }

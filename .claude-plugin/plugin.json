@@ -9,6 +9,12 @@
   },
   "repository": "https://github.com/Adrian-Alvear/axa",
   "license": "MIT",
+  "mcpServers": {
+    "terminals": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/mcp/axa-terminals.mjs"]
+    }
+  },
   "keywords": [
     "orchestrator",
     "agents",

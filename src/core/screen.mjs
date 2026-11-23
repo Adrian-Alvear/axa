@@ -14,6 +14,12 @@ export function promptOnScreen(screenLines) {
   return tail.some((l) => FOOTER.test(l)) && PERMISSION_RE.test(screenLines.slice(-25).join("\n"));
 }
 
+// Claude Code's folder-trust dialog ("Do you trust the files in this folder?", or newer: "Quick safety
+// check: Is this a project you created or one you trust? ❯ 1. Yes, I trust this folder"). Only the user
+// answers it; until then the session can't start, and anything typed would answer it.
+const TRUST_RE = /Do you trust the files|Yes, I trust this folder|trust this folder|Quick safety check|a project you created or one you trust/i;
+export const trustOnScreen = (screenLines) => promptOnScreen(screenLines) && TRUST_RE.test(screenLines.slice(-25).join("\n"));
+
 const BOX = /[│┃╭╮╰╯─━╌╍┄┅┈┉═║]/g;
 
 // The menu on screen: its question and options. Claude Code's menus (numbered or not) are a block of

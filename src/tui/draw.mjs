@@ -55,14 +55,14 @@ export const spinner = () => (motion === "off" ? SPIN[0] : SPIN[Math.floor(Date.
 
 // Status of a session: glyph, word, color role. Never color alone.
 // [glyph, word, color role, chip role]
-const LOOK = () => ({ waiting: [I.wait, "needs you", "wait", "chipWait"], stuck: [I.stuck, "stuck", "stuck", "chipStuck"], working: [spinner(), "working", "work", "chipWork"], done: [I.done, "done", "done", "chipDone"], ready: [I.ready, "ready", "idle", "chipIdle"], starting: [spinner(), "starting", "off", "chipOff"], exited: [I.off, "exited", "off", "chipOff"] });
+const LOOK = () => ({ waiting: [I.wait, "needs you", "wait", "chipWait"], needs_trust: [I.wait, "needs trust", "wait", "chipWait"], stuck: [I.stuck, "stuck", "stuck", "chipStuck"], working: [spinner(), "working", "work", "chipWork"], done: [I.done, "done", "done", "chipDone"], ready: [I.ready, "ready", "idle", "chipIdle"], starting: [spinner(), "starting", "off", "chipOff"], exited: [I.off, "exited", "off", "chipOff"] });
 export const look = (s) => (s.mode === "shell" && ["starting", "ready"].includes(s.status) ? [I.shell, "shell", "idle", "chipIdle"] : LOOK()[s.status] || ["?", s.status, "idle", "chipIdle"]);
 // a status chip: " NEEDS YOU "
 export const chipOf = (s) => { const [, word, , role] = look(s); return [` ${word.toUpperCase()} `, role]; };
 // the independent reviewer's verdict on a session's last turn, as a small badge
 const REVIEW_BADGE = { reviewing: "… reviewing", approve: "✓ reviewed", warn: "⚠ review", block: "✗ blocked", error: "? unreviewed" };
 export const reviewBadge = (s) => REVIEW_BADGE[s?.review?.verdict] || (s?.fixer ? "fixer (milestone review)" : "");
-export const URGENCY = ["waiting", "stuck", "working", "done", "ready", "starting", "exited"];
+export const URGENCY = ["waiting", "needs_trust", "stuck", "working", "done", "ready", "starting", "exited"];
 
 // ---------- text ----------
 export const clean = (s) => String(s ?? "").replace(/[\u0000-\u001f\u007f-\u009f]+/g, " ").replace(/\s+/g, " ").trim();

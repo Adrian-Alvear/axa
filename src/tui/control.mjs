@@ -431,7 +431,7 @@ export function axaStatusLine(cmd, sessions, w, maxRows = 2, { mode = "", on = n
   if (cmd.created) segs.push([`up ${dur(Date.now() - cmd.created)}`, "dim"]);
   const hs = cmd.helpers || [], run = hs.filter((h) => h.status === "running").length;
   if (hs.length) segs.push([run ? `${spinner()} ${run} agent${run > 1 ? "s" : ""} running` : `✓ ${hs.length} agent${hs.length > 1 ? "s" : ""} done`, run ? "violet" : "dim"]);
-  const ws = sessions.filter((s) => s.alive && s.mode !== "axa"), wait = ws.filter((s) => s.status === "waiting").length, busy = ws.filter((s) => s.status === "working").length;
+  const ws = sessions.filter((s) => s.alive && s.mode !== "axa"), wait = ws.filter((s) => ["waiting", "needs_trust"].includes(s.status)).length, busy = ws.filter((s) => s.status === "working").length;
   segs.push([`${ws.length} session${ws.length === 1 ? "" : "s"}${busy ? ` · ${busy} working` : ""}${wait ? ` · ${wait} need you` : ""}`, wait ? "wait" : "dim"]);
   if (cmd.git?.branch) segs.push([`${I.branch} ${cmd.git.branch}`, "dim"]);
   // fit: whole pieces separated by " · ", wrapping onto up to `maxRows` rows
@@ -482,7 +482,7 @@ export function controlRows(ctx, W, B) {
 
   // top: metrics and activity
   if (topH) {
-    const nActive = alive.filter((s) => s.mode !== "axa").length, nNeeds = cnt("waiting") + cnt("stuck");
+    const nActive = alive.filter((s) => s.mode !== "axa").length, nNeeds = cnt("waiting") + cnt("needs_trust") + cnt("stuck");
     const tiles = [["Active", nActive, "accent", "sessions open"], ["Working", cnt("working"), "work", "busy right now"], ["Needs you", nNeeds, nNeeds ? "wait" : "dim", "waiting on you"], ["Done today", act?.runs?.done ?? 0, "done", `of ${act?.runs?.today ?? 0} runs`]];
     const tw = Math.floor((L - 2) / 4), max = Math.max(1, nActive);
     const cellW = (k) => (k === 3 ? L - 2 - tw * 3 : tw);
