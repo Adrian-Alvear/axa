@@ -3,7 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, statSync, symlinkSync, writeFileSync, writeSync, closeSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, statSync, symlinkSync, writeFileSync, writeSync, closeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -264,7 +264,7 @@ test("the session goal is read incrementally from the event log", () => {
   prompt("sess-1", "first step");
   sh(s, "make a");
   let p = calls(s).at(-1).prompt;
-  assert.match(p, /\/goal build the importer\n---\nfirst step/);
+  assert.match(p, /CURRENT TASK \(the latest \/goal; it outranks anything older below\):\n\/goal build the importer\n\nLater messages within this task \(newest last\):\nfirst step/);
   assert.ok(!p.includes("unrelated work"));
   // overwrite what was already read (same length): a re-read would see the change, the state doesn't
   const before = readFileSync(log, "utf8");
@@ -301,7 +301,7 @@ test("a replaced (rotated) event log is read again from the start", () => {
   writeFileSync(log, JSON.stringify({ event: "UserPromptSubmit", session: "sess-1", prompt: "new" }) + "\n");
   sh(s, "make b");
   const p = calls(s).at(-1).prompt;
-  assert.match(p, /<session_goal>\nnew\n<\/session_goal>/);
+  assert.match(p, /<session_goal>\nCURRENT TASK \(the latest prompt; it outranks anything older below\):\nnew\n<\/session_goal>/);
 });
 
 test("silent outside AXA project sessions or when switched off", () => {
@@ -409,7 +409,7 @@ test("commander: judged with its latest user messages from its transcript as the
   assert.deepEqual(sh(s, "make lint", commander(s, { extra: { transcript_path: file } })), { behavior: "allow" });
   const p = calls(s).at(-1).prompt;
   assert.match(p, /AXA's commander/);
-  assert.match(p, /<session_goal>\nfirst: look at the importer\n---\nthen run the linter in proj, key \[REDACTED\]\n<\/session_goal>/);
+  assert.match(p, /<session_goal>\nCURRENT TASK \(the latest prompt; it outranks anything older below\):\nthen run the linter in proj, key \[REDACTED\]\n\nOlder prompts \(from before the current task; where they conflict with it, the current task wins\):\nfirst: look at the importer\n<\/session_goal>/);
   for (const x of ["ASSISTANT TEXT", "TOOL OUTPUT", "META INJECTED", "abcdefghijklmnop"]) assert.ok(!p.includes(x), x);
   assert.equal(decisions(s).at(-1).role, "commander");
 });
@@ -469,4 +469,56 @@ test("commander: the fallback only applies inside a real project it runs in", ()
   mkdirSync(proj);
   assert.deepEqual(sh(s, "mkdir -p x", { ...commander(s, { cwd: proj, projectDir: proj }), judge: "throw" }), { behavior: "allow" });
   assert.equal(decisions(s).at(-1).fallback, "local-rules");
+});
+
+// ---------- the current task: the latest /goal, and the spec file it cites ----------
+test("a newer /goal citing a spec outranks an older 'don't change anything else'; the spec is shown as data", () => {
+  const s = sandbox();
+  const log = join(s.axa, "events.jsonl");
+  const prompt = (p) => appendFileSync(log, JSON.stringify({ ts: 1, event: "UserPromptSubmit", session: "sess-1", prompt: p }) + "\n");
+  mkdirSync(join(s.proj, "src", "core"), { recursive: true });
+  const edit = { file_path: join(s.proj, "src", "core", "notify.mjs"), old_string: "a", new_string: "b" };
+  // the old, restrictive task alone: an edit outside it is declined
+  prompt("Fix exactly these findings in sessions.mjs and milestone.mjs. Don't change anything else.");
+  const before = run(s, "Edit", edit, { judge: "scope" });
+  assert.equal(before.behavior, "deny");
+  assert.match(before.message, /the current task says to change nothing else/);
+  // then a /goal (as Claude Code logs the slash command) citing a spec in a scratchpad
+  const scratch = mkdtempSync(join(tmpdir(), "claude-axa-test-"));
+  const spec = join(scratch, "briefing.md");
+  writeFileSync(spec, `# Task\n## Part A\n1. One notification stream in src/core/notify.mjs.\n${"filler line\n".repeat(1000)}`);
+  prompt(`<command-name>/goal</command-name>\n<command-message>goal</command-message>\n<command-args>All three parts of ${spec} are implemented</command-args>`);
+  assert.deepEqual(run(s, "Edit", edit, { judge: "scope" }), { behavior: "allow" });
+  const p = calls(s).at(-1).prompt;
+  assert.match(p, /CURRENT TASK \(the latest \/goal; it outranks anything older below\):\n<command-name>\/goal/);
+  assert.match(p, /Older prompts \(from before the current task; where they conflict with it, the current task wins\):\nFix exactly these findings/);
+  assert.ok(p.includes(`<spec_file path="${realpathSync(spec)}" note="the first 6 KB">\n# Task\n## Part A\n1. One notification stream in src/core/notify.mjs.`));
+  const shown = /<spec_file[^>]*>\n([\s\S]*?)\n<\/spec_file>/.exec(p)[1];
+  assert.ok(shown.length <= 6 * 1024);
+  assert.match(p, /an older prompt's limits don't apply to it/);
+  // a follow-up after the goal doesn't replace it as the current task
+  prompt("Stop hook feedback: keep going");
+  assert.deepEqual(run(s, "Edit", edit, { judge: "scope" }), { behavior: "allow" }); // remembered: same task
+  assert.deepEqual(run(s, "Edit", { ...edit, new_string: "c" }, { judge: "scope" }), { behavior: "allow" });
+  assert.match(calls(s).at(-1).prompt, /Later messages within this task \(newest last\):\nStop hook feedback/);
+});
+
+test("only spec files in the project, AXA's tasks folder or a Claude scratchpad are inlined", () => {
+  const s = sandbox();
+  mkdirSync(join(s.proj, "docs"), { recursive: true });
+  writeFileSync(join(s.proj, "docs", "spec.md"), "PROJECT SPEC");
+  mkdirSync(join(s.axa, "tasks"), { recursive: true });
+  writeFileSync(join(s.axa, "tasks", "t.md"), "TASKS SPEC");
+  writeFileSync(join(s.home, "elsewhere.md"), "OUTSIDE SPEC");
+  writeFileSync(join(s.proj, "docs", "notes.txt"), "NOT MARKDOWN");
+  const env = { HOME: s.home, AXA_HOME: s.axa };
+  const old = { HOME: process.env.HOME, AXA_HOME: process.env.AXA_HOME };
+  // (citedSpecs reads AXA's tasks folder from the AXA_HOME the module was loaded with: use the hook)
+  const log = join(s.axa, "events.jsonl");
+  appendFileSync(log, JSON.stringify({ ts: 1, event: "UserPromptSubmit", session: "sess-1", prompt: `/goal follow ${join(s.proj, "docs", "spec.md")}, ${join(s.axa, "tasks", "t.md")} and ${join(s.home, "elsewhere.md")} and ${join(s.proj, "docs", "notes.txt")}` }) + "\n");
+  sh(s, "make a", { env });
+  const p = calls(s).at(-1).prompt;
+  assert.ok(p.includes("PROJECT SPEC") && p.includes("TASKS SPEC"));
+  assert.ok(!p.includes("OUTSIDE SPEC") && !p.includes("NOT MARKDOWN"));
+  assert.deepEqual(old, { HOME: process.env.HOME, AXA_HOME: process.env.AXA_HOME });
 });

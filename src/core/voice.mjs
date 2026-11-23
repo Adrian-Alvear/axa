@@ -90,12 +90,25 @@ export function stop() {
 }
 const log = (m) => console.log(`[${new Date().toISOString()}] voice: ${m}`);
 
-// Speaks `text` (stopping anything already speaking). Resolves to the exit code, or null if it couldn't start.
+// THE gate: every voice path (commander replies, notifications, the daily brief, summaries, any demo or helper)
+// speaks through speak(), which says nothing while the voice is off. Only the settings screen's explicit voice
+// test passes { force: true } to speak while off.
+export const maySpeak = (on, force) => on === true || force === true;
+// Muted while something speaks (the toggle, or ui.json edited): stops it, unless it's that forced voice test
+export function silenceIfMuted() {
+  if (current && !current.forced && !settings().on) { stop(); return true; }
+  return false;
+}
+// Speaks `text` (stopping anything already speaking). Resolves to the exit code, or null if it couldn't start
+// (or the voice is off).
 export function speak(text, opts = {}) {
+  const { force, ...rest } = opts;
+  if (!maySpeak(settings().on, force)) return Promise.resolve(null);
   stop();
-  const s = { ...settings(), ...opts };
+  const s = { ...settings(), ...rest };
   if (!String(text || "").trim()) return Promise.resolve(null);
   const me = newJob();
+  me.forced = force === true;
   current = me;
   return speakWith(String(text), s, { kokoro: kokoroSpeak, system: systemSpeak, log, job: me })
     .catch(() => null).finally(() => { if (current === me) current = null; });

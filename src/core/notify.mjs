@@ -137,6 +137,8 @@ export function createVoiceQueue({ now = () => Date.now(), say, gap = VOICE_GAP_
   return {
     add(n) { queue.push(n); if (now() - lastAt >= gap && !timer) flush(); else schedule(); },
     pending: () => queue.length,
+    // muted or stopped: nothing queued is said later (a pending timer finds the queue empty)
+    clear() { queue = []; },
     text: spoken,
   };
 }
@@ -207,6 +209,8 @@ export const voiceHooks = { on: () => false, busy: () => false, speak: () => {} 
 const voiceQ = createVoiceQueue({
   say: (text, { items }) => { if (voiceHooks.busy()) return false; voiceHooks.speak(text, items); },
 });
+export const clearVoiceQueue = () => voiceQ.clear();
+export const voicePending = () => voiceQ.pending();
 export const notifier = createNotifier({
   load: () => { const l = loadFile(); lines = l.length; return l; },
   save: saveFile,

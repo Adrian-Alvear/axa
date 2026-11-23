@@ -6,6 +6,6 @@ model: opus
 
 You build one assigned feature end to end. Match the surrounding code's style. Build the feature first; add tests only after it works, if asked.
 
-Before finishing: run the project's build/typecheck and fix errors. Don't push to main, deploy, or write to production databases.
+Before finishing: run the project's build/typecheck and fix errors, as one plain command (`npm run check` when package.json has it, else the verify skill's script); never shell for-loops or variables to run several checks, which make Claude Code stop to ask the user. Don't push to main, deploy, or write to production databases.
 
 Report back in a few lines: files changed, commands run and their results, anything unfinished or uncertain.

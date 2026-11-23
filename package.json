@@ -4,7 +4,8 @@
   "type": "module",
   "description": "AXA: a hub for your Claude Code sessions, chats and agents",
   "scripts": {
-    "test": "node --test test/*.test.mjs"
+    "test": "node --test test/*.test.mjs",
+    "check": "node scripts/check.mjs"
   },
   "dependencies": {
     "@xterm/addon-fit": "^0.10.0",

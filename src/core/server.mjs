@@ -16,7 +16,7 @@ import { getMilestoneReview, listMilestoneReviews, startMilestone } from "./mile
 import { listAgents, listProjects, readRoster } from "./catalog.mjs";
 import { chatMessages, findChat, listChats } from "./claude-data.mjs";
 import { safe } from "./text.mjs";
-import { notifier, notifySettings, voiceHooks } from "./notify.mjs";
+import { clearVoiceQueue, notifier, notifySettings, voiceHooks, voicePending } from "./notify.mjs";
 import { briefDue, briefText, reviewProjects } from "./projects.mjs";
 import { spokenReply, summaryMode } from "./summary.mjs";
 import { SHORT } from "./speech.mjs";
@@ -70,6 +70,15 @@ async function planned(fn) {
   try { plan = await fn(); } catch { plan = { text: "" }; } finally { summarizing--; if (gen === voiceGen) voiceNow = null; }
   return say(plan, gen);
 }
+// Stop everything: what's speaking (the player is killed), a summary still being written, queued notifications
+function hush() { voiceGen++; voiceNow = null; clearVoiceQueue(); V.stop(); }
+// Muting takes effect at once however it's done (the hub's m or settings, or ui.json edited): checked every
+// 500 ms while anything is speaking, written or queued
+setInterval(() => {
+  if (!(V.speaking() || summarizing > 0 || voicePending() > 0) || V.settings().on) return;
+  if (V.speaking() && !V.silenceIfMuted()) return; // (the settings screen's forced voice test plays on)
+  voiceGen++; voiceNow = null; clearVoiceQueue();
+}, 500).unref();
 onCommanderReply((id, message) => {
   const vs = V.settings();
   if (S.listSessions().find((s) => s.id === id)?.mode !== "axa" || !vs.on) return;
@@ -171,13 +180,13 @@ const routes = [
   ["GET", /^\/api\/notifications$/, (m, req, u) => { const since = Number(u.searchParams.get("since")) || 0, all = notifier.list(); return [200, { items: all.filter((n) => n.at > since).slice(-Math.min(200, Number(u.searchParams.get("limit")) || 200)), total: all.length }]; }],
   ["POST", /^\/api\/notifications\/clear$/, () => { notifier.clear(); return [200, {}]; }],
   ["GET", /^\/api\/voice$/, async () => [200, await V.info()]],
-  ["POST", /^\/api\/voice\/stop$/, () => { voiceGen++; voiceNow = null; V.stop(); return [200, {}]; }],
+  ["POST", /^\/api\/voice\/stop$/, () => { hush(); return [200, {}]; }],
   // what the voice is doing now, for the status bar: "writing summary" | "speaking summary" | "speaking" | null
   ["GET", /^\/api\/voice\/now$/, () => [200, { now: voiceNow }]],
   ["POST", /^\/api\/voice\/test$/, () => {
     const b = V.detect(), { engine } = V.settings();
     if (engine !== "kokoro" && !b.name) return [409, { error: b.why }];
-    V.speak("AXA voice check.");
+    V.speak("AXA voice check.", { force: true }); // the one path that may speak while the voice is off
     return [200, { engine, backend: engine === "kokoro" ? "kokoro" : b.name }];
   }],
   // the terminal UI says when you type into a session (the supervisor waits until you stop)

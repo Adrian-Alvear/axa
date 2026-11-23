@@ -7,6 +7,11 @@ description: Verifies a code change before it's reported done. Runs the project'
 
 "Done" means checked. Run this after your last edit, fix what fails, and run it again.
 
+0. **One command, no loops.** If package.json has a `check` script (AXA's own repo does: `npm run check`
+   syntax-checks every source file and runs both test suites, with a PASS/FAIL table), run that. Never write
+   shell `for` loops, variables or long chains of commands to run several checks: Claude Code stops to ask
+   the user about those, even when AXA's approver would allow them. Use the script below instead.
+
 1. **Run the checks.** The script finds them from the project's files (package.json scripts with the
    right package manager, Cargo, Go, pytest, `make test`) and syntax-checks changed JavaScript:
 

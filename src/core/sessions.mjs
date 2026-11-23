@@ -294,10 +294,13 @@ export function noteInput(id) { const t = terms.get(id); if (t) t.lastInput = Da
 const shq = (s) => "'" + String(s).replace(/'/g, "'\\''") + "'";
 // Every Claude session AXA starts loads the AXA plugin so its hooks trace it. Project sessions run in
 // accept-edits mode under AXA's permission policy; the commander gets AXA's prompt and session tools.
+// Project sessions get one standing instruction: run checks as one plain command. Claude Code asks the user
+// itself about shell for-loops and variables, even when AXA's approver would allow them.
+export const WORKER_NOTE = "To check your work, run the project's single check command: `npm run check` when package.json has a check script, else the verify skill's script (node \"$CLAUDE_PLUGIN_ROOT/skills/verify/verify.mjs\" .). Don't write shell for-loops, variables or chained loops to run several checks: Claude Code stops to ask the user about those.";
 const claudeCmd = (role) =>
   role === "commander"
     ? `claude --plugin-dir ${shq(pluginRoot)} --append-system-prompt-file ${shq(join(pluginRoot, "commander.md"))}`
-    : `claude --plugin-dir ${shq(pluginRoot)} --permission-mode acceptEdits`;
+    : `claude --plugin-dir ${shq(pluginRoot)} --permission-mode acceptEdits --append-system-prompt ${shq(WORKER_NOTE)}`;
 const isDir = (p) => { try { return statSync(p).isDirectory(); } catch { return false; } };
 // The commander's own folder (the daemon creates it; it may write AXA's home)
 export const commanderDir = () => { const d = join(home, "commander"); try { mkdirSync(d, { recursive: true, mode: 0o700 }); } catch {} return d; };

@@ -80,6 +80,12 @@ the summary fails or takes too long, it says the first sentences that fit (never
 `,` settings): `model` (default), `first-paragraph` (the old short version) or `full`. Summaries are cached by
 reply, the hub never waits for one, the status bar shows "🔊 speaking summary", and `Esc` on Control stops it
 (also one still being written). Batches of notifications and the daily brief are summarised the same way.
+**Off means silent:** everything AXA says goes through one gate that respects the voice setting (only the
+settings screen's "Test the voice" speaks while it's off), and turning the voice off stops whatever is
+speaking, being written or queued at once.
+
+Working on AXA itself: `npm run check` syntax-checks every source file and runs both test suites (`npm test`
+and plain `node --test`) with a PASS/FAIL table.
 The daemon does the speaking, so it works from the hub or the web console, and only the commander ever talks:
 never a worker session. To talk back, turn on Claude Code's own hold-to-talk dictation (`/config`,
 `"voiceEnabled": true`) in the commander's session.
