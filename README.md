@@ -203,6 +203,14 @@ agents/ skills/      axa:builder / reviewer / researcher, the review gate's prom
   project are approved; everything else comes to you. **The commander** gets narrower rules: read-only
   shell and reads in your home folder (not secrets), edits only in the project it started in, never
   writing to `~/.axa` or answering prompts. Details: `hooks/policy.mjs`, tests in `test/`.
+- **Sessions can't drive AXA or loosen Claude Code.** Project sessions can't run the `axa` CLI (the
+  plugin's `bin/` is on their PATH), read or write `~/.claude.json` (folder trust, MCP servers), or start
+  Claude Code with `--dangerously-skip-permissions` / `bypassPermissions` (the commander can't either).
+  Text typed into a Claude session (the commander's `send_to_session`, links, supervisor updates) never
+  starts with `!` (bash mode, which skips hooks) unless you confirmed that exact command, may only use
+  the slash commands `/goal`, `/compact`, `/clear`, `/context` and `/cost`, and has control characters
+  stripped. Known gap: code a project session runs as your user could still read the console token
+  and answer a prompt; see `docs/tasks/answer-auth.md` (fix: sandbox project sessions).
 - **"Done" means checked.** If a session edits code and tries to finish without running a check,
   AXA's verify gate sends it back once. `"verifyGate": "off"` in `~/.axa/policy.json` turns it off.
 - **An independent review at milestones** (or after every turn, if you choose), with a fixer loop. See [Independent review](#independent-review).

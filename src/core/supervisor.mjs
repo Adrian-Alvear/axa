@@ -12,7 +12,7 @@
 import { chmodSync, readFileSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { files } from "../paths.mjs";
-import { closeSession, createSession, lastInputAt, listSessions, sendText } from "./sessions.mjs";
+import { closeSession, createSession, lastInputAt, listSessions, sendText, typedText } from "./sessions.mjs";
 import { lastRun, logEvent, onRunStart } from "./events.mjs";
 import { diffOf, headOf } from "./git.mjs";
 import { mdeps, tickMilestones } from "./milestone.mjs";
@@ -40,6 +40,13 @@ export function addLink(fromId, toId, text) {
   if (!from || !to) throw Object.assign(new Error("Both sessions must be open (ids from list_sessions)."), { code: 404 });
   if (from.id === to.id) throw new Error("A session can't be linked to itself.");
   if (!text || text.length > 4000) throw new Error("Give the next session an instruction (up to 4000 characters).");
+  // into a Claude session: the same rules as any typed text (no "!", only a few slash commands, no
+  // control characters); a link has no user confirmation, so "!" is never allowed
+  if (to.mode !== "shell") {
+    const r = typedText(text);
+    if (r.error) throw new Error(r.error.replace(/^Not sent/, "Not linked"));
+    text = r.text;
+  }
   const ch = { id: randomBytes(4).toString("hex"), from: from.id, to: to.id, text, created: Date.now() };
   chains.push(ch); saveChains();
   return { ...ch, from_name: from.name, to_name: to.name };

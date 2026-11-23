@@ -157,7 +157,7 @@ export function axaCli(cmd, depth = 0) {
   }
   // what a token reading can't see (eval, substitutions, unparseable quoting): the plain spelling,
   // outside heredoc bodies (data such as a commit message; a heredoc fed to a shell gets no allow anyway)
-  const code = String(cmd || "").replace(/<<-?\s*(['"]?)(\w+)\1[^\n]*\n[\s\S]*?\n\s*\2(?=\s*$|\s*\n)/g, "");
+  const code = codeOf(cmd);
   if (!segments || /\beval\b|\$\(|`/.test(code)) {
     const m = /(?:^|[\s;&|(`'"$])(?:[\w./~-]*\/)?axa\s+(trust|stop|restart|attach|chat|web|console|status|review|voice|hub|ui)\b/.exec(code);
     if (m) return m[1];
@@ -165,12 +165,27 @@ export function axaCli(cmd, depth = 0) {
   return null;
 }
 const AXA_TRUST = "`axa trust` is the user's decision: only the user runs it, in their own terminal, never a session";
+const AXA_CLI = "the axa CLI drives AXA itself (sessions, the daemon, trust): it's for the user and the commander, never a project session";
+
+// Claude Code's own config, ~/.claude.json: it holds which folders are trusted (and MCP servers,
+// allowed tools). A session that reads or writes it could trust folders or widen its own permissions.
+const CLAUDE_JSON = "~/.claude.json is Claude Code's own config (folder trust, MCP servers, allowed tools): sessions don't read or write it; ask the user";
+const claudeJson = () => join(real(homedir()), ".claude.json");
+// the file itself and its backups (.claude.json.backup...)
+const isClaudeJson = (p) => { const f = claudeJson(); return p === f || p.startsWith(f + "."); };
+const CLAUDE_JSON_TEXT = /(?:~|\$HOME|\$\{HOME\}|\/home\/[^/\s]+|\/Users\/[^/\s]+|\/root)\/\.claude\.json\b/;
+// Starting Claude Code with its permission checks off (and so without AXA's)
+const SKIP_PERMISSIONS = /--(?:allow-)?dangerously-skip-permissions\b|--permission-mode(?:=|\s+)["']?bypassPermissions\b|"defaultMode"\s*:\s*"bypassPermissions"/i;
+const SKIPS = "starting Claude Code with its permission checks off (--dangerously-skip-permissions, bypassPermissions) isn't allowed for sessions; ask the user";
+// a command's text without its heredoc bodies (data, e.g. a commit message)
+const codeOf = (cmd) => String(cmd || "").replace(/<<-?\s*(['"]?)(\w+)\1[^\n]*\n[\s\S]*?\n\s*\2(?=\s*$|\s*\n)/g, "");
 
 function decide(tool, input, ctx) {
   const strict = ctx.settings.mode === "strict"; // strict: only ever denies
   const ok = (reason) => (strict ? null : allow(reason));
   const target = input.file_path || input.notebook_path || input.path;
   if (target && ["Read", "Glob", "Grep", "LS", "Edit", "Write", "MultiEdit", "NotebookEdit"].includes(tool) && inside(pathOf(target, ctx), real(home))) return deny(AXA_PRIVATE);
+  if (target && ["Read", "Glob", "Grep", "LS", "Edit", "Write", "MultiEdit", "NotebookEdit"].includes(tool) && isClaudeJson(pathOf(target, ctx))) return deny(CLAUDE_JSON);
   switch (tool) {
     case "Read": {
       const p = pathOf(input.file_path || "", ctx);
@@ -203,7 +218,11 @@ function decide(tool, input, ctx) {
 function bash(cmd, ctx, ok) {
   const danger = dangerousShell(cmd);
   if (danger) return deny(`blocked: ${danger}. Ask the user if this is really needed`);
-  if (axaCli(cmd) === "trust") return deny(AXA_TRUST);
+  // the plugin's bin/ is on the session's PATH: no `axa ...` (stop --all, attach, trust, ...)
+  const cli = axaCli(cmd);
+  if (cli) return deny(cli === "trust" ? AXA_TRUST : AXA_CLI);
+  if (SKIP_PERMISSIONS.test(codeOf(cmd))) return deny(SKIPS);
+  if (CLAUDE_JSON_TEXT.test(codeOf(cmd))) return deny(CLAUDE_JSON);
   // (a pattern check, so a speed bump against a determined session rather than a wall; together with
   // sessions not inheriting $TMUX it keeps project sessions off AXA's controls)
   if (AXA_CONTROLS.test(cmd) || reachesAxaTmux(cmd) || (home !== join(homedir(), ".axa") && cmd.includes(home))) return deny(AXA_PRIVATE);
@@ -301,6 +320,7 @@ function touches(segments, ctx) {
     for (const cwd of cwds) {
       const at = (w) => pathOf(w, { ...ctx, cwd });
       if (words.flatMap(pathWords).some((w) => inside(at(w), axa))) return deny(AXA_PRIVATE);
+      if (words.flatMap(pathWords).some((w) => isClaudeJson(at(w)))) return deny(CLAUDE_JSON);
       if (settingsWrite(words, at)) return deny(SETTINGS_WRITE);
     }
   }
@@ -545,6 +565,7 @@ export function decideCommander(tool, input, ctx) {
   if (EDIT_TOOLS.has(tool)) {
     const p = pathOf(input.file_path || input.notebook_path || "", ctx);
     if (inside(p, real(home))) return deny(AXA_WRITE);
+    if (isClaudeJson(p)) return deny(CLAUDE_JSON);
     if (isSecret(p)) return deny(`editing a secret file (${basename(p)}) isn't allowed; ask the user`);
     if (isClaudeSettings(p)) return deny("editing Claude Code's settings (.claude/settings*.json) isn't allowed: it could switch off AXA's checks; ask the user");
     if (guarded(p, ctx)) return deny(GUARDED);
@@ -583,6 +604,7 @@ function commanderBash(cmd, ctx, ok) {
   if (danger) return deny(`blocked: ${danger}. Ask the user if this is really needed`);
   if (answersPrompt(cmd)) return deny(NO_ANSWER);
   if (axaCli(cmd) === "trust") return deny(AXA_TRUST);
+  if (SKIP_PERMISSIONS.test(codeOf(cmd))) return deny(SKIPS);
   for (const re of ctx.settings.denyBash || []) if (safeRe(re)?.test(cmd)) return deny(`blocked by your policy (${re})`);
   const segments = split(cmd);
   const w = segments && commanderWrites(segments, ctx);
@@ -617,6 +639,7 @@ function commanderWrites(segments, ctx) {
       const at = (w) => pathOf(w, { ...ctx, cwd });
       const writes = writeTargets(words);
       if (settingsWrite(words, at)) return deny(SETTINGS_WRITE);
+      if ((CHANGERS.has(prog) ? words.flatMap(pathWords) : writes).some((w) => w && isClaudeJson(at(w)))) return deny(CLAUDE_JSON);
       if ((CHANGERS.has(prog) ? words.flatMap(pathWords) : writes).some((w) => w && inside(at(w), axa))) return deny(AXA_WRITE);
     }
   }

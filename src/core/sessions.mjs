@@ -187,7 +187,22 @@ function typeText(t, text) {
   else tmux("send-keys", "-t", pane(t.id), "-l", "--", text);
   t.capture = null;
 }
-// confirmed: you explicitly approved this exact command (needed for dangerous shell commands)
+// What may be typed into a Claude session (send_to_session, links, the supervisor). A leading "!" is
+// Claude Code's bash mode, which runs the command without any hook (so outside AXA's policy): only
+// with the user's explicit OK. Slash commands: only these few. Control characters (escape sequences,
+// Tab, Ctrl keys) are stripped; newlines stay. Returns { text } (cleaned) or { error }.
+export const SLASH_OK = ["goal", "compact", "clear", "context", "cost"];
+export function typedText(text, { confirmed = false } = {}) {
+  const clean = String(text ?? "").replace(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/g, "");
+  const head = clean.trimStart();
+  if (!head) return { error: "Not sent: nothing to type." };
+  if (head.startsWith("!") && !confirmed) return { error: "Not sent: text starting with \"!\" runs as a shell command in Claude Code's bash mode, outside AXA's checks. Ask the user to approve this exact command, then resend with confirmed_by_user: true." };
+  const slash = /^\/(\S*)/.exec(head);
+  if (slash && !SLASH_OK.includes(slash[1])) return { error: `Not sent: only these slash commands may be typed into a session: ${SLASH_OK.map((c) => "/" + c).join(", ")} (got /${slash[1].slice(0, 40)}). For anything else, start the text with words.` };
+  return { text: clean };
+}
+// confirmed: you explicitly approved this exact command (needed for dangerous shell commands, and a
+// leading "!" in a Claude session)
 export async function sendText(id, text, { enter = true, confirmed = false } = {}) {
   const t = terms.get(id);
   if (!t) return { ok: false, error: "no such session" };
@@ -197,6 +212,11 @@ export async function sendText(id, text, { enter = true, confirmed = false } = {
   if (refused) return { ok: false, error: refused };
   // Claude gone, its shell left (no SessionEnd seen): checked right before typing
   if (t.mode !== "shell" && claudeGone(paneCommand(t, true))) return { ok: false, error: CLAUDE_EXITED };
+  if (t.mode !== "shell") {
+    const r = typedText(text, { confirmed });
+    if (r.error) return { ok: false, error: r.error };
+    text = r.text;
+  }
   // Shells run whatever is typed, so dangerous commands need your explicit OK (Claude has its own checks)
   const danger = t.mode === "shell" && dangerousShell(text);
   if (danger && !confirmed) return { ok: false, error: `Not sent: this looks dangerous (${danger}). Ask the user to approve this exact command first, then resend with confirmed_by_user: true.` };

@@ -84,7 +84,7 @@ const TOOLS = [
   {
     name: "send_to_session",
     description:
-      "Type a message into a session and press Enter: a quick, complete, self-contained instruction for the Claude session there (it can't see this conversation), or a command in a shell session. Refuses if the session is waiting on a permission or trust prompt: never try to answer those; tell the user which session needs them. In shell sessions, dangerous commands (recursive deletes, force-push, reset --hard, touching .env or keys, piping downloads into a shell...) are refused unless confirmed_by_user is true.",
+      "Type a message into a session and press Enter: a quick, complete, self-contained instruction for the Claude session there (it can't see this conversation), or a command in a shell session. Refuses if the session is waiting on a permission or trust prompt: never try to answer those; tell the user which session needs them. In Claude sessions, text starting with \"!\" (bash mode, which skips AXA's checks) is refused unless confirmed_by_user is true, only the slash commands /goal, /compact, /clear, /context and /cost may be typed, and control characters are stripped. It fails if Claude Code doesn't confirm the submit; check with read_session before resending. In shell sessions, dangerous commands (recursive deletes, force-push, reset --hard, touching .env or keys, piping downloads into a shell...) are refused unless confirmed_by_user is true.",
     inputSchema: {
       type: "object",
       properties: {
