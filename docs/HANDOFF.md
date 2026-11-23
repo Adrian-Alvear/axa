@@ -38,8 +38,24 @@ axa                                                     # then tell the commande
    Not verified yet: macOS (run `axa voice install kokoro` there first), the real 350 MB download, the settings screen.
 2. Readable markdown tables + Unicode-safe copy on Windows (commit c8d205b).
 
+## Also done (2026-11-20)
+- Milestone reviews (default mode) with a verifier <-> fixer loop: `axa review [path] [--base sha]`, review_changes for the
+  commander, a fresh fixer session for confirmed findings, max 3 rounds, 15/30-min limits that really kill the review and
+  everything it started. The first milestone review of the batch found 7 issues; all fixed (c0d7d9c).
+- Mouse: click the commander box (or conversation) to type, ⏎ send button, clickable footer/chips, approve = two clicks,
+  click/✕/outside in popups, wheel scrolls the list under the pointer (0ba68ea).
+- Speech: replies normalized for speaking (pauses, symbols, numbers, code, paths, keys) and no word is dropped by Kokoro
+  any more (out-of-vocabulary fallback); closing phrase "You can read the rest on screen." (523f3e0, dcbc297).
+- Kokoro is installed on the work laptop (`~/.axa/voices/kokoro`, resident mode, voice af_heart).
+
+## Waiting on the user
+- Make `axa-v2-hub` the main line: GitHub's `main` (8bab5e3) is an ancestor, so it's a clean fast-forward. Only on the
+  user's explicit "yes, update main"; optionally rename GitHub's old `axa-v2` to `axa-v2-console-archive`.
+- Reset the stored warn milestone: `axa review --reset-milestone /home/adrianwsl/axa`, then run a milestone review.
+- On the Mac: `axa voice install kokoro`; the personal Claude Code status line isn't in this repo.
+
 ## Next (agreed with the user)
-3. Milestone reviews with a verifier <-> fixer loop: `docs/tasks/milestone-review.md` (milestone mode becomes the default;
+3. (done) Milestone reviews with a verifier <-> fixer loop: `docs/tasks/milestone-review.md` (milestone mode becomes the default;
    per-turn reviews only cheap checks; one Opus review per batch, a fresh fixer session fixes confirmed findings, re-check,
    max 3 rounds; longer timeouts).
 4. Run the first milestone review over everything since the last push, fix what it confirms, then push again.
