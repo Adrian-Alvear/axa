@@ -43,16 +43,22 @@ const fakes = (kokoro) => {
   const calls = { system: [], logs: [] };
   return { calls, deps: { kokoro, system: async (t) => { calls.system.push(t); return 0; }, log: (m) => calls.logs.push(m) } };
 };
-test("speakWith: Kokoro missing -> the system voice", async () => {
-  const { calls, deps } = fakes(async () => { throw new Error("Kokoro is not installed: run axa voice install kokoro"); });
-  assert.equal(await speakWith("hello", { engine: "kokoro" }, deps), 0);
+test("speakWith: Kokoro can't start (not installed) -> the system voice, only when voiceFallback is system", async () => {
+  const missing = async () => { throw Object.assign(new Error("Kokoro is not installed: run axa voice install kokoro"), { cantStart: true }); };
+  const { calls, deps } = fakes(missing);
+  assert.equal(await speakWith("hello", { engine: "kokoro", fallback: "system" }, deps), 0);
   assert.deepEqual(calls.system, ["hello"]);
-  assert.match(calls.logs[0], /Kokoro failed \(Kokoro is not installed.*\); using the system voice/);
+  assert.match(calls.logs[0], /Kokoro can't start \(Kokoro is not installed.*\); using the system voice/);
+  const silent = fakes(missing);
+  assert.equal(await speakWith("hello", { engine: "kokoro", fallback: "silent" }, silent.deps), null);
+  assert.deepEqual(silent.calls.system, []);
+  assert.match(silent.calls.logs[0], /voiceFallback is silent: nothing said/);
 });
-test("speakWith: Kokoro throws -> the system voice; Kokoro works -> no system voice", async () => {
+test("speakWith: a slow or failing Kokoro never switches voices; Kokoro works -> no system voice", async () => {
   const a = fakes(async () => { throw new Error("timed out after 8s"); });
-  await speakWith("one", { engine: "kokoro" }, a.deps);
-  assert.deepEqual(a.calls.system, ["one"]);
+  assert.equal(await speakWith("one", { engine: "kokoro", fallback: "system" }, a.deps), null);
+  assert.deepEqual(a.calls.system, []);
+  assert.match(a.calls.logs[0], /no other voice/);
   const b = fakes(async () => 0);
   assert.equal(await speakWith("two", { engine: "kokoro" }, b.deps), 0);
   assert.deepEqual(b.calls.system, []);

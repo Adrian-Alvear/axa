@@ -80,6 +80,12 @@ the summary fails or takes too long, it says the first sentences that fit (never
 `,` settings): `model` (default), `first-paragraph` (the old short version) or `full`. Summaries are cached by
 reply, the hub never waits for one, the status bar shows "🔊 speaking summary", and `Esc` on Control stops it
 (also one still being written). Batches of notifications and the daily brief are summarised the same way.
+**Kokoro speaks sentence by sentence:** a reply is cut into chunks of whole sentences (about 200 characters),
+the first plays while the next is made (so it starts in about a second), each chunk has its own timeout (4 s
+plus 40 ms per character), and a reply's new words are loaded once before its first sentence. A chunk that's
+too slow is tried once more, then skipped; one reply never switches voices. The system voice speaks only when
+Kokoro can't start at all, and only with `"voiceFallback": "system"` in `ui.json` (default: `silent` when
+Kokoro is installed).
 **Off means silent:** everything AXA says goes through one gate that respects the voice setting (only the
 settings screen's "Test the voice" speaks while it's off), and turning the voice off stops whatever is
 speaking, being written or queued at once.

@@ -10,6 +10,9 @@ for line in sys.stdin:
     req = json.loads(line)
     if "cancel" in req:
         continue
+    if "preload" in req:
+        print(json.dumps({"id": req["id"], "ok": True, "preloaded": len(req["preload"]), "load": 0.01}), flush=True)
+        continue
     text = req["text"]
     if text == "crash":
         sys.stderr.write("boom: the fake speaker crashed\n")

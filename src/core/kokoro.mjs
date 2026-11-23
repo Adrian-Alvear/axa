@@ -104,7 +104,7 @@ export class Speaker {
     const p = this.pending.get(m.id);
     if (!p) return;
     this.pending.delete(m.id);
-    if (m.ok) p.resolve({ out: m.out, secs: m.secs, audio: m.audio }); else p.reject(new Error(m.error || "synthesis failed"));
+    if (m.ok) p.resolve(m.preloaded !== undefined ? { preloaded: m.preloaded, load: m.load } : { out: m.out, secs: m.secs, audio: m.audio }); else p.reject(new Error(m.error || "synthesis failed"));
   }
   synth({ text, phonemes, extra, sid = 3, speed = 1, out }, timeoutMs = 8000) {
     clearTimeout(this.idle);
@@ -115,6 +115,19 @@ export class Speaker {
       const fin = (f) => (v) => { clearTimeout(t); this.armIdle(); f(v); };
       this.pending.set(id, { resolve: fin(resolve), reject: fin(reject) });
       if (!this.send({ id, text, ...(extra && Object.keys(extra).length ? { extra, phonemes } : {}), sid, speed, out }) && this.pending.delete(id)) fin(reject)(new Error("couldn't reach the Kokoro speaker"));
+    });
+  }
+  // Loads a reply's out-of-lexicon words ({ word: phonemes }) before its first sentence; resolves
+  // { preloaded, load }. Its own (generous) timeout: a model reload never counts against a sentence's.
+  preload(words, timeoutMs = 30_000) {
+    clearTimeout(this.idle);
+    this.start();
+    const id = ++this.seq;
+    return new Promise((resolve, reject) => {
+      const t = setTimeout(() => { if (this.pending.delete(id)) { this.armIdle(); reject(new Error(`loading new words timed out after ${timeoutMs / 1000}s`)); } }, timeoutMs);
+      const fin = (f) => (v) => { clearTimeout(t); this.armIdle(); f(v); };
+      this.pending.set(id, { resolve: fin(resolve), reject: fin(reject) });
+      if (!this.send({ id, preload: words }) && this.pending.delete(id)) fin(reject)(new Error("couldn't reach the Kokoro speaker"));
     });
   }
   send(o) { try { return this.child ? (this.child.stdin.write(JSON.stringify(o) + "\n"), true) : false; } catch { return false; } }

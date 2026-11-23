@@ -112,6 +112,31 @@ def main():
             if swap["tts"] is not None:
                 tts, known = swap["tts"], swap["known"]
                 swap["tts"] = swap["known"] = None
+        # {"id": n, "preload": {"word": "phonemes"}}: load a reply's new words before its first sentence, here
+        # and now (the extra lexicon keeps growing for the speaker's life, so later replies don't reload them)
+        if "preload" in req:
+            try:
+                t = time.time()
+                while True:  # a background load writes the same file: let it finish first
+                    with lock:
+                        if not swap["busy"]:
+                            if swap["tts"] is not None:
+                                tts, known = swap["tts"], swap["known"]
+                                swap["tts"] = swap["known"] = None
+                            break
+                    time.sleep(0.05)
+                words = {str(w).lower(): str(p) for w, p in (req.get("preload") or {}).items() if str(w).strip() and str(p).strip() and " " not in str(w)}
+                new = {w: p for w, p in words.items() if known.get(w) != p}
+                if new and len(known) < 20000:
+                    allw = {**known, **new}
+                    with open(extra_file, "w", encoding="utf8") as f:
+                        for w, ph in allw.items():
+                            f.write(w + " " + " ".join(ph) + "\n")
+                    tts, known = load(extra_file + "," + base), allw
+                say({"id": rid, "ok": True, "preloaded": len(new), "load": round(time.time() - t, 2)})
+            except Exception as e:
+                say({"id": rid, "ok": False, "error": str(e)})
+            continue
         try:
             t = time.time()
             # (no progress callback: it needs numpy, which sherpa-onnx doesn't install; a cancel lands after)

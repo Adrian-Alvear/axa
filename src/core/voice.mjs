@@ -28,9 +28,13 @@ export function settings() {
   const on = env === "1" ? true : env === "0" ? false : cfg.voice === "on";
   const rate = Math.max(-2, Math.min(2, Number(cfg.voiceRate) || 0));
   const engineChoice = ["kokoro", "system"].includes(cfg.voiceEngine) ? cfg.voiceEngine : "";
+  const installed = K.state().installed;
   return { on, name: typeof cfg.voiceName === "string" ? cfg.voiceName : "", rate, forced: env === "1" || env === "0",
     moreHint: cfg.voiceMoreHint !== false, // "You can read the rest on screen." after a shortened reply
-    engineChoice, engine: pickEngine(engineChoice, K.state().installed) };
+    engineChoice, engine: pickEngine(engineChoice, installed),
+    // ui.json "voiceFallback": what speaks when Kokoro can't start at all: "system" or "silent" (default: silent
+    // when Kokoro is installed, the system voice when it isn't). Never used for a slow sentence.
+    fallback: ["system", "silent"].includes(cfg.voiceFallback) ? cfg.voiceFallback : installed ? "silent" : "system" };
 }
 // your explicit choice wins (a chosen-but-missing Kokoro still falls back, per reply); no choice: Kokoro if installed
 export const pickEngine = (choice, kokoroInstalled) =>
@@ -114,12 +118,16 @@ export function speak(text, opts = {}) {
     .catch(() => null).finally(() => { if (current === me) current = null; });
 }
 
-// The engine choice and the fallback (deps injected: unit-tested). A stopped reply never falls back.
+// The engine choice and the fallback (deps injected: unit-tested). One reply, one voice: with Kokoro as the
+// engine, a slow or failed sentence is retried, then skipped (kokoroSpeak), never handed to another voice. The
+// system voice speaks only when Kokoro can't start at all (not installed, its speaker won't run: e.cantStart)
+// and s.fallback is "system". A stopped reply never falls back.
 export async function speakWith(text, s, { kokoro, system, log = () => {}, job = newJob() }) {
   if (s.engine === "kokoro") {
     try { return await kokoro(text, s, job); } catch (e) {
       if (job.stopped || e.stopped) return null;
-      log(`Kokoro failed (${e.message}); using the system voice for this reply`);
+      if (!e.cantStart || s.fallback !== "system") { log(`Kokoro failed (${e.message}); ${e.cantStart ? "voiceFallback is silent: nothing said" : "the rest of this reply is skipped (no other voice)"}`); return null; }
+      log(`Kokoro can't start (${e.message}); using the system voice for this reply`);
     }
   }
   if (job.stopped) return null;
@@ -193,14 +201,165 @@ export function logOov(file, oov) {
   const tmp = `${file}.${process.pid}.tmp`;
   try { writeFileSync(tmp, JSON.stringify(Object.fromEntries(keep), null, 1) + "\n"); renameSync(tmp, file); } catch { try { unlinkSync(tmp); } catch {} }
 }
+// ---------- Kokoro, sentence by sentence ----------
+// A long reply is cut into chunks of whole sentences (about CHUNK chars; a longer sentence is cut at a comma or
+// a space). Chunk 1 plays while chunk 2 is made, so the voice starts in about a second and no single synthesis
+// is long. Each chunk gets its own timeout, scaled to its length.
+export const CHUNK = 200;
+export function chunkText(text, max = CHUNK) {
+  const t = String(text || "").replace(/\s+/g, " ").trim();
+  if (!t) return [];
+  const sentences = t.match(/[^.!?]+(?:[.!?]+["')\]]*|$)(?=\s|$)/g)?.map((x) => x.trim()).filter(Boolean) || [t];
+  const parts = [];
+  for (let s of sentences) {
+    // a sentence too long for one chunk: cut at the last comma (else space) before the limit
+    while (s.length > max * 1.5) {
+      const head = s.slice(0, max);
+      const at = Math.max(head.lastIndexOf(", "), head.lastIndexOf("; ")) > max / 3 ? Math.max(head.lastIndexOf(", "), head.lastIndexOf("; ")) + 1 : head.lastIndexOf(" ") > max / 3 ? head.lastIndexOf(" ") : max;
+      parts.push(s.slice(0, at).trim()); s = s.slice(at).trim();
+    }
+    parts.push(s);
+  }
+  const out = [];
+  for (const p of parts) {
+    if (out.length && out[out.length - 1].length + 1 + p.length <= max) out[out.length - 1] += " " + p;
+    else out.push(p);
+  }
+  return out;
+}
+export const chunkTimeout = (chunk, cli = false) => 4000 + 40 * String(chunk).length + (cli ? 8000 : 0); // (the CLI loads the model each time)
+
+// The queue, deps injected (unit-tested with a fake synth and player):
+//   synth(chunk, i, timeoutMs) -> Promise<{ out }> (rejects with { timedOut } or other errors)
+//   play({ out }, i) -> Promise (resolves when that chunk has been heard)
+// Chunk i+1 is made while chunk i plays. A chunk that fails is tried once more, then skipped with a log line.
+// job.stopped (Esc, mute) ends it: nothing more is made or played. Resolves to the number of chunks played.
+export async function speakChunks(chunks, { synth, play, log = () => {}, job = newJob(), timeoutOf = chunkTimeout, cleanup = () => {} }) {
+  const make = async (i) => {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      if (job.stopped) return null;
+      try { return await synth(chunks[i], i, timeoutOf(chunks[i])); } catch (e) {
+        if (job.stopped || e.stopped) return null;
+        if (e.cantStart && i === 0) throw e; // nothing said yet and Kokoro won't run at all
+        log(attempt === 0 ? `Kokoro: sentence ${i + 1}/${chunks.length} failed (${e.message}); trying it once more` : `Kokoro: sentence ${i + 1}/${chunks.length} failed again (${e.message}); skipped`);
+      }
+    }
+    return null;
+  };
+  let played = 0, next = chunks.length ? make(0) : null;
+  for (let i = 0; i < chunks.length; i++) {
+    const wav = await next;
+    if (job.stopped) { if (wav) cleanup(wav); return played; }
+    next = i + 1 < chunks.length ? make(i + 1) : null;
+    if (!wav) continue;
+    try { await play(wav, i); if (!job.stopped) played++; } catch (e) { if (job.stopped) { cleanup(wav); return played; } log(`Kokoro: couldn't play sentence ${i + 1} (${e.message})`); }
+    cleanup(wav);
+    if (job.stopped) { const w = await next?.catch(() => null); if (w) cleanup(w); return played; }
+  }
+  return played;
+}
+
+// Can't start at all: not installed, or the speaker process won't run (marked so speakWith may fall back)
+const cantStart = (e) => Object.assign(e instanceof Error ? e : new Error(String(e)), { cantStart: true });
 async function kokoroSpeak(text, s, job) {
-  const temp = wslNow() ? windowsTemp() : null; // looked up while the wav is made
-  let out;
+  const st = K.state();
+  if (!st.installed) throw cantStart(new Error(`Kokoro is ${st.why}`));
+  const temp = wslNow() ? windowsTemp() : null; // looked up while the first chunk is made
+  let lexicon = null;
+  try { lexicon = P.loadLexicon(join(st.model, "lexicon-us-en.txt")); } catch (e) { log(`phonemes skipped (${e.message})`); }
+  // each chunk made speakable (every word: phonemes.mjs), and the reply's new words loaded once, up front
+  const chunks = chunkText(pronounce(text)).map((c) => { try { return lexicon ? P.phonemize(c, lexicon) : { text: c, chunks: [], oov: [], extra: {} }; } catch { return { text: c, chunks: [], oov: [], extra: {} }; } });
+  logOov(oovLogFile(st.dir), chunks.flatMap((c) => c.oov));
+  const words = Object.assign({}, ...chunks.map((c) => c.extra));
+  const sid = K.sidOf(s.name), speed = K.speedOf(s.rate);
+  let synth, preloaded = false, extraLexicon = null;
+  if (st.mode === "resident") {
+    const sp = residentSpeaker(st);
+    if (Object.keys(words).length) {
+      const cancel = () => sp.cancel();
+      job.kills.add(cancel);
+      try { const r = await sp.preload(words); preloaded = true; if (r.preloaded) log(`kokoro: ${r.preloaded} new words loaded in ${r.load}s`); }
+      catch (e) { if (job.stopped || e.stopped) return null; if (/couldn't reach|stopped \(/.test(e.message)) throw cantStart(e); log(`kokoro: new words not preloaded (${e.message}); said from their phonemes`); }
+      finally { job.kills.delete(cancel); }
+    } else preloaded = true;
+    synth = async (c, i, ms) => {
+      const out = join(tmpdir(), `axa-voice-${randomBytes(6).toString("hex")}.wav`), cancel = () => sp.cancel();
+      job.kills.add(cancel);
+      try {
+        // words already loaded: plain text; otherwise this chunk's own phonemes (nothing dropped)
+        await sp.synth({ text: c.text, ...(preloaded ? {} : { extra: c.extra, phonemes: c.chunks }), sid, speed, out }, ms);
+        return { out };
+      } catch (e) { if (i === 0 && /couldn't reach|speaker stopped/.test(e.message) && !sp.alive) throw cantStart(e); throw e; }
+      finally { job.kills.delete(cancel); }
+    };
+  } else {
+    // the CLI loads the model per process: one extra lexicon file for the whole reply
+    if (Object.keys(words).length) { extraLexicon = join(tmpdir(), `axa-voice-${randomBytes(6).toString("hex")}.lexicon.txt`); writeFileSync(extraLexicon, P.lexiconText(words), { mode: 0o600 }); }
+    synth = async (c, i, ms) => {
+      const out = join(tmpdir(), `axa-voice-${randomBytes(6).toString("hex")}.wav`);
+      const p = K.cliSynth({ cli: st.cli, model: st.model, text: c.text, sid, speed, out, extraLexicon }, ms), kill = () => p.kill();
+      job.kills.add(kill);
+      try { await p; return { out }; } catch (e) { if (i === 0 && e.code === "ENOENT") throw cantStart(e); throw e; } finally { job.kills.delete(kill); }
+    };
+  }
+  const player = await wavPlayer(job, temp);
   try {
-    ({ out } = await kokoroWav(text, s, job));
-    if (job.stopped) return null;
-    return await playWav(out, job, temp && (await temp));
-  } finally { if (out) try { unlinkSync(out); } catch {} }
+    return await speakChunks(chunks, { synth, play: (w) => player.play(w.out), log, job, timeoutOf: (c) => chunkTimeout(c.text, st.mode !== "resident"), cleanup: (w) => { try { unlinkSync(w.out); } catch {} } });
+  } finally {
+    player.close();
+    if (extraLexicon) try { unlinkSync(extraLexicon); } catch {}
+  }
+}
+
+// ---------- one player per reply ----------
+// On Windows/WSL a single PowerShell plays the reply's wavs one after another (starting PowerShell for each
+// sentence would leave gaps); elsewhere each wav gets the platform's player. play(out) resolves once heard.
+async function wavPlayer(job, temp) {
+  if (!(process.platform === "win32" || wslNow())) return { play: (out) => playWav(out, job, null), close() {} };
+  const t = process.platform === "win32" ? null : await temp;
+  if (process.platform !== "win32" && !t) throw new Error("couldn't find the Windows temp folder");
+  const child = spawn(process.platform === "win32" ? "powershell" : "powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", residentPlayScript()], { stdio: ["pipe", "pipe", "ignore"] });
+  child.stdin.on("error", () => {});
+  let buf = "", waiting = null, flags = new Set(), copies = new Set();
+  child.stdout.on("data", (d) => { buf += d; let i; while ((i = buf.indexOf("\n")) >= 0) { buf = buf.slice(i + 1); const w = waiting; waiting = null; w?.resolve(); } });
+  const gone = new Promise((r) => child.on("close", r));
+  gone.then(() => { const w = waiting; waiting = null; w?.reject(Object.assign(new Error(job.stopped ? "stopped" : "the player stopped"), { stopped: job.stopped })); });
+  child.on("error", () => {});
+  const rmAll = () => { for (const f of [...flags, ...copies]) try { unlinkSync(f); } catch {} flags.clear(); copies.clear(); };
+  // stopping: the flag files go (the Windows side stops at once), then the player ends
+  const kill = () => { rmAll(); try { child.stdin.end(); } catch {} setTimeout(() => { try { child.kill(); } catch {} }, 1500).unref?.(); };
+  job.kills.add(kill);
+  return {
+    play(out) {
+      const ms = Math.min(5 * 60 * 1000, wavMs(readFileSync(out)) || 60000);
+      let winWav = out, winFlag = out + ".playing", flag = winFlag, copy = null;
+      if (process.platform !== "win32") {
+        const c = wslTempCopy({ ...t, name: basename(out) });
+        copyFileSync(out, c.unix); copy = c.unix; copies.add(copy);
+        winWav = c.win; winFlag = c.winFlag; flag = c.unixFlag;
+      }
+      writeFileSync(flag, "", { mode: 0o600 }); flags.add(flag);
+      return new Promise((resolve, reject) => {
+        waiting = { resolve, reject };
+        child.stdin.write(`${winWav}|${winFlag}|${Math.round(ms)}\n`);
+      }).finally(() => { try { unlinkSync(flag); } catch {} flags.delete(flag); if (copy) { try { unlinkSync(copy); } catch {} copies.delete(copy); } });
+    },
+    close() { job.kills.delete(kill); try { child.stdin.end(); } catch {} rmAll(); },
+  };
+}
+// Reads "wav|flag|ms" lines; plays each to its end (or until its flag file disappears); answers "done" per line
+export function residentPlayScript() {
+  return [
+    "$ErrorActionPreference = 'SilentlyContinue'",
+    "while ($true) {",
+    "  $l = [Console]::In.ReadLine(); if ($l -eq $null -or $l -eq '') { break }",
+    "  $w, $f, $ms = $l.Split('|')",
+    "  $p = New-Object System.Media.SoundPlayer $w; $p.Load(); $p.Play()",
+    "  $end = (Get-Date).AddMilliseconds([int]$ms + 150)",
+    "  while ((Get-Date) -lt $end) { if (-not (Test-Path -LiteralPath $f)) { break }; Start-Sleep -Milliseconds 50 }",
+    "  $p.Stop(); [Console]::Out.WriteLine('done'); [Console]::Out.Flush()",
+    "}",
+  ].join("\n");
 }
 const wslNow = () => process.platform === "linux" && isWsl() && has("powershell.exe");
 
