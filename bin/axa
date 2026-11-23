@@ -18,6 +18,7 @@ const USAGE = `AXA: one place for all your Claude Code sessions, chats and agent
   axa chat             talk to the AXA commander here, as a plain Claude Code session
   axa web              open the web console in your browser
   axa status [--json]  what's running, what needs you first
+  axa projects [--json] [--fresh]   every project in progress: git, sessions, last review, the handoff's next steps
   axa attach <name>    take over one session in this terminal (Ctrl-] detaches; it keeps running)
   axa review [path] [--base <sha>]   a milestone review of a repo's recent work (base..HEAD + uncommitted)
   axa review --reset-milestone [path]   forget that repo+branch's stored milestone (the next review's base)
@@ -154,6 +155,16 @@ switch (cmd) {
     await daemon();
     console.log("AXA daemon restarted; sessions kept running.");
     break;
+  case "projects": {
+    // every project in progress (the same summary the commander's review_projects gives)
+    await daemon();
+    const { projectsText } = await import(join(root, "src", "core", "projects.mjs"));
+    try {
+      const list = await api(`/api/projects${flags.has("--fresh") ? "?fresh=1" : ""}`);
+      console.log(flags.has("--json") ? JSON.stringify(list, null, 2) : projectsText(list).replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g, ""));
+    } catch (e) { console.error(`axa projects: ${e.message}`); process.exit(1); }
+    break;
+  }
   case "trust": {
     // changes Claude Code's own config file only; needs no daemon
     const { trustProject } = await import(join(root, "src", "core", "trust.mjs"));

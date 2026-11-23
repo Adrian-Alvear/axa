@@ -15,6 +15,7 @@ import { api } from "../daemon.mjs";
 import { SOCKET, TMUX_CONF, tmuxEnv } from "../core/tmux-client.mjs";
 import { ESC, I, THEME_NAMES, nerdFontInstalled, URGENCY, ago, chipOf, clean, cut, fmtTok, gitText, line, look, pad, paint, reviewBadge, selLine, setIcons, setMotion, setTheme, spinner, truecolor, width } from "./draw.mjs";
 import { sliceAnsi } from "./ansi.mjs";
+import { IDLE_DAYS, ageText, gitLine, handoffPath } from "../core/projects.mjs";
 import { LiveView } from "./live.mjs";
 import { agentDetail, agentName, axaStatusLine, controlRows, msgText, selectedText } from "./control.mjs";
 import { copyToClipboard, pasteFile, readClipboard } from "./clipboard.mjs";
@@ -155,8 +156,11 @@ export async function runTui() {
       return [[[[`${n ? spinner() : I.agent} `, n ? "work" : a.source === "axa" ? "accent" : "violet"], [a.name, "head"]], [[n ? ` ${n} RUNNING ` : "", "chipWork"]]], [[["  " + clean(a.description), "dim"]], []]];
     }
     if (it.kind === "project") {
-      const p = it.p;
-      return [[[[`${I.project} `, "accent"], [p.name, "head"]], [[p.sessions ? ` ${p.sessions} OPEN ` : "", "chipIdle"]]], [[[`  ${where(p.path)}  ${gitText(p.git)}`, "dim"]], []]];
+      const p = it.p, r = p.review, lc = r?.git?.last_commit, idle = r?.idle_days != null && r.idle_days >= IDLE_DAYS;
+      const busy = (r?.sessions || []).find((s) => ["waiting", "needs_trust", "stuck", "failed", "limited"].includes(s.status));
+      const chip = busy ? [` ${busy.status.replace("_", " ").toUpperCase()} `, "chipWait"] : p.sessions ? [` ${p.sessions} OPEN `, "chipIdle"] : idle ? [` idle ${ageText(Date.now() - lc.at)} `, "chipOff"] : ["", ""];
+      const sub = r?.git ? `${gitLine(r.git)}${lc ? ` · ${clean(lc.subject)} (${ageText(Date.now() - lc.at)})` : ""}` : `${where(p.path)}  ${gitText(p.git)}`;
+      return [[[[`${I.project} `, idle ? "dim" : "accent"], [p.name, idle ? "dim" : "head"]], [chip]], [[["  " + sub, "dim"]], []]];
     }
     return [[[[`${I.home} `, "accent"], ["Home folder", "head"]], []], [[["  a session in ~", "dim"]], []]];
   }
@@ -316,6 +320,24 @@ export async function runTui() {
       head(it.kind === "home" ? I.home : I.project, "accent", p.name, p.sessions ? [` ${p.sessions} OPEN `, "chipIdle"] : null);
       meta([where(p.path), gitText(p.git)].filter(Boolean).join("   "));
       gap();
+      const r = p.review;
+      if (r) {
+        const lc = r.git?.last_commit;
+        label("Git");
+        para(`${gitLine(r.git)}${r.git?.commits_24h ? ` · ${r.git.commits_24h} commit${r.git.commits_24h > 1 ? "s" : ""} in the last day` : ""}`, "text", "   ");
+        if (lc) para(`last commit ${ageText(Date.now() - lc.at)} ago: ${clean(lc.subject)}${r.idle_days >= IDLE_DAYS ? `  (idle ${ageText(Date.now() - lc.at)})` : ""}`, "dim", "   ");
+        for (const w of r.git?.worktrees || []) para(`${I.worktree} ${where(w.path)} on ${w.branch}`, "dim", "   ");
+        if (r.milestone) para(`last milestone review: ${r.milestone.verdict}${r.milestone.at ? `, ${ageText(Date.now() - r.milestone.at)} ago` : ""}`, { approve: "done", warn: "waitSoft", block: "stuck" }[r.milestone.verdict] || "dim", "   ");
+        gap();
+        if (r.handoff) {
+          for (const [k, t] of [["in_progress", "In progress"], ["next", "Next up"]]) {
+            if (!r.handoff[k].length) continue;
+            label(`${t} (${r.handoff.file})`);
+            for (const x of r.handoff[k]) para(`• ${clean(x)}`, "text", "   ");
+            gap();
+          }
+        }
+      }
       const inP = (cwd) => cwd === p.path || (it.kind !== "home" && cwd.startsWith(p.path + "/"));
       const ss = data.sessions.filter((s) => s.alive && s.mode !== "axa" && inP(s.worktree?.repo || s.cwd));
       label("Sessions");
@@ -329,6 +351,7 @@ export async function runTui() {
       const ag = data.agents.filter((a) => a.project === p.name);
       if (ag.length) { gap(); label("Agents"); for (const a of ag) P.push([[[`  ${I.agent} `, "violet"], [a.name, "head"], [`  ${clean(a.description)}`, "dim"]], [], "pv"]); }
       gap(); P.push([[["  ", ""], [" Enter ", "keycap"], [" open  ", "dim"], [" N ", "keycap"], [" new  ", "dim"], [" w ", "keycap"], [" worktree  ", "dim"], [" s ", "keycap"], [" shell", "dim"]], [], "pv"]);
+      if (it.kind === "project") P.push([[["  ", ""], [" g ", "keycap"], [" goal  ", "dim"], [" r ", "keycap"], [" milestone review  ", "dim"], [" h ", "keycap"], [" handoff file", "dim"]], [], "pv"]);
     }
     const rows = P.map(([segs, right, on]) => line(segs, w, right, on));
     if (tail) {
@@ -389,7 +412,7 @@ export async function runTui() {
     footHits = [];
     if (screen === "live") return null; // a session keeps every row; notices show in its header
     if (toast && Date.now() < toast.until) return line([[` ${toast.text}`, "text"]], W, [], "bar");
-    const per = { control: focusInput ? [["⏎", "send to the commander"], ["Esc", "stop typing"]] : zone === "chats" ? [["⏎", "resume chat"], ["↑↓", "pick"], ["←", "back to the map"], [":", "talk to AXA"]] : [["⏎", "open"], ["↑↓", "pick session"], ["→", "chats"], [":", "talk to AXA"], ["PgUp", "AXA's messages"], ["y/x", "answer"], ["d", "changes"], ...(W >= 170 ? [["drag", "copy"]] : [])], sessions: [["⏎", "open"], ["d", "changes"], ["g", "goal"], ["v", "checks"], ["r", "rename"], ["X", "close"]], chats: [["⏎", "resume"], ["/", "search"]], agents: [["⏎", "give a task"], ["/", "search"]], projects: [["⏎", "open"], ["N", "new"], ["w", "worktree"], ["s", "shell"]] }[PANELS[focus]];
+    const per = { control: focusInput ? [["⏎", "send to the commander"], ["Esc", "stop typing"]] : zone === "chats" ? [["⏎", "resume chat"], ["↑↓", "pick"], ["←", "back to the map"], [":", "talk to AXA"]] : [["⏎", "open"], ["↑↓", "pick session"], ["→", "chats"], [":", "talk to AXA"], ["PgUp", "AXA's messages"], ["y/x", "answer"], ["d", "changes"], ...(W >= 170 ? [["drag", "copy"]] : [])], sessions: [["⏎", "open"], ["d", "changes"], ["g", "goal"], ["v", "checks"], ["r", "rename"], ["X", "close"]], chats: [["⏎", "resume"], ["/", "search"]], agents: [["⏎", "give a task"], ["/", "search"]], projects: [["⏎", "open"], ["g", "goal"], ["r", "review"], ["h", "handoff"], ["N", "new"], ["w", "worktree"], ["s", "shell"]] }[PANELS[focus]];
     const all = [["Tab", "switch"], ["a", "AXA"], ["n", "notifications"], ["N", "new"], ["?", "help"], ["q", "quit"]];
     const segs = per.flatMap(([k, t]) => [[` ${k} `, "keycap"], [` ${t}  `, "barDim"]]);
     const right = all.flatMap(([k, t], j) => [[` ${k} `, "keycap"], [j === all.length - 1 ? ` ${t}` : ` ${t}  `, "barDim"]]);
@@ -640,6 +663,29 @@ export async function runTui() {
   function giveGoal(s) {
     if (s.mode === "shell") return flash("goals go to Claude sessions, not shells");
     ask(`Goal for ${nameOf(s)}: what does done look like?`, (goal) => call(`/api/terms/${s.id}/input`, { method: "POST", body: { text: `/goal ${goal}` } }).then(() => flash(`goal sent to ${nameOf(s)}`), (e) => flash(`couldn't send: ${e.message}`)), { lines: [{ text: "It keeps working on its own until this is true (Claude Code's /goal).", role: "dim" }] });
+  }
+  // ---------- a project, from the Projects tab (never pushes or deploys) ----------
+  const projectSession = (p) => data.sessions.find((s) => s.alive && s.mode === "claude" && (s.worktree?.repo || s.cwd) === p.path);
+  function projectKey(k, p) {
+    if (k === "h") {
+      const f = handoffPath(p.path);
+      if (!f) return flash(`${p.name} has no docs/HANDOFF.md, HANDOFF.md or TODO.md`);
+      let text = "";
+      try { text = readFileSync(f, "utf8").slice(0, 512 * 1024); } catch (e) { return flash(`couldn't read it: ${e.message}`); }
+      return viewer(`${p.name} · ${tilde(f)}`, text.replace(/\r/g, "").split("\n").map((l) => ({ text: clean(l) ? l.replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g, "") : "", role: /^#/.test(l) ? "head" : "" })));
+    }
+    if (k === "r") return call("/api/review", { method: "POST", body: { cwd: p.path } }).then((r) => flash(r.already ? `a milestone review of ${p.name} is already running` : `milestone review of ${p.name} started (${r.branch}); its verdict arrives as a notification`, 6000), (e) => flash(`couldn't start the review: ${e.message}`, 6000));
+    // g: the goal goes to the project's session, started first (and waited for) when there's none
+    ask(`Goal for ${p.name}: what does done look like?`, async (goal) => {
+      let s = projectSession(p);
+      try {
+        if (!s) { flash(`starting a session in ${p.name}…`, 60_000); s = await call("/api/terms", { method: "POST", body: { cwd: p.path, wait: true, cols: W, rows: H - 1 } }); }
+        if (s.status === "needs_trust") return flash(`${p.name}: answer its trust prompt first (or run axa trust ${tilde(p.path)}), then press g again`, 8000);
+        await call(`/api/terms/${s.id}/input`, { method: "POST", body: { text: `/goal ${goal.replace(/\s*\n\s*/g, " ")}` } });
+        flash(`goal sent to ${p.name}`);
+        pollSessions();
+      } catch (e) { flash(`couldn't send the goal: ${e.message}`, 6000); }
+    }, { lines: [{ text: "Its session keeps working on its own until this is true (Claude Code's /goal).", role: "dim" }] });
   }
   function rename(s) {
     if (s.mode === "axa") return flash("the commander keeps its name");
@@ -895,6 +941,8 @@ export async function runTui() {
       return;
     }
     const it = list[sel[panel]];
+    // Projects: g a goal, r a milestone review, h its handoff file (before the list keys: g and h move there)
+    if (panel === "projects" && it?.kind === "project" && ["g", "r", "h"].includes(k)) return projectKey(k, it.p);
     const move = (d) => { sel[panel] = Math.max(0, Math.min(list.length - 1, sel[panel] + d)); };
     switch (k) {
       case "\t": focus = (focus + 1) % PANELS.length; return;

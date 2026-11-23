@@ -16,7 +16,20 @@ import { getMilestoneReview, listMilestoneReviews, startMilestone } from "./mile
 import { listAgents, listProjects, readRoster } from "./catalog.mjs";
 import { chatMessages, findChat, listChats } from "./claude-data.mjs";
 import { safe } from "./text.mjs";
-import { notifier, voiceHooks } from "./notify.mjs";
+import { notifier, notifySettings, voiceHooks } from "./notify.mjs";
+import { briefDue, briefText, reviewProjects } from "./projects.mjs";
+import { readMilestones } from "./milestone.mjs";
+
+// every project in progress (projects.mjs; cached 60 s, sessions always fresh)
+const projectReview = (fresh = false) => reviewProjects({ projects: listProjects(), sessions: S.listSessions(), reviews: listMilestoneReviews(), stored: readMilestones(), fresh });
+// the daily brief (ui.json "notify": { "brief_at": "09:00" }): one notification a day about all projects
+setInterval(async () => {
+  try {
+    const at = notifySettings().brief_at, last = notifier.list().filter((n) => n.kind === "brief").at(-1)?.at;
+    if (!briefDue(at, Date.now(), last)) return;
+    notifier.push({ kind: "brief", session: null, project: "", title: "Daily brief", body: briefText(await projectReview(true)), needsUser: false });
+  } catch {}
+}, 30_000).unref();
 
 if (!existsSync(files.token)) writeFileSync(files.token, randomBytes(24).toString("hex"), { mode: 0o600 });
 const token = readFileSync(files.token, "utf8").trim();
@@ -62,7 +75,7 @@ const VENDOR = {
 // Routes: [method, pattern, handler(match, req, url)] -> [status, body]
 const routes = [
   ["GET", /^\/api\/health$/, () => [200, { ok: true, pid: process.pid, tmux: S.hasTmux }]],
-  ["GET", /^\/api\/hub$/, (m, req, u) => [200, hub(Number(u.searchParams.get("chats")) || 40)]],
+  ["GET", /^\/api\/hub$/, async (m, req, u) => [200, await hub(Number(u.searchParams.get("chats")) || 40)]],
   ["GET", /^\/api\/terms$/, () => [200, S.listSessions()]],
   ["GET", /^\/api\/activity$/, (m, req, u) => [200, activity(Math.min(240, Number(u.searchParams.get("minutes")) || 60), Math.min(300, Number(u.searchParams.get("limit")) || 60))]],
   ["POST", /^\/api\/terms$/, async (m, req) => {
@@ -86,7 +99,8 @@ const routes = [
     // wait: return once it's ready or waiting on something (a prompt, the trust dialog), at most 60 s
     return [200, b.wait === true ? await S.waitReady(s.id, { timeoutMs: 60_000 }) : s];
   }],
-  ["GET", /^\/api\/projects$/, () => [200, listProjects()]],
+  // each project in progress: name, path, git facts, sessions, last milestone review, handoff (projects.mjs)
+  ["GET", /^\/api\/projects$/, async (m, req, u) => [200, await projectReview(u.searchParams.get("fresh") === "1")]],
   ["GET", /^\/api\/chats$/, (m, req, u) => [200, listChats({ limit: Math.min(500, Number(u.searchParams.get("limit")) || 50), q: u.searchParams.get("q") || "" })]],
   ["GET", /^\/api\/agents$/, () => [200, listAgents()]],
   ["GET", /^\/api\/chats\/([0-9a-f-]+)\/messages$/, (m, req, u) => { const r = chatMessages(m[1], Math.min(50, Number(u.searchParams.get("limit")) || 12)); return r ? [200, r.map((x) => ({ ...x, text: safe(x.text) }))] : [404, { error: "no such chat" }]; }],
@@ -143,13 +157,16 @@ const routes = [
 ];
 
 // Everything the hub shows, in one call
-function hub(chatLimit) {
+async function hub(chatLimit) {
+  // the projects' review (cached 60 s): the hub's Projects tab shows it; a slow first look isn't waited for
+  const review = await Promise.race([projectReview().catch(() => null), new Promise((r) => setTimeout(r, 1500, null))]);
+  const byPath = new Map((review || []).map((r) => [r.path, r]));
   const sessions = S.listSessions();
   const open = new Map(sessions.filter((s) => s.chat && s.alive).map((s) => [s.chat, s.id]));
   return {
     sessions,
     chats: listChats({ limit: chatLimit }).map((c) => ({ ...c, open_in: open.get(c.id) || null })),
-    projects: listProjects().map((p) => ({ ...p, sessions: sessions.filter((s) => s.alive && (s.worktree?.repo || s.cwd) === p.path).length })),
+    projects: listProjects().map((p) => ({ ...p, sessions: sessions.filter((s) => s.alive && (s.worktree?.repo || s.cwd) === p.path).length, review: byPath.get(p.path) || null })),
     agents: listAgents(),
     links: listLinks(),
     notifications: notifier.list().slice(-60),

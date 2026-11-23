@@ -108,7 +108,7 @@ spelled out by a small pronunciation table in `src/core/voice.mjs`.
 | **1 Sessions** | The AXA commander, then every session AXA runs, by what needs you: needs you, stuck, working, done, ready. Each shows what it's doing or last said, its branch and changes, tokens, and helper agents at work. | open it live | `d` changes · `g` give a goal · `v` run checks · `r` rename · `X` close |
 | **2 Chats** | Every past Claude Code conversation, newest first, with its title (your `/rename`, else Claude's). `●` = open in a session right now. | resume it (or jump to it) | `/` filter |
 | **3 Agents** | The agents Claude can use: AXA's, yours (`~/.claude/agents`), each project's (`.claude/agents`), and Claude's built-ins, with how many are running now. | give it a task (the commander runs it) | `/` filter |
-| **4 Projects** | Your repos (from the roster, `~/projects`, and git repos in `~`). | its session, or a new one | `N` new · `w` new in its own worktree · `s` shell |
+| **4 Projects** | Your repos (from the roster, `~/projects`, and git repos in `~`), each a card: branch, ahead/behind, uncommitted files, last commit, sessions and their state, the last milestone review, the handoff file's "In progress" and "Next up" (`docs/HANDOFF.md`, `HANDOFF.md` or `TODO.md`); quiet ones show "idle 7 weeks". | its session, or a new one | `g` give it a goal (starts its session if needed) · `r` milestone review · `h` the handoff file · `N` new · `w` worktree · `s` shell |
 
 Everywhere: `Tab` / `1`-`4` switch panels, `a` the commander, `n` notifications, `N` new session, `/` filter, `y` / `x`
 answer the prompt in the yellow bar, `!` go to it, `o` web console, `,` settings, `?` all keys,
@@ -139,6 +139,8 @@ axa                  the hub
 axa chat             talk to the commander here, as a plain Claude Code session
 axa web              the web console in your browser (same sessions, also works on your phone)
 axa status [--json]  what's running, what needs you first
+axa projects [--json]   every project in progress (git, sessions, last review, next steps); the
+                     commander's review_projects tool gives the same. Read-only: git and files only
 axa review [path] [--base <sha>]   a milestone review of a repo's recent work
 axa review --reset-milestone [path]   forget the repo's stored milestone (the next review's base)
 axa attach <name>    one session in this terminal, no hub around it (Ctrl-] detaches)
@@ -231,7 +233,8 @@ agents/ skills/      axa:builder / reviewer / researcher, the review gate's prom
   one per 20 s (the rest as "3 more updates on screen"), and what needs you shows as a desktop
   notification (a Windows toast from WSL, `osascript` on macOS, `notify-send` on Linux). Settings
   (`,` in the hub, or `~/.axa/ui.json` `"notify": { "voice", "desktop" }`): `all`, `needs-you`
-  (default) or `off`.
+  (default) or `off`. `"brief_at": "09:00"` adds a daily brief: once a day, one notification on
+  all projects (what changed since yesterday, what's waiting on you, each one's top "Next up").
 - **AXA wakes itself.** When a session finishes, gets stuck or needs you, the daemon tells the
   commander (only when it's idle and you aren't typing in it), so it can check the work and report.
   `AXA_SUPERVISOR=0` turns it off.
