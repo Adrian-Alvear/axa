@@ -252,8 +252,10 @@ agents/ skills/      axa:builder / reviewer / researcher, the review gate's prom
   one per 20 s (the rest as "3 more updates on screen"), and what needs you shows as a desktop
   notification (a Windows toast from WSL, `osascript` on macOS, `notify-send` on Linux). Settings
   (`,` in the hub, or `~/.axa/ui.json` `"notify": { "voice", "desktop" }`): `all`, `needs-you`
-  (default) or `off`. `"brief_at": "09:00"` adds a daily brief: once a day, one notification on
-  all projects (what changed since yesterday, what's waiting on you, each one's top "Next up").
+  (default) or `off`. The **daily brief** (`,` → Daily brief, or `axa brief 09:00` / `off`; `axa brief now`
+  sends one at once): once a day, one notification on all projects (what changed since yesterday, what's
+  waiting on you, each one's top "Next up"), spoken as a summary when the voice is on. Turned on after
+  today's time, the first one comes tomorrow.
 - **AXA wakes itself.** When a session finishes, gets stuck or needs you, the daemon tells the
   commander (only when it's idle and you aren't typing in it), so it can check the work and report.
   `AXA_SUPERVISOR=0` turns it off.

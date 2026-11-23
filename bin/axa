@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // axa: the AXA hub in your terminal, and a few commands around it.
-import { realpathSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
@@ -24,6 +24,7 @@ const USAGE = `AXA: one place for all your Claude Code sessions, chats and agent
   axa review --reset-milestone [path]   forget that repo+branch's stored milestone (the next review's base)
   axa stop [--all]     stop the background daemon (--all also ends every session)
   axa restart          restart the daemon (sessions keep running)
+  axa brief [HH:MM|off|now]   the daily brief: show it, set its time, turn it off, or get one right away
   axa trust <path>     trust a project (its git repo root) for Claude Code, so sessions AXA starts there
                        don't stop on the folder-trust prompt. Your decision: only you run it, never a session
   axa voice install kokoro [--yes]    a better, offline neural voice (~380 MB); uninstall kokoro removes it
@@ -163,6 +164,33 @@ switch (cmd) {
       const list = await api(`/api/projects${flags.has("--fresh") ? "?fresh=1" : ""}`);
       console.log(flags.has("--json") ? JSON.stringify(list, null, 2) : projectsText(list).replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g, ""));
     } catch (e) { console.error(`axa projects: ${e.message}`); process.exit(1); }
+    break;
+  }
+  case "brief": {
+    // the daily brief: show the setting, set it (HH:MM or off; in ui.json, every other setting kept), or send one now
+    const { BRIEF_TIMES, parseBriefArg, writeBriefAt } = await import(join(root, "src", "core", "projects.mjs"));
+    const arg = rest.find((a) => !a.startsWith("--"));
+    let cfg = {};
+    try { cfg = JSON.parse(readFileSync(files.ui, "utf8")); } catch {}
+    if (arg === undefined) {
+      const at = cfg.notify?.brief_at;
+      console.log(at ? `Daily brief: every day at ${at} (one notification on all projects; spoken when the voice is on).` : "Daily brief: off.");
+      console.log(`Set it with: axa brief HH:MM (e.g. ${BRIEF_TIMES.slice(1).join(", ")}) · axa brief off · axa brief now (one right away)`);
+      break;
+    }
+    let v;
+    try { v = parseBriefArg(arg); } catch (e) { console.error(`axa brief: ${e.message}`); process.exit(1); }
+    if (v === "now") {
+      await daemon();
+      try {
+        const n = await api("/api/brief", { method: "POST" });
+        if (n.error) { console.error(`axa brief: ${n.error}`); process.exit(1); }
+        console.log(`${n.title}: ${n.body}`);
+      } catch (e) { console.error(`axa brief: ${e.message}`); process.exit(1); }
+      break;
+    }
+    try { writeBriefAt(files.ui, v); } catch (e) { console.error(`axa brief: ${e.message}`); process.exit(1); }
+    console.log(v ? `Daily brief at ${v}. If that time has already passed today, the first one comes tomorrow (axa brief now sends one at once).` : "Daily brief off.");
     break;
   }
   case "trust": {

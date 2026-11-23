@@ -17,9 +17,8 @@ import { listAgents, listProjects, readRoster } from "./catalog.mjs";
 import { chatMessages, findChat, listChats } from "./claude-data.mjs";
 import { safe } from "./text.mjs";
 import { clearVoiceQueue, notifier, notifySettings, voiceHooks, voicePending } from "./notify.mjs";
-import { briefTick, reviewProjects } from "./projects.mjs";
-import { spokenReply, summaryMode } from "./summary.mjs";
-import { SHORT } from "./speech.mjs";
+import { briefNotification, briefTick, reviewProjects } from "./projects.mjs";
+import { notesNeedSummary, spokenReply, summaryMode } from "./summary.mjs";
 import { readMilestones } from "./milestone.mjs";
 
 // every project in progress (projects.mjs; cached 60 s, sessions always fresh)
@@ -28,8 +27,7 @@ const projectReview = (fresh = false) => reviewProjects({ projects: listProjects
 setInterval(async () => {
   try {
     // (when it last went out is the daemon's own state, brief.json: clearing notifications doesn't resend it)
-    await briefTick({ brief_at: notifySettings().brief_at, review: () => projectReview(true), push: (n) => notifier.push(n),
-      fallbackLast: () => notifier.list().filter((n) => n.kind === "brief").at(-1)?.at || 0 });
+    await briefTick({ brief_at: notifySettings().brief_at, review: () => projectReview(true), push: (n) => notifier.push(n) });
   } catch {}
 }, 30_000).unref();
 
@@ -89,7 +87,7 @@ onCommanderReply((id, message) => {
 });
 // notifications: one is said as it is; a batch, or one long one (the daily brief), is summarised the same way
 function speakNotes(text, items) {
-  const long = items.length > 1 || V.toSpeech(text, { full: true }).length > SHORT;
+  const long = notesNeedSummary(text, items);
   if (!long || summaryMode() !== "model") return planned(async () => ({ text: V.toSpeech(safe(text), { more: false }), how: "short" }));
   const md = items.map((n) => `- ${n.title}${n.body ? `: ${n.body}` : ""}`).join("\n");
   return planned(async (signal) => {
@@ -179,6 +177,8 @@ const routes = [
     if (!cwd || !inHome(cwd) || !existsSync(cwd)) return [400, { error: "Give a project, or a folder in your home folder (cwd)." }];
     return [200, startMilestone({ cwd, base: b.base || undefined, goal: b.goal, source: b.source === "cli" ? "cli" : "commander" })];
   }],
+  // the daily brief, now (`axa brief now`): doesn't change when the daily one goes out
+  ["POST", /^\/api\/brief$/, async () => { const n = notifier.push(await briefNotification(() => projectReview(true))); return [200, n || { error: "a brief was just sent" }]; }],
   // notifications for you (notify.mjs), oldest first; since: only those after that time (ms)
   ["GET", /^\/api\/notifications$/, (m, req, u) => { const since = Number(u.searchParams.get("since")) || 0, all = notifier.list(); return [200, { items: all.filter((n) => n.at > since).slice(-Math.min(200, Number(u.searchParams.get("limit")) || 200)), total: all.length }]; }],
   ["POST", /^\/api\/notifications\/clear$/, () => { notifier.clear(); return [200, {}]; }],

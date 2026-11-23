@@ -56,6 +56,9 @@ export function runSummary(text, { env = process.env, timeoutMs = SUMMARY_TIMEOU
   });
 }
 
+// Spoken notifications: a batch, the daily brief (always), or one long one is summarised; one short one is said as is
+export const notesNeedSummary = (text, items = []) => items.length > 1 || items.some((n) => n?.kind === "brief") || toSpeech(text, { full: true }).length > SHORT;
+
 // ---------- the question the user must answer ----------
 const sentences = (t) => String(t).match(/[^.!?]+[.!?]+(?=\s|$)|[^.!?]+$/g)?.map((s) => s.trim()).filter(Boolean) || [];
 // the last question in the reply, as it would be spoken (with its options, if they follow it as a list)

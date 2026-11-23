@@ -152,19 +152,56 @@ export function briefDue(brief_at, now, lastBriefAt) {
 // fallbackLast(): the last brief's time from before this file existed (the notification list), read only when
 // the file is missing. Resolves true when a brief went out.
 export const briefFile = () => join(home, "brief.json");
-export function lastBriefAt(file = briefFile()) {
-  try { return Number(JSON.parse(readFileSync(file, "utf8")).last_at) || 0; } catch { return null; }
+// brief.json also remembers the brief_at it last saw: a brief turned on (or moved) after today's time first goes
+// out tomorrow, not the moment the daemon notices (`axa brief now` sends one at once).
+export function briefState(file = briefFile()) {
+  try { const s = JSON.parse(readFileSync(file, "utf8")); return { last_at: Number(s.last_at) || 0, brief_at: typeof s.brief_at === "string" ? s.brief_at : null }; } catch { return null; }
 }
-export async function briefTick({ brief_at, now = Date.now(), file = briefFile(), review, push, fallbackLast = () => 0 }) {
-  if (!brief_at) return false;
-  const last = lastBriefAt(file) ?? (fallbackLast() || 0);
-  if (!briefDue(brief_at, now, last)) return false;
-  // recorded first: a slow or failing review can't send it twice
+export const lastBriefAt = (file = briefFile()) => briefState(file)?.last_at ?? null;
+function saveBriefState(file, st) {
   const tmp = `${file}.${process.pid}.tmp`;
-  writeFileSync(tmp, JSON.stringify({ last_at: now }) + "\n", { mode: 0o600 });
+  writeFileSync(tmp, JSON.stringify(st) + "\n", { mode: 0o600 });
   renameSync(tmp, file);
-  push({ kind: "brief", session: null, project: "", title: "Daily brief", body: briefText(await review()), needsUser: false });
+}
+const todayAt = (hhmm, now) => { const [h, m] = hhmm.split(":").map(Number), d = new Date(now); return new Date(d.getFullYear(), d.getMonth(), d.getDate(), h, m).getTime(); };
+export async function briefTick({ brief_at, now = Date.now(), file = briefFile(), review, push }) {
+  const st = briefState(file) || { last_at: 0, brief_at: null };
+  if (!brief_at) { if (st.brief_at) saveBriefState(file, { ...st, brief_at: null }); return false; }
+  // just turned on or moved: if today's time has passed, today counts as done
+  if (st.brief_at !== brief_at) {
+    saveBriefState(file, { brief_at, last_at: now >= todayAt(brief_at, now) ? now : st.last_at });
+    return false;
+  }
+  if (!briefDue(brief_at, now, st.last_at)) return false;
+  // recorded first: a slow or failing review can't send it twice
+  saveBriefState(file, { brief_at, last_at: now });
+  push(await briefNotification(review));
   return true;
+}
+export const briefNotification = async (review) => ({ kind: "brief", session: null, project: "", title: "Daily brief", body: briefText(await review()), needsUser: false });
+
+// ---------- the setting (ui.json "notify": { "brief_at" }), for `axa brief` ----------
+export const BRIEF_TIMES = ["off", "07:00", "08:00", "09:00", "10:00", "12:00"];
+// "9:30" -> "09:30", "off" -> null, "now" -> "now"; anything else throws
+export function parseBriefArg(arg) {
+  const a = String(arg ?? "").trim().toLowerCase();
+  if (a === "off" || a === "none") return null;
+  if (a === "now") return "now";
+  const m = /^(\d{1,2}):(\d{2})$/.exec(a);
+  if (!m || Number(m[1]) > 23 || Number(m[2]) > 59) throw new Error(`"${arg}" isn't a time: use HH:MM (24-hour, e.g. 09:00), off, or now`);
+  return `${m[1].padStart(2, "0")}:${m[2]}`;
+}
+// Read-modify-write of ui.json through a temp file: every other setting (and notify key) is kept
+export function writeBriefAt(file, value) {
+  let cfg = {};
+  if (existsSync(file)) {
+    const raw = readFileSync(file, "utf8");
+    try { cfg = raw.trim() ? JSON.parse(raw) : {}; } catch (e) { throw new Error(`${file} isn't valid JSON (${e.message}); not touching it`); }
+  }
+  cfg.notify = { ...(cfg.notify && typeof cfg.notify === "object" ? cfg.notify : {}), brief_at: value };
+  if (value === null) delete cfg.notify.brief_at;
+  saveBriefState(file, cfg);
+  return cfg;
 }
 // One notification's text: what changed in the last day, what's waiting on you, the top "Next up" per project
 export function briefText(list) {

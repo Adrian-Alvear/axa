@@ -15,7 +15,7 @@ import { api } from "../daemon.mjs";
 import { SOCKET, TMUX_CONF, tmuxEnv } from "../core/tmux-client.mjs";
 import { ESC, I, THEME_NAMES, nerdFontInstalled, URGENCY, ago, chipOf, clean, cut, fmtTok, gitText, line, look, pad, paint, reviewBadge, selLine, setIcons, setMotion, setTheme, spinner, truecolor, width } from "./draw.mjs";
 import { sliceAnsi } from "./ansi.mjs";
-import { IDLE_DAYS, ageText, gitLine, handoffPath } from "../core/projects.mjs";
+import { BRIEF_TIMES, IDLE_DAYS, ageText, gitLine, handoffPath } from "../core/projects.mjs";
 import { LiveView } from "./live.mjs";
 import { agentDetail, agentName, axaStatusLine, controlRows, msgText, selectedText } from "./control.mjs";
 import { copyToClipboard, pasteFile, readClipboard } from "./clipboard.mjs";
@@ -29,6 +29,15 @@ const SPEEDS = { "-2": "slowest", "-1": "slow", 0: "normal", 1: "fast", 2: "fast
 const MOTIONS = ["full", "reduced", "off"];
 // notifications (notify.mjs): ui.json "notify": { voice, desktop }
 const NOTIFY_LEVELS = ["needs-you", "all", "off"];
+// the daily brief's row: off -> 07:00 -> ... -> 12:00 -> off (a time not in the list starts over at off);
+// the other notify keys are kept
+export function nextBrief(notify = {}) {
+  const n = { ...(notify && typeof notify === "object" ? notify : {}) };
+  const i = BRIEF_TIMES.indexOf(n.brief_at || "off");
+  const v = BRIEF_TIMES[(i < 0 ? 0 : i + 1) % BRIEF_TIMES.length];
+  if (v === "off") delete n.brief_at; else n.brief_at = v;
+  return n;
+}
 // spoken summaries (summary.mjs): ui.json "voiceSummary"
 const SUMMARY_HINT = { model: "a short summary (a fast model writes it)", "first-paragraph": "their first paragraph", full: "all of it" };
 const NOTIFY_HINT = { "needs-you": "what needs you (and finished work, spoken)", all: "everything", off: "off" };
@@ -781,6 +790,7 @@ export async function runTui() {
       { label: "Long replies are spoken as", hint: SUMMARY_HINT[cfg.voiceSummary] || SUMMARY_HINT.model, value: "voiceSummary" },
       { label: "Speak notifications", hint: NOTIFY_HINT[cfg.notify?.voice || "needs-you"], value: "notifyVoice" },
       { label: "Desktop notifications", hint: NOTIFY_HINT[cfg.notify?.desktop || "needs-you"], value: "notifyDesktop" },
+      { label: "Daily brief (all projects, once a day)", hint: cfg.notify?.brief_at || "off", value: "brief" },
     ];
     const cycle = (arr, v) => arr[(arr.indexOf(v) + 1) % arr.length];
     const again = (selected) => pick("Settings (Enter changes)", opts(), (o) => {
@@ -791,6 +801,7 @@ export async function runTui() {
       if (o.value === "motion") { cfg.motion = cycle(MOTIONS, MOTIONS.includes(cfg.motion) ? cfg.motion : "full"); setMotion(motionNow()); }
       if (o.value === "voice") { if (voiceEnv) flash(`voice is forced ${voiceEnv} by AXA_VOICE`); else { cfg.voice = voiceOn() ? "off" : "on"; if (cfg.voice === "off") stopVoice(); } }
       if (o.value === "voiceSummary") cfg.voiceSummary = cycle(Object.keys(SUMMARY_HINT), SUMMARY_HINT[cfg.voiceSummary] ? cfg.voiceSummary : "model");
+      if (o.value === "brief") cfg.notify = nextBrief(cfg.notify);
       if (o.value === "notifyVoice") cfg.notify = { ...cfg.notify, voice: cycle(NOTIFY_LEVELS, cfg.notify?.voice || "needs-you") };
       if (o.value === "notifyDesktop") cfg.notify = { ...cfg.notify, desktop: cycle(NOTIFY_LEVELS, cfg.notify?.desktop || "needs-you") };
       if (o.value === "voiceMoreHint") cfg.voiceMoreHint = cfg.voiceMoreHint === false;
