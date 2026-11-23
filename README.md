@@ -108,9 +108,9 @@ spelled out by a small pronunciation table in `src/core/voice.mjs`.
 | **1 Sessions** | The AXA commander, then every session AXA runs, by what needs you: needs you, stuck, working, done, ready. Each shows what it's doing or last said, its branch and changes, tokens, and helper agents at work. | open it live | `d` changes · `g` give a goal · `v` run checks · `r` rename · `X` close |
 | **2 Chats** | Every past Claude Code conversation, newest first, with its title (your `/rename`, else Claude's). `●` = open in a session right now. | resume it (or jump to it) | `/` filter |
 | **3 Agents** | The agents Claude can use: AXA's, yours (`~/.claude/agents`), each project's (`.claude/agents`), and Claude's built-ins, with how many are running now. | give it a task (the commander runs it) | `/` filter |
-| **4 Projects** | Your repos (from the roster, `~/projects`, and git repos in `~`). | its session, or a new one | `n` new · `w` new in its own worktree · `s` shell |
+| **4 Projects** | Your repos (from the roster, `~/projects`, and git repos in `~`). | its session, or a new one | `N` new · `w` new in its own worktree · `s` shell |
 
-Everywhere: `Tab` / `1`-`4` switch panels, `a` the commander, `n` new session, `/` filter, `y` / `x`
+Everywhere: `Tab` / `1`-`4` switch panels, `a` the commander, `n` notifications, `N` new session, `/` filter, `y` / `x`
 answer the prompt in the yellow bar, `!` go to it, `o` web console, `,` settings, `?` all keys,
 `q` quit (sessions keep running). The mouse works too: click to select, click again to open, scroll.
 
@@ -221,6 +221,17 @@ agents/ skills/      axa:builder / reviewer / researcher, the review gate's prom
   menus, and **ready** when Claude has gone idle waiting for input. Text typed into a Claude session
   must be confirmed by its UserPromptSubmit within 5 s (Enter is pressed once more, then it's an error,
   and a link isn't counted as fired). Time spent waiting on a permission never makes a step look stuck.
+- **Notifications for you.** Every session that finishes (with its one-line report), needs you,
+  fails, hits a usage limit, exits, gets stuck or needs trust, every milestone review verdict and fix
+  round, every link that fires and every step AXA's approver declines becomes a notification
+  (`src/core/notify.mjs`; the last 200 in `~/.axa/notifications.jsonl`, repeats within 60 s dropped).
+  You see them in the hub (the bell in the title bar counts the unread, `n` lists them, Enter goes to
+  the session, `c` clears), as `⚙ notice` lines in the commander's chat (they cost it no tokens) and
+  at `GET /api/notifications`. With the voice on, what needs you and finished work are spoken, at most
+  one per 20 s (the rest as "3 more updates on screen"), and what needs you shows as a desktop
+  notification (a Windows toast from WSL, `osascript` on macOS, `notify-send` on Linux). Settings
+  (`,` in the hub, or `~/.axa/ui.json` `"notify": { "voice", "desktop" }`): `all`, `needs-you`
+  (default) or `off`.
 - **AXA wakes itself.** When a session finishes, gets stuck or needs you, the daemon tells the
   commander (only when it's idle and you aren't typing in it), so it can check the work and report.
   `AXA_SUPERVISOR=0` turns it off.

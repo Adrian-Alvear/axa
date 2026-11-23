@@ -18,6 +18,7 @@ import { diffOf, headOf } from "./git.mjs";
 import { mdeps, tickMilestones } from "./milestone.mjs";
 import { BLOCK_PREFIX, blockMessage, citedSpecs, confirmBlock, fixerOf, gitState, nextStep, reviewOf, reviewPrompt, reviewSettings, runReviewer, setReview, shouldReview, verdictLine } from "./reviewer.mjs";
 import { clip } from "./text.mjs";
+import { fromMilestone, notifier } from "./notify.mjs";
 
 const SUPERVISE = process.env.AXA_SUPERVISOR !== "0";
 const WAIT_MS = 15_000; // a prompt must stay open this long to count as needing you
@@ -191,6 +192,7 @@ export function supervise(list) {
 
 // A milestone review's result (milestone.mjs) wakes the commander like a session update does
 export function notifyCommander(key, text) {
+  notifier.push(fromMilestone(text)); // for you, whatever the supervisor's setting
   if (!SUPERVISE) return;
   pending.set(key, { id: key, name: "milestone review", status: "milestone", text, since: Date.now() });
 }
@@ -207,6 +209,7 @@ export function startSupervisor() {
     for (const s of list) { const c = since.get(s.id); if (!c || c.status !== s.status) since.set(s.id, { status: s.status, at: Date.now() }); }
     runLinks(list);
     tickMilestones(list);
+    notifier.tick(list);
     if (SUPERVISE) { trackReviews(list); supervise(list); }
   }, 3000);
 }

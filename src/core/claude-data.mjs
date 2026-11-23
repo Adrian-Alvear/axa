@@ -179,13 +179,14 @@ export function chatMessages(id, max = 12) {
     const c = o.message?.content;
     const text = typeof c === "string" ? c : Array.isArray(c) ? c.filter((p) => p?.type === "text").map((p) => p.text).join("\n") : "";
     const note = o.type === "user" ? systemNote(text) : null;
-    if (note) { msgs.push({ role: "system", text: note.slice(0, 4000) }); continue; }
+    const at = Date.parse(o.timestamp) || undefined; // when it was said (the hub slots notifications in by time)
+    if (note) { msgs.push({ role: "system", text: note.slice(0, 4000), at }); continue; }
     if (!text.trim() || /^\s*<(command|local-command|system-reminder|bash-|task-notification)/.test(text)) continue;
     const role = o.type === "user" ? "you" : "claude";
     // a streamed reply repeats; keep the last version of each message
     const key = o.message?.id;
     if (key && msgs.length && msgs.at(-1).key === key) msgs[msgs.length - 1].text = text;
-    else msgs.push({ role, text: text.slice(0, 4000), key });
+    else msgs.push({ role, text: text.slice(0, 4000), key, at });
   }
-  return msgs.slice(-max).map(({ role, text }) => ({ role, text }));
+  return msgs.slice(-max).map(({ role, text, at }) => ({ role, text, ...(at ? { at } : {}) }));
 }

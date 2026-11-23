@@ -80,6 +80,8 @@ export function command(b, { name, rate, file, winFile }) {
 // ---------- speak / stop ----------
 // `current` is the reply being said: stop() runs every kill it registered (synthesis in flight, playback)
 let current = null;
+// something is being said now (notifications wait for it rather than cut it off)
+export const speaking = () => !!current;
 const newJob = () => ({ stopped: false, kills: new Set(), kill() { this.stopped = true; for (const k of this.kills) try { k(); } catch {} this.kills.clear(); } });
 export function stop() {
   const c = current;

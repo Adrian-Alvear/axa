@@ -16,6 +16,7 @@ import { getMilestoneReview, listMilestoneReviews, startMilestone } from "./mile
 import { listAgents, listProjects, readRoster } from "./catalog.mjs";
 import { chatMessages, findChat, listChats } from "./claude-data.mjs";
 import { safe } from "./text.mjs";
+import { notifier, voiceHooks } from "./notify.mjs";
 
 if (!existsSync(files.token)) writeFileSync(files.token, randomBytes(24).toString("hex"), { mode: 0o600 });
 const token = readFileSync(files.token, "utf8").trim();
@@ -34,6 +35,9 @@ const authed = (req) => hostOk(req) && (!req.headers.origin || origins.has(req.h
 const fromUser = (req) => (req.headers["sec-fetch-site"] === "same-origin" && req.headers.origin) || req.headers["x-axa-client"] === "tui";
 
 S.setStatusSource(statusOf);
+// notifications (notify.mjs): from the live event log; spoken when the voice is on and idle
+onLine((line) => { try { notifier.event(JSON.parse(line)); } catch {} });
+Object.assign(voiceHooks, { on: () => V.settings().on, busy: () => V.speaking(), speak: (text) => { const t = V.toSpeech(safe(text), { more: false }); if (t) V.speak(t); } });
 onChatSeen(S.noteChat);
 // AXA's voice: only the commander's own session, only when voice is on (re-read from ui.json each time)
 onCommanderReply((id, message) => {
@@ -123,6 +127,9 @@ const routes = [
     if (!cwd || !inHome(cwd) || !existsSync(cwd)) return [400, { error: "Give a project, or a folder in your home folder (cwd)." }];
     return [200, startMilestone({ cwd, base: b.base || undefined, goal: b.goal, source: b.source === "cli" ? "cli" : "commander" })];
   }],
+  // notifications for you (notify.mjs), oldest first; since: only those after that time (ms)
+  ["GET", /^\/api\/notifications$/, (m, req, u) => { const since = Number(u.searchParams.get("since")) || 0, all = notifier.list(); return [200, { items: all.filter((n) => n.at > since).slice(-Math.min(200, Number(u.searchParams.get("limit")) || 200)), total: all.length }]; }],
+  ["POST", /^\/api\/notifications\/clear$/, () => { notifier.clear(); return [200, {}]; }],
   ["GET", /^\/api\/voice$/, async () => [200, await V.info()]],
   ["POST", /^\/api\/voice\/stop$/, () => { V.stop(); return [200, {}]; }],
   ["POST", /^\/api\/voice\/test$/, () => {
@@ -145,6 +152,7 @@ function hub(chatLimit) {
     projects: listProjects().map((p) => ({ ...p, sessions: sessions.filter((s) => s.alive && (s.worktree?.repo || s.cwd) === p.path).length })),
     agents: listAgents(),
     links: listLinks(),
+    notifications: notifier.list().slice(-60),
     tmux: S.hasTmux,
   };
 }

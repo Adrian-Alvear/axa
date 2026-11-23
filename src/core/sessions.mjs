@@ -116,13 +116,19 @@ export const TRUST_HINT = "the user must answer the trust prompt (or run axa tru
 // A session's status from what's known about it (pure, for tests). tr: its traced status; trust: the
 // folder-trust dialog is on screen; prompt: any choice dialog is; restored: it was already running when
 // the daemon started (its SessionStart may be older than the replayed history).
+// A "waiting" from the hook log with no prompt or menu on screen for STALE_WAIT_MS has been answered in a way
+// no hook reports (Esc on an AskUserQuestion menu fires no PostToolUse): Claude is back at its input box.
+// The screen check still refuses typing whenever a prompt is visible.
+const STALE_WAIT_MS = 10_000;
+export const staleWait = (tr, prompt, now = Date.now()) => tr?.status === "waiting" && !prompt && !!tr.waitSince && now - tr.waitSince > STALE_WAIT_MS;
 export function deriveStatus({ alive, mode, tr, trust, prompt, restored, gone }) {
   if (!alive) return "exited";
   // Claude Code ended (SessionEnd), or a started session's pane is back to its shell (no SessionEnd)
   if (mode !== "shell" && (tr?.status === "exited" || gone)) return "exited";
   if (mode !== "shell" && trust) return "needs_trust";
   // While AXA's approver is deciding, the prompt is already on screen: not your turn yet
-  if (tr?.status === "waiting" || (!tr?.asking && prompt)) return "waiting";
+  if ((tr?.status === "waiting" && !staleWait(tr, prompt)) || (!tr?.asking && prompt)) return "waiting";
+  if (tr?.status === "waiting") return "ready";
   return tr?.status || (mode === "shell" || restored ? "ready" : "starting");
 }
 // Why typing into this session now is refused (null: it may be typed into). Text typed while Claude
@@ -234,7 +240,8 @@ export async function sendText(id, text, { enter = true, confirmed = false } = {
   // Shells run whatever is typed, so dangerous commands need your explicit OK (Claude has its own checks)
   const danger = t.mode === "shell" && dangerousShell(text);
   if (danger && !confirmed) return { ok: false, error: `Not sent: this looks dangerous (${danger}). Ask the user to approve this exact command first, then resend with confirmed_by_user: true.` };
-  if (promptOpen(t) || traced(t.id)?.status === "waiting") return { ok: false, error: "This session is waiting on a permission/trust prompt. Only the user may answer it: tell them which session needs attention." };
+  const open = promptOpen(t), tr = traced(t.id);
+  if (open || (tr?.status === "waiting" && !staleWait(tr, open))) return { ok: false, error: "This session is waiting on a permission/trust prompt. Only the user may answer it: tell them which session needs attention." };
   const since = Date.now();
   typeText(t, text);
   if (!enter) return { ok: true };

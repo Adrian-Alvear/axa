@@ -26,6 +26,9 @@ const DEFAULTS = { theme: "axa", prefix: "C-b", bell: true, motion: "full", voic
 const KOKORO_KIND = { af: "American, female", am: "American, male", bf: "British, female", bm: "British, male" };
 const SPEEDS = { "-2": "slowest", "-1": "slow", 0: "normal", 1: "fast", 2: "fastest" };
 const MOTIONS = ["full", "reduced", "off"];
+// notifications (notify.mjs): ui.json "notify": { voice, desktop }
+const NOTIFY_LEVELS = ["needs-you", "all", "off"];
+const NOTIFY_HINT = { "needs-you": "what needs you (and finished work, spoken)", all: "everything", off: "off" };
 const PANELS = ["control", "sessions", "chats", "agents", "projects"];
 const TITLES = { control: "Control", sessions: "Sessions", chats: "Chats", agents: "Agents", projects: "Projects" };
 
@@ -64,6 +67,7 @@ export async function runTui() {
   let filtering = false; // typing into the focused panel's filter
   let pendingSend = null; // { id, text }: typed into a session as soon as it's ready (e.g. a commander just started)
   let prevStatus = null;
+  let notes = []; // notifications from the daemon (oldest first); cfg.notifySeen: the newest you've seen
   // the mouse: approve takes two clicks (the first arms it for 4 s); what the title, alert bar and footer
   // drew where (hit boxes, rebuilt every frame); the list area the wheel scrolls
   const approveArm = makeArm(4000);
@@ -91,6 +95,10 @@ export async function runTui() {
     try { data.sessions = await call("/api/terms"); err = ""; } catch (e) { err = e.message; }
     afterPoll();
   }
+  async function pollNotes() {
+    try { notes = (await call("/api/notifications?limit=200")).items || []; schedule(); } catch {}
+  }
+  const unread = () => notes.filter((n) => n.at > (cfg.notifySeen || 0)).length;
   async function pollHub() {
     try { data = await call("/api/hub?chats=200"); err = ""; } catch (e) { err = e.message; }
     afterPoll();
@@ -170,7 +178,7 @@ export async function runTui() {
     if (!list.length) {
       const msg = filter[panel] ? "nothing matches" : { sessions: "nothing running yet", chats: "no chats yet", agents: "no agents found", projects: "no projects found" }[panel];
       rows.push(line([[`  ${msg}`, "dim"]], w));
-      if (!filter[panel] && panel === "sessions") rows.push(line([["  n starts a session · a the commander", "dim"]], w));
+      if (!filter[panel] && panel === "sessions") rows.push(line([["  N starts a session · a the commander", "dim"]], w));
     }
     const more = list.length - scroll[panel] - fit;
     while (rows.length < h) rows.push(" ".repeat(w));
@@ -320,7 +328,7 @@ export async function runTui() {
       for (const c of cs) P.push([[[`  ${I.chat} `, "dim"], [clean(c.title), "text"]], [[ago(c.updated), "dim"]], "pv"]);
       const ag = data.agents.filter((a) => a.project === p.name);
       if (ag.length) { gap(); label("Agents"); for (const a of ag) P.push([[[`  ${I.agent} `, "violet"], [a.name, "head"], [`  ${clean(a.description)}`, "dim"]], [], "pv"]); }
-      gap(); P.push([[["  ", ""], [" Enter ", "keycap"], [" open  ", "dim"], [" n ", "keycap"], [" new  ", "dim"], [" w ", "keycap"], [" worktree  ", "dim"], [" s ", "keycap"], [" shell", "dim"]], [], "pv"]);
+      gap(); P.push([[["  ", ""], [" Enter ", "keycap"], [" open  ", "dim"], [" N ", "keycap"], [" new  ", "dim"], [" w ", "keycap"], [" worktree  ", "dim"], [" s ", "keycap"], [" shell", "dim"]], [], "pv"]);
     }
     const rows = P.map(([segs, right, on]) => line(segs, w, right, on));
     if (tail) {
@@ -340,10 +348,13 @@ export async function runTui() {
   function titleBar() {
     const n = (st) => data.sessions.filter((s) => s.status === st).length, needs = n("waiting") + n("needs_trust") + n("stuck"), work = n("working");
     const clock = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
-    const right = [[needs ? ` ${I.wait} ${needs} NEED${needs > 1 ? "" : "S"} YOU ` : "", "chipWait"], [needs && work ? " " : "", "bar"], [work ? ` ${spinner()} ${work} WORKING ` : "", "chipWork"], [!needs && !work ? `${I.done} all quiet` : "", "barDim"], [`   ${clock}`, "barDim"]];
+    const un = unread();
+    const right = [[` ${I.bell} ${un || ""} `, un ? "chipWait" : "barDim"], [" ", "bar"], [needs ? ` ${I.wait} ${needs} NEED${needs > 1 ? "" : "S"} YOU ` : "", "chipWait"], [needs && work ? " " : "", "bar"], [work ? ` ${spinner()} ${work} WORKING ` : "", "chipWork"], [!needs && !work ? `${I.done} all quiet` : "", "barDim"], [`   ${clock}`, "barDim"]];
     titleHits = [];
     if (screen === "hub") {
-      const left = [[` ${I.axa} AXA`, "barTitle"], [err ? `   ${err}` : "", "stuck"]], chip = needs && segSpans(left, W, right).right.find((s) => s.i === 0);
+      const left = [[` ${I.axa} AXA`, "barTitle"], [err ? `   ${err}` : "", "stuck"]], spans = segSpans(left, W, right).right;
+      const bell = spans.find((s) => s.i === 0), chip = needs && spans.find((s) => s.i === 2);
+      if (bell) titleHits.push({ y: 1, x0: bell.x0, x1: bell.x1, k: "bell" });
       if (chip) titleHits.push({ y: 1, x0: chip.x0, x1: chip.x1, k: "needs" });
       return line(left, W, right, "bar");
     }
@@ -378,8 +389,8 @@ export async function runTui() {
     footHits = [];
     if (screen === "live") return null; // a session keeps every row; notices show in its header
     if (toast && Date.now() < toast.until) return line([[` ${toast.text}`, "text"]], W, [], "bar");
-    const per = { control: focusInput ? [["⏎", "send to the commander"], ["Esc", "stop typing"]] : zone === "chats" ? [["⏎", "resume chat"], ["↑↓", "pick"], ["←", "back to the map"], [":", "talk to AXA"]] : [["⏎", "open"], ["↑↓", "pick session"], ["→", "chats"], [":", "talk to AXA"], ["PgUp", "AXA's messages"], ["y/x", "answer"], ["d", "changes"], ...(W >= 170 ? [["drag", "copy"]] : [])], sessions: [["⏎", "open"], ["d", "changes"], ["g", "goal"], ["v", "checks"], ["r", "rename"], ["X", "close"]], chats: [["⏎", "resume"], ["/", "search"]], agents: [["⏎", "give a task"], ["/", "search"]], projects: [["⏎", "open"], ["n", "new"], ["w", "worktree"], ["s", "shell"]] }[PANELS[focus]];
-    const all = [["Tab", "switch"], ["a", "AXA"], ["n", "new"], ["?", "help"], ["q", "quit"]];
+    const per = { control: focusInput ? [["⏎", "send to the commander"], ["Esc", "stop typing"]] : zone === "chats" ? [["⏎", "resume chat"], ["↑↓", "pick"], ["←", "back to the map"], [":", "talk to AXA"]] : [["⏎", "open"], ["↑↓", "pick session"], ["→", "chats"], [":", "talk to AXA"], ["PgUp", "AXA's messages"], ["y/x", "answer"], ["d", "changes"], ...(W >= 170 ? [["drag", "copy"]] : [])], sessions: [["⏎", "open"], ["d", "changes"], ["g", "goal"], ["v", "checks"], ["r", "rename"], ["X", "close"]], chats: [["⏎", "resume"], ["/", "search"]], agents: [["⏎", "give a task"], ["/", "search"]], projects: [["⏎", "open"], ["N", "new"], ["w", "worktree"], ["s", "shell"]] }[PANELS[focus]];
+    const all = [["Tab", "switch"], ["a", "AXA"], ["n", "notifications"], ["N", "new"], ["?", "help"], ["q", "quit"]];
     const segs = per.flatMap(([k, t]) => [[` ${k} `, "keycap"], [` ${t}  `, "barDim"]]);
     const right = all.flatMap(([k, t], j) => [[` ${k} `, "keycap"], [j === all.length - 1 ? ` ${t}` : ` ${t}  `, "barDim"]]);
     // every hint is a button for its key (y/x: the y half approves, the x half declines)
@@ -400,7 +411,7 @@ export async function runTui() {
     if (panel === "control") {
       if (W < 100 || h < 20) return [...listRows("sessions", 1, y0, W, h - 1), line([[" widen the window (100×26 or more) for the full control view", "dim"]], W)];
       const w = waitingOthers();
-      ctl = { motion: motionNow(), sessions: data.sessions, act, selId: ctlSelected()?.id, focusInput, input: cmdInput, nameOf, question, yesOpt, noOpt, waiting: w[0], waitingCount: w.length, armed: !!w[0] && approveArm.armed(armKey(w[0])), apHits: [], order: ctlOrder(), chats: data.chats, zone, chatSel, agentSel: ctlAgent, cmdStatus: commanderStatus(), mapHits: [], chatHits: [], y0, L: Math.round(W * 0.62), cmdMsgs, cmdScroll, cmdSel: cmdSel?.dragged && cmdSel.scroll === cmdScroll ? cmdSel : null };
+      ctl = { motion: motionNow(), sessions: data.sessions, act, selId: ctlSelected()?.id, focusInput, input: cmdInput, nameOf, question, yesOpt, noOpt, waiting: w[0], waitingCount: w.length, armed: !!w[0] && approveArm.armed(armKey(w[0])), apHits: [], order: ctlOrder(), chats: data.chats, zone, chatSel, agentSel: ctlAgent, cmdStatus: commanderStatus(), mapHits: [], chatHits: [], y0, L: Math.round(W * 0.62), cmdMsgs: withNotices(cmdMsgs), cmdScroll, cmdSel: cmdSel?.dragged && cmdSel.scroll === cmdScroll ? cmdSel : null };
       const rowsOut = controlRows(ctl, W, h - 1);
       cmdScroll = ctl.cmdScroll;
       if (cmdSel && cmdSel.scroll !== cmdScroll) cmdSel = null; // the conversation scrolled: the selection goes
@@ -535,6 +546,28 @@ export async function runTui() {
     else if (k === "G" && ov.input === undefined) ov.scroll = 1e9;
     ov.follow = undefined;
     schedule();
+  }
+
+  // ---------- notifications ----------
+  // newest first; Enter (or a click on the selected one) goes to its session; c clears the list
+  function openNotifications() {
+    const list = [...notes].reverse();
+    cfg.notifySeen = Math.max(cfg.notifySeen || 0, ...notes.map((n) => n.at)); saveCfg();
+    const when = (at) => new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
+    const options = list.length ? list.map((n) => ({ label: `${n.needsUser ? I.wait : "·"} ${when(n.at)}  ${clean(n.title)}`, hint: clean(n.body).slice(0, 90), value: n })) : [{ label: "No notifications yet.", hint: "", value: null, dim: true }];
+    pick(`Notifications${list.length ? ` · ${list.length}` : ""}`, options, (o) => {
+      const s = o.value?.session && data.sessions.find((x) => x.id === o.value.session && x.alive);
+      if (s) return openLive(s);
+      if (o.value) flash(o.value.session ? "that session has closed" : clean(o.value.title));
+    }, { hint: "↑/↓ choose · Enter go to its session · c clear all · Esc close", keys: { c: () => call("/api/notifications/clear", { method: "POST" }).then(() => { notes = []; flash("notifications cleared"); }, (e) => flash(`couldn't clear: ${e.message}`)) } });
+    overlay.size = "wide";
+  }
+  // the commander's conversation with each notification since its first message as a "⚙ notice" line
+  function withNotices(msgs) {
+    const from = msgs.find((m) => m.at)?.at;
+    if (!from || !notes.length) return msgs;
+    const ns = notes.filter((n) => n.at >= from).map((n) => ({ role: "system", notice: true, text: `${clean(n.title)}${n.body ? ` · ${clean(n.body)}` : ""}`, at: n.at }));
+    return [...msgs, ...ns].map((m, i) => [m, i]).sort((a, b) => (a[0].at ?? 0) - (b[0].at ?? 0) || a[1] - b[1]).map(([m]) => m);
   }
 
   // ---------- actions ----------
@@ -693,6 +726,8 @@ export async function runTui() {
       { label: "Voice speed", hint: SPEEDS[cfg.voiceRate] || "normal", value: "voiceRate" },
       { label: "Say when there's more on screen", hint: cfg.voiceMoreHint === false ? "off" : "on", value: "voiceMoreHint" },
       { label: "Test the voice", hint: "says \"AXA voice check.\"", value: "voiceTest" },
+      { label: "Speak notifications", hint: NOTIFY_HINT[cfg.notify?.voice || "needs-you"], value: "notifyVoice" },
+      { label: "Desktop notifications", hint: NOTIFY_HINT[cfg.notify?.desktop || "needs-you"], value: "notifyDesktop" },
     ];
     const cycle = (arr, v) => arr[(arr.indexOf(v) + 1) % arr.length];
     const again = (selected) => pick("Settings (Enter changes)", opts(), (o) => {
@@ -702,6 +737,8 @@ export async function runTui() {
       if (o.value === "bell") cfg.bell = !cfg.bell;
       if (o.value === "motion") { cfg.motion = cycle(MOTIONS, MOTIONS.includes(cfg.motion) ? cfg.motion : "full"); setMotion(motionNow()); }
       if (o.value === "voice") { if (voiceEnv) flash(`voice is forced ${voiceEnv} by AXA_VOICE`); else { cfg.voice = voiceOn() ? "off" : "on"; if (cfg.voice === "off") stopVoice(); } }
+      if (o.value === "notifyVoice") cfg.notify = { ...cfg.notify, voice: cycle(NOTIFY_LEVELS, cfg.notify?.voice || "needs-you") };
+      if (o.value === "notifyDesktop") cfg.notify = { ...cfg.notify, desktop: cycle(NOTIFY_LEVELS, cfg.notify?.desktop || "needs-you") };
       if (o.value === "voiceMoreHint") cfg.voiceMoreHint = cfg.voiceMoreHint === false;
       if (o.value === "voiceRate") cfg.voiceRate = cfg.voiceRate >= 2 ? -2 : (Math.round(Number(cfg.voiceRate)) || 0) + 1;
       if (o.value === "voiceTest") call("/api/voice/test", { method: "POST" }).then(() => flash("speaking…"), (e) => flash(`no voice: ${e.message}`));
@@ -720,7 +757,8 @@ export async function runTui() {
       { text: "  Tab / Shift-Tab or 1-5   move between Control, Sessions, Chats, Agents, Projects" },
       { text: "  Control: ↑/↓ pick a session (or click it on the map or table) · : talk to the commander" },
       { text: "  ↑/↓ or j/k, PgUp/PgDn    move in a panel        Enter   open the selected thing" },
-      { text: "  a   the AXA commander (opens it, or starts it)   n   new session (pick a folder)" },
+      { text: "  a   the AXA commander (opens it, or starts it)   N   new session (pick a folder)" },
+      { text: "  n   notifications (newest first: Enter goes to the session, c clears; the bell counts the unread)" },
       { text: "  /   filter the panel     y / x   answer the prompt in the yellow bar   !  go to it" },
       { text: "  o   web console          ,  settings             q   quit (sessions keep running)" },
       { text: "  Control: m   voice on/off (AXA reads its replies aloud) · Esc stops it speaking" },
@@ -741,7 +779,7 @@ export async function runTui() {
       { text: "Agents", role: "head" },
       { text: "  Enter give it a task (the commander runs it with that agent); the preview shows its instructions" },
       { text: "Projects panel", role: "head" },
-      { text: "  Enter open its session (or start one) · n new · w new in its own worktree · s shell" },
+      { text: "  Enter open its session (or start one) · N new · w new in its own worktree · s shell" },
       { text: "" },
       { text: `Inside a session (everything you type goes to it; ${k} then a key is for AXA)`, role: "head" },
       { text: `  ${k} h   back to the hub (the session keeps running)` },
@@ -877,7 +915,8 @@ export async function runTui() {
       case ",": return settings();
       case "o": openUrl(webUrl()); return flash("opened the web console in your browser");
       case "a": return openCommander();
-      case "n": return panel === "projects" && it?.kind === "project" ? newSession(it.p) : newSession();
+      case "n": return openNotifications();
+      case "N": return panel === "projects" && it?.kind === "project" ? newSession(it.p) : newSession();
       case "y": return answerAlert("yes");
       case "x": return answerAlert("no");
       case "!": { const w = waitingOthers()[0]; return w ? openLive(w) : flash("nothing is waiting on you"); }
@@ -1033,7 +1072,9 @@ export async function runTui() {
     // a click outside the commander panel stops typing to it
     if (press && focusInput && !(onControl() && inCommander(x, y - ctl.y0))) focusInput = false;
     if (y === 1) {
-      if (press && hitAt(titleHits, x, y)) { const w = data.sessions.filter((s) => ["waiting", "needs_trust", "stuck"].includes(s.status)).sort(byUrgency)[0]; if (w) openLive(w); }
+      const th = press && hitAt(titleHits, x, y);
+      if (th?.k === "bell") { openNotifications(); return schedule(); }
+      if (th) { const w = data.sessions.filter((s) => ["waiting", "needs_trust", "stuck"].includes(s.status)).sort(byUrgency)[0]; if (w) openLive(w); }
       return schedule();
     }
     if (y === 2) { const t = tabHits.find((h) => x >= h.x0 && x <= h.x1); if (t && press) focus = t.i; return schedule(); }
@@ -1184,6 +1225,8 @@ export async function runTui() {
   enter();
   draw();
   setInterval(pollSessions, 1000);
+  pollNotes();
+  setInterval(pollNotes, 3000);
   // the commander's conversation: refreshed while Control is open, and right after it finishes a turn
   let cmdLast = "";
   const pollCommander = async () => {

@@ -277,3 +277,13 @@ test("a shell wrapper with Claude still running as its child is not an exit", as
   kid.kill();
   await new Promise((r) => kid.on("exit", r));
 });
+
+test("a question closed with Esc (no hook fires) stops counting as waiting once the screen shows no menu", () => {
+  const now = 100_000;
+  assert.equal(S.staleWait({ status: "waiting", waitSince: now - 30_000 }, false, now), true);
+  assert.equal(S.staleWait({ status: "waiting", waitSince: now - 30_000 }, true, now), false);
+  assert.equal(S.staleWait({ status: "waiting", waitSince: now - 2_000 }, false, now), false);
+  assert.equal(S.staleWait({ status: "working", waitSince: now - 30_000 }, false, now), false);
+  assert.equal(S.deriveStatus({ alive: true, mode: "claude", tr: { status: "waiting", waitSince: Date.now() - 60_000 }, prompt: false }), "ready");
+  assert.equal(S.deriveStatus({ alive: true, mode: "claude", tr: { status: "waiting", waitSince: Date.now() - 60_000 }, prompt: true }), "waiting");
+});
