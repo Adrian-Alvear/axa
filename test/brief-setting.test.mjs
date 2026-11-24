@@ -92,7 +92,7 @@ test("turned on after today's time: nothing today, the first brief tomorrow; tur
 test("axa brief now: the daemon posts one at once; a spoken brief always goes through the summary", () => {
   const s = readFileSync(join(ROOT, "src/core/server.mjs"), "utf8");
   assert.match(s, /\["POST", \/\^\\\/api\\\/brief\$\/, async \(\) => \{ const n = notifier\.push\(await briefNotification\(\(\) => projectReview\(true\)\)\);/);
-  assert.match(s, /const long = notesNeedSummary\(text, items\);/);
+  assert.match(s, /if \(!notesNeedSummary\(text, \[n\]\) \|\| summaryMode\(\) !== "model"\) return narrator\.add\(noteItem\(n\)\);/);
   assert.equal(notesNeedSummary("Daily brief: Nothing changed.", [{ kind: "brief" }]), true, "even a short brief");
   assert.equal(notesNeedSummary("feed finished: done.", [{ kind: "done" }]), false);
   assert.equal(notesNeedSummary("a", [{ kind: "done" }, { kind: "link" }]), true);

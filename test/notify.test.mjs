@@ -97,28 +97,7 @@ test("only the last 200 are kept, and the file holds them", () => {
   assert.match(readFileSync(join(process.env.AXA_HOME, "notifications.jsonl"), "utf8"), /to the file/);
 });
 
-// ---------- voice ----------
-test("the voice says one notification per 20 s; the rest are batched", () => {
-  const c = clock(), said = [], timers = [];
-  const q = N.createVoiceQueue({ now: c.now, say: (t) => { said.push(t); }, setTimer: (fn, ms) => { timers.push({ fn, at: c.t + ms }); return 1; } });
-  const item = (title, needsUser = false) => ({ title, body: "x", needsUser });
-  q.add(item("feed finished"));
-  assert.deepEqual(said, ["feed finished: x."]);
-  c.t += 2000; q.add(item("api finished")); q.add(item("web needs you", true)); q.add(item("docs finished"));
-  assert.equal(said.length, 1, "nothing more within 20 s");
-  assert.equal(timers.length, 1); assert.equal(timers[0].at, 1_000_000 + 20_000);
-  c.t = timers[0].at; timers.shift().fn();
-  assert.equal(said[1], "web needs you: x. 2 more updates on screen.");
-  // busy (a reply being read): tried again later, nothing lost
-  const said2 = [], timers2 = [];
-  let busy = true;
-  const q2 = N.createVoiceQueue({ now: c.now, say: (t) => (busy ? false : said2.push(t)), setTimer: (fn, ms) => { timers2.push({ fn, ms }); return 1; } });
-  q2.add(item("a"));
-  assert.equal(said2.length, 0); assert.equal(timers2[0].ms, 2000);
-  busy = false; timers2.shift().fn();
-  assert.deepEqual(said2, ["a: x."]);
-});
-
+// ---------- voice: the narrator (test/narrator.test.mjs) ----------
 test("settings: what is spoken and shown by default", () => {
   assert.deepEqual(N.notifySettings({}), { voice: "needs-you", desktop: "needs-you", brief_at: null });
   assert.deepEqual(N.notifySettings({ notify: { voice: "all", desktop: "off", brief_at: "09:00" } }), { voice: "all", desktop: "off", brief_at: "09:00" });

@@ -16,7 +16,8 @@ import { getMilestoneReview, listMilestoneReviews, startMilestone } from "./mile
 import { listAgents, listProjects, readRoster } from "./catalog.mjs";
 import { chatMessages, findChat, listChats } from "./claude-data.mjs";
 import { safe } from "./text.mjs";
-import { clearVoiceQueue, notifier, notifySettings, voiceHooks, voicePending } from "./notify.mjs";
+import { notifier, notifySettings, voiceHooks } from "./notify.mjs";
+import { createNarrator, logLine } from "./narrator.mjs";
 import { briefNotification, briefTick, reviewProjects } from "./projects.mjs";
 import { notesNeedSummary, spokenReply, summaryMode } from "./summary.mjs";
 import { readMilestones } from "./milestone.mjs";
@@ -50,50 +51,63 @@ const fromUser = (req) => (req.headers["sec-fetch-site"] === "same-origin" && re
 S.setStatusSource(statusOf);
 // notifications (notify.mjs): from the live event log; spoken when the voice is on and idle
 onLine((line) => { try { notifier.event(JSON.parse(line)); } catch {} });
-Object.assign(voiceHooks, { on: () => V.settings().on, busy: () => V.speaking() || summarizing > 0, speak: (text, items = []) => speakNotes(text, items) });
 onChatSeen(S.noteChat);
-// AXA's voice: only the commander's own session, only when voice is on (re-read from ui.json each time)
+// AXA's voice. Everything it says goes through the narrator (narrator.mjs): one queue by priority, coalesced,
+// stale or obsolete items dropped, bursts said as one line, a P0 cutting in after the current sentence.
 // A long reply is spoken as a summary a fast model writes (summary.mjs); the hub never waits for it, and Esc
 // (POST /api/voice/stop) cancels one still being written. voiceNow is what the status bar shows.
 let summarizing = 0, voiceGen = 0, voiceNow = null, voiceAbort = new AbortController();
-async function say(plan, gen) {
-  if (gen !== voiceGen || !plan.text) return;
-  voiceNow = plan.how === "summary" ? "speaking summary" : "speaking";
-  try { await V.speak(plan.text); } finally { if (gen === voiceGen && !V.speaking()) voiceNow = null; }
+// what a notification says about its session's state: it stops being true when the state changes (you answered
+// the prompt, it started working again)
+const EXPECT = { done: ["done"], waiting: ["waiting", "needs_trust"], needs_trust: ["needs_trust", "waiting"], failed: ["failed"], limited: ["limited"], exited: ["exited"], stuck: ["stuck"] };
+function stillTrue(it) {
+  if (it.gen != null && it.gen !== voiceGen) return false; // Esc, mute, or a newer reply since
+  if (!it.session || !it.expect) return true;
+  const s = S.listSessions().find((x) => x.id === it.session);
+  return s ? it.expect.includes(s.status) : it.kind === "exited";
 }
-// fn(signal): Esc and mute abort the signal, which kills a summary still being written (its claude -p child)
-async function planned(fn) {
-  const gen = ++voiceGen;
-  const signal = voiceAbort.signal;
+const narrator = createNarrator({
+  speak: async (text, { items, shouldYield }) => {
+    voiceNow = items.some((i) => i.how === "summary") ? "speaking summary" : "speaking";
+    try { await V.speak(text, { between: shouldYield }); } finally { if (!V.speaking()) voiceNow = null; }
+  },
+  isCurrent: stillTrue,
+  log: (e) => console.log(`[${new Date().toISOString()}] ${logLine(e)}`),
+});
+// a notification as a narrator item
+const noteItem = (n) => ({ kind: n.kind, session: n.session || null, name: n.project || "AXA", expect: n.session ? EXPECT[n.kind] : undefined,
+  text: V.toSpeech(safe(`${n.title}${n.body ? `: ${n.body}` : ""}`), { more: false }) });
+Object.assign(voiceHooks, { on: () => V.settings().on, add: (n) => (n.kind === "brief" ? speakBrief(n) : narrator.add(noteItem(n))) });
+// fn(signal) -> { text, how }: Esc and mute abort the signal, which kills a summary still being written (its
+// claude -p child). What it returns goes to the narrator as `item` (superseded by a newer reply or by Esc).
+async function planned(fn, item) {
+  const gen = ++voiceGen, signal = voiceAbort.signal;
   summarizing++; voiceNow = "writing summary";
   let plan;
-  try { plan = await fn(signal); } catch { plan = { text: "" }; } finally { summarizing--; if (gen === voiceGen) voiceNow = null; }
-  return say(plan, gen);
+  try { plan = await fn(signal); } catch { plan = { text: "" }; } finally { summarizing--; if (gen === voiceGen && voiceNow === "writing summary") voiceNow = null; }
+  if (gen !== voiceGen || !plan.text) return;
+  narrator.add({ ...item, text: plan.text, how: plan.how, gen });
 }
-// Stop everything: what's speaking (the player is killed), a summary still being written, queued notifications
-function hush() { cancelSummaries(); voiceGen++; voiceNow = null; clearVoiceQueue(); V.stop(); }
+// Stop everything: what's speaking (the player is killed), a summary still being written, queued items
+function hush() { cancelSummaries(); voiceGen++; voiceNow = null; narrator.clear(); V.stop(); }
 function cancelSummaries() { voiceAbort.abort(); voiceAbort = new AbortController(); }
 // Muting takes effect at once however it's done (the hub's m or settings, or ui.json edited): checked every
 // 500 ms while anything is speaking, written or queued
 setInterval(() => {
-  if (!(V.speaking() || summarizing > 0 || voicePending() > 0) || V.settings().on) return;
+  if (!(V.speaking() || summarizing > 0 || narrator.pending() > 0) || V.settings().on) return;
   if (V.speaking() && !V.silenceIfMuted()) return; // (the settings screen's forced voice test plays on)
-  cancelSummaries(); voiceGen++; voiceNow = null; clearVoiceQueue();
+  cancelSummaries(); voiceGen++; voiceNow = null; narrator.clear();
 }, 500).unref();
 onCommanderReply((id, message) => {
   const vs = V.settings();
   if (S.listSessions().find((s) => s.id === id)?.mode !== "axa" || !vs.on) return;
-  planned((signal) => spokenReply(safe(message), { more: vs.moreHint, signal }));
+  planned((signal) => spokenReply(safe(message), { more: vs.moreHint, signal }), { kind: "reply", key: "reply", session: id, name: "AXA" });
 });
-// notifications: one is said as it is; a batch, or one long one (the daily brief), is summarised the same way
-function speakNotes(text, items) {
-  const long = notesNeedSummary(text, items);
-  if (!long || summaryMode() !== "model") return planned(async () => ({ text: V.toSpeech(safe(text), { more: false }), how: "short" }));
-  const md = items.map((n) => `- ${n.title}${n.body ? `: ${n.body}` : ""}`).join("\n");
-  return planned(async (signal) => {
-    const r = await spokenReply(safe(md), { mode: "model", signal });
-    return r.how === "summary" ? r : { text: items.length > 1 ? V.toSpeech(safe(text), { more: false }) : r.text, how: "fallback" };
-  });
+// the daily brief: one long notification, always summarised (when summaries are on)
+function speakBrief(n) {
+  const text = `${n.title}${n.body ? `: ${n.body}` : ""}`;
+  if (!notesNeedSummary(text, [n]) || summaryMode() !== "model") return narrator.add(noteItem(n));
+  return planned((signal) => spokenReply(safe(text), { mode: "model", signal }), { kind: "brief", name: "axa" });
 }
 
 // ---------- http ----------

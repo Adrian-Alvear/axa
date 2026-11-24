@@ -113,6 +113,12 @@ export function speak(text, opts = {}) {
   if (!String(text || "").trim()) return Promise.resolve(null);
   const me = newJob();
   me.forced = force === true;
+  // between(): asked between sentences, true = stop there (the narrator: a P0 is waiting, or this went stale);
+  // onStart(): called once, when the first audio starts (time to first audio); intro: an earcon played first,
+  // while the first sentence is being made
+  me.between = typeof rest.between === "function" ? rest.between : null;
+  me.onStart = typeof rest.onStart === "function" ? rest.onStart : null;
+  me.intro = rest.intro || null;
   current = me;
   return speakWith(String(text), s, { kokoro: kokoroSpeak, system: systemSpeak, log, job: me })
     .catch(() => null).finally(() => { if (current === me) current = null; });
@@ -150,7 +156,10 @@ function systemSpeak(text, s, job) {
       // removing the file is how the Windows side learns to stop
       const kill = () => { try { unlinkSync(file); } catch {} try { child.kill(); } catch {} if (b.name === "spd-say") spawnSync("spd-say", ["-C"], { stdio: "ignore" }); };
       job.kills.add(kill);
-      const end = (code) => { job.kills.delete(kill); try { unlinkSync(file); } catch {} done(code); };
+      // no sentences to wait for here: asked to yield (a P0 is waiting), it stops where it is
+      const poll = job.between ? setInterval(() => { if (job.between()) kill(); }, 250) : null;
+      try { job.onStart?.(); } catch {}
+      const end = (code) => { if (poll) clearInterval(poll); job.kills.delete(kill); try { unlinkSync(file); } catch {} done(code); };
       child.on("error", () => end(null));
       child.on("close", (code) => end(code));
     } catch { done(null); }
@@ -234,7 +243,9 @@ export const chunkTimeout = (chunk, cli = false) => 4000 + 40 * String(chunk).le
 //   play({ out }, i) -> Promise (resolves when that chunk has been heard)
 // Chunk i+1 is made while chunk i plays. A chunk that fails is tried once more, then skipped with a log line.
 // job.stopped (Esc, mute) ends it: nothing more is made or played. Resolves to the number of chunks played.
-export async function speakChunks(chunks, { synth, play, log = () => {}, job = newJob(), timeoutOf = chunkTimeout, cleanup = () => {} }) {
+// between() (optional) is asked after each sentence: true stops there, cleanly (nothing is cut mid-word).
+// onStart() is called once, as the first sentence starts playing.
+export async function speakChunks(chunks, { synth, play, log = () => {}, job = newJob(), timeoutOf = chunkTimeout, cleanup = () => {}, between = null, onStart = null }) {
   const make = async (i) => {
     for (let attempt = 0; attempt < 2; attempt++) {
       if (job.stopped) return null;
@@ -252,9 +263,14 @@ export async function speakChunks(chunks, { synth, play, log = () => {}, job = n
     if (job.stopped) { if (wav) cleanup(wav); return played; }
     next = i + 1 < chunks.length ? make(i + 1) : null;
     if (!wav) continue;
+    if (!played && onStart) { try { onStart(); } catch {} onStart = null; }
     try { await play(wav, i); if (!job.stopped) played++; } catch (e) { if (job.stopped) { cleanup(wav); return played; } log(`Kokoro: couldn't play sentence ${i + 1} (${e.message})`); }
     cleanup(wav);
     if (job.stopped) { const w = await next?.catch(() => null); if (w) cleanup(w); return played; }
+    // a sentence boundary: give way if asked (the rest isn't made or played)
+    let yieldNow = false;
+    if (next && between) { try { yieldNow = !!between(); } catch {} }
+    if (yieldNow) { job.yielded = true; const w = await next.catch(() => null); if (w) cleanup(w); return played; }
   }
   return played;
 }
@@ -304,7 +320,7 @@ async function kokoroSpeak(text, s, job) {
   }
   const player = await wavPlayer(job, temp);
   try {
-    return await speakChunks(chunks, { synth, play: (w) => player.play(w.out), log, job, timeoutOf: (c) => chunkTimeout(c.text, st.mode !== "resident"), cleanup: (w) => { try { unlinkSync(w.out); } catch {} } });
+    return await speakChunks(chunks, { synth, play: (w) => player.play(w.out), log, job, timeoutOf: (c) => chunkTimeout(c.text, st.mode !== "resident"), cleanup: (w) => { try { unlinkSync(w.out); } catch {} }, between: job.between, onStart: job.onStart });
   } finally {
     player.close();
     if (extraLexicon) try { unlinkSync(extraLexicon); } catch {}

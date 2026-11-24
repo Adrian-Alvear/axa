@@ -4,6 +4,7 @@
 // here makes a sound.
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { createNarrator } from "../src/core/narrator.mjs";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -52,25 +53,21 @@ test("every speaking path goes through speak(); only the voice test forces it", 
 
 test("stop and mute clear everything: the player, a summary being written, queued notifications", () => {
   const s = src("src/core/server.mjs");
-  assert.match(s, /function hush\(\) \{ cancelSummaries\(\); voiceGen\+\+; voiceNow = null; clearVoiceQueue\(\); V\.stop\(\); \}/);
+  assert.match(s, /function hush\(\) \{ cancelSummaries\(\); voiceGen\+\+; voiceNow = null; narrator\.clear\(\); V\.stop\(\); \}/);
   assert.match(s, /\["POST", \/\^\\\/api\\\/voice\\\/stop\$\/, \(\) => \{ hush\(\);/);
   // muted however it's done (ui.json edited too): checked while anything speaks, is written or queued
-  assert.match(s, /if \(!\(V\.speaking\(\) \|\| summarizing > 0 \|\| voicePending\(\) > 0\) \|\| V\.settings\(\)\.on\) return;/);
+  assert.match(s, /if \(!\(V\.speaking\(\) \|\| summarizing > 0 \|\| narrator\.pending\(\) > 0\) \|\| V\.settings\(\)\.on\) return;/);
   // the hub's m and the settings switch stop it first
   assert.match(src("src/tui/app.mjs"), /function toggleVoice\(\) \{\n\s*stopVoice\(\);/);
-  // a cleared queue says nothing when its timer fires
-  const said = [], timers = [];
-  let t = 0;
-  const q = N.createVoiceQueue({ now: () => t, say: (x) => said.push(x), setTimer: (fn) => { timers.push(fn); return 1; } });
-  q.add({ title: "a", body: "" });
-  q.add({ title: "b", body: "" }); q.add({ title: "c", body: "" });
+  // a cleared queue says nothing later
+  let t = 0; const said = [], timers = [];
+  const q = createNarrator({ now: () => t, speak: (x) => { said.push(x); return new Promise(() => {}); }, setTimer: (fn) => { timers.push(fn); return 1; }, clearTimer: () => {} });
+  q.add({ kind: "done", session: "a", text: "a" }); q.add({ kind: "done", session: "b", text: "b" });
   assert.equal(q.pending(), 2);
   q.clear();
   assert.equal(q.pending(), 0);
   t = 30_000; timers.shift()();
-  assert.deepEqual(said, ["a."]);
-  assert.equal(typeof N.clearVoiceQueue, "function");
-  assert.equal(N.voicePending(), 0);
+  assert.deepEqual(said, []);
 });
 
 test("npm run check: every source file, both suites, a PASS/FAIL table; workers are pointed at it", async () => {

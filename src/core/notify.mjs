@@ -7,7 +7,7 @@
 // Each item: { id, at, kind, session, project, title, body, needsUser }. The last 200 are kept in
 // ~/.axa/notifications.jsonl (only the daemon writes it). The same state of the same session again within
 // 60 s is dropped. Each new item goes to: the hub (GET /api/notifications, the bell, the commander chat's
-// "⚙ notice" lines), the voice (when it's on; rate-limited) and a desktop notification.
+// "⚙ notice" lines), the voice (when it's on: the narrator, narrator.mjs) and a desktop notification.
 // Settings in ~/.axa/ui.json "notify": { "voice": "all" | "needs-you" | "off" (default needs-you: what
 // needs you and finished work), "desktop": "all" | "needs-you" | "off" (default needs-you), "brief_at" }.
 import { appendFileSync, existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
@@ -19,7 +19,6 @@ import { clip, safe } from "./text.mjs";
 
 export const KEEP = 200;
 export const DEDUPE_MS = 60_000;
-export const VOICE_GAP_MS = 20_000;
 const DONE_MS = Number(process.env.AXA_DONE_MS) || 6_000; // a "done" must hold this long (verify-gate bounce)
 export const file = () => join(home, "notifications.jsonl");
 
@@ -117,32 +116,6 @@ export function createNotifier({ now = () => Date.now(), load = () => [], save =
   return { push, tick, event: (e) => push(fromEvent(e)), list: () => [...items], clear: () => { items = []; try { save(null, items); } catch {} } };
 }
 
-// ---------- the voice: one notification per 20 s at most; the rest batched ----------
-// say(text): speaks it (the caller checks the voice is on and idle); returns false if it couldn't now.
-export function createVoiceQueue({ now = () => Date.now(), say, gap = VOICE_GAP_MS, setTimer = setTimeout } = {}) {
-  let lastAt = -Infinity, queue = [], timer = null;
-  const spoken = (n) => `${n.title}${n.body ? `: ${n.body}` : ""}`;
-  function flush() {
-    timer = null;
-    if (!queue.length) return;
-    const q = queue; queue = [];
-    // the one that needs you first; the others are counted
-    const first = q.find((n) => n.needsUser) || q[0], rest = q.length - 1;
-    const text = `${spoken(first)}.${rest ? ` ${rest === 1 ? "One more update" : `${rest} more updates`} on screen.` : ""}`;
-    // busy (a reply is being read): try again in a moment
-    if (say(text, { first, items: q }) === false) { queue = q.concat(queue); return schedule(2000); }
-    lastAt = now();
-  }
-  function schedule(min = 0) { if (!timer) timer = setTimer(flush, Math.max(min, lastAt + gap - now())); }
-  return {
-    add(n) { queue.push(n); if (now() - lastAt >= gap && !timer) flush(); else schedule(); },
-    pending: () => queue.length,
-    // muted or stopped: nothing queued is said later (a pending timer finds the queue empty)
-    clear() { queue = []; },
-    text: spoken,
-  };
-}
-
 // ---------- desktop notifications: the command for each OS (pure: unit-tested, never run in tests) ----------
 const b64 = (s) => Buffer.from(String(s), "utf8").toString("base64");
 // Windows (and WSL): a toast through the built-in Windows.UI.Notifications API (PowerShell's app id), a tray
@@ -204,19 +177,15 @@ function saveFile(item, all) {
   lines = all.length;
 }
 
-// voice: set by the daemon (server.mjs) to { on(), busy(), speak(item(s), text) }
-export const voiceHooks = { on: () => false, busy: () => false, speak: () => {} };
-const voiceQ = createVoiceQueue({
-  say: (text, { items }) => { if (voiceHooks.busy()) return false; voiceHooks.speak(text, items); },
-});
-export const clearVoiceQueue = () => voiceQ.clear();
-export const voicePending = () => voiceQ.pending();
+// voice: set by the daemon (server.mjs) to { on(), add(item) }: the narrator (narrator.mjs) decides what is
+// said and when (priorities, coalescing, stale items dropped, bursts merged into one line)
+export const voiceHooks = { on: () => false, add: () => {} };
 export const notifier = createNotifier({
   load: () => { const l = loadFile(); lines = l.length; return l; },
   save: saveFile,
   deliver: (n) => {
     const st = notifySettings();
-    if (voiceHooks.on() && voiceWants(st.voice, n)) voiceQ.add(n);
+    if (voiceHooks.on() && voiceWants(st.voice, n)) voiceHooks.add(n);
     // (never from a test run: `node --test` sets NODE_TEST_CONTEXT in every test process)
     if (desktopWants(st.desktop, n) && !process.env.NODE_TEST_CONTEXT) showDesktop(n.title, n.body);
   },
