@@ -32,7 +32,7 @@ export const KIND_PRIORITY = {
   routine: P3,
 };
 // a session's state: one slot per session, a newer state replaces the older one
-const STATE_KINDS = new Set(["waiting", "needs_trust", "failed", "limited", "exited", "done", "stuck"]);
+const STATE_KINDS = new Set(["waiting", "needs_trust", "failed", "limited", "exited", "done", "stuck", "escalate"]);
 
 const NUM = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"];
 const cap = (s) => (s ? s[0].toUpperCase() + s.slice(1) : s);
@@ -85,6 +85,9 @@ export function createNarrator({ now = Date.now, speak, earcon = () => {}, isCur
     if (no) { drop(it, no); return false; }
     const prev = said.get(slot(it));
     if (prev && prev.text === it.text && t - prev.at < REPEAT_MS) { drop(it, "already said"); return false; }
+    // the approval heads-up (escalate) already told you: Claude Code's own "needs you" for it adds nothing
+    const headsUp = (x) => x && x.kind === "escalate" && t - x.at < REPEAT_MS;
+    if (it.kind === "waiting" && (headsUp(prev) || pending.some((p) => slot(p) === slot(it) && p.kind === "escalate"))) { drop(it, "heads-up already said"); return false; }
     for (const p of pending) if (slot(p) === slot(it)) drop(p, "replaced");
     pending = pending.filter((p) => slot(p) !== slot(it)).concat(it);
     // a P0, or a solo item (a reply: said at once, alone), doesn't wait for a burst to settle
@@ -122,7 +125,7 @@ export function createNarrator({ now = Date.now, speak, earcon = () => {}, isCur
     const text = words.length === 1 ? words[0].text : mergeLine(words);
     const me = { items: words, priority: Math.min(...words.map((w) => w.priority)), at: t };
     current = me;
-    for (const w of words) { lastAt[w.priority] = t; said.set(slot(w), { at: t, text: w.text }); }
+    for (const w of words) { lastAt[w.priority] = t; said.set(slot(w), { at: t, text: w.text, kind: w.kind }); }
     log({ act: "spoke", priority: me.priority, kinds: words.map((w) => w.kind), sessions: words.map((w) => w.session), text, waited: t - Math.min(...words.map((w) => w.at)) });
     const done = () => { if (current === me) current = null; pump(); };
     try { Promise.resolve(speak(text, { items: words, priority: me.priority, shouldYield: () => shouldYield(me) })).then(done, done); } catch { done(); }

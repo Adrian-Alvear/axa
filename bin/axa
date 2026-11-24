@@ -24,6 +24,7 @@ const USAGE = `AXA: one place for all your Claude Code sessions, chats and agent
   axa review --reset-milestone [path]   forget that repo+branch's stored milestone (the next review's base)
   axa stop [--all]     stop the background daemon (--all also ends every session)
   axa restart          restart the daemon (sessions keep running)
+  axa whatsup          what every session is doing now, in a few sentences (spoken when the voice is on)
   axa brief [HH:MM|off|now]   the daily brief: show it, set its time, turn it off, or get one right away
   axa trust <path>     trust a project (its git repo root) for Claude Code, so sessions AXA starts there
                        don't stop on the folder-trust prompt. Your decision: only you run it, never a session
@@ -164,6 +165,13 @@ switch (cmd) {
       const list = await api(`/api/projects${flags.has("--fresh") ? "?fresh=1" : ""}`);
       console.log(flags.has("--json") ? JSON.stringify(list, null, 2) : projectsText(list).replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g, ""));
     } catch (e) { console.error(`axa projects: ${e.message}`); process.exit(1); }
+    break;
+  }
+  case "whatsup": {
+    // every session's state in 1-3 sentences; the daemon also says it when the voice is on
+    await daemon();
+    try { const r = await api("/api/whatsup", { method: "POST" }); console.log(r.text); }
+    catch (e) { console.error(`axa whatsup: ${e.message}`); process.exit(1); }
     break;
   }
   case "brief": {

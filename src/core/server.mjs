@@ -16,9 +16,11 @@ import { getMilestoneReview, listMilestoneReviews, startMilestone } from "./mile
 import { listAgents, listProjects, readRoster } from "./catalog.mjs";
 import { chatMessages, findChat, listChats } from "./claude-data.mjs";
 import { safe } from "./text.mjs";
-import { notifier, notifySettings, voiceHooks } from "./notify.mjs";
+import { desktopWants, notifier, notifySettings, showDesktop, voiceHooks } from "./notify.mjs";
 import { createNarrator, lineFor, livenessLine, logLine } from "./narrator.mjs";
 import { earconFile, earconFor } from "./earcons.mjs";
+import { createTracker, fileStore } from "./durations.mjs";
+import { admitItem, escalationLine, isEscalation, whatsUp } from "./anticipate.mjs";
 import { briefNotification, briefTick, reviewProjects } from "./projects.mjs";
 import { MORE_DETAIL, firstLine, notesNeedSummary, prefetchSummary, spokenReply, summaryMode } from "./summary.mjs";
 import { readMilestones } from "./milestone.mjs";
@@ -63,6 +65,7 @@ let summarizing = 0, voiceGen = 0, voiceNow = null, voiceAbort = new AbortContro
 const EXPECT = { done: ["done"], waiting: ["waiting", "needs_trust"], needs_trust: ["needs_trust", "waiting"], failed: ["failed"], limited: ["limited"], exited: ["exited"], stuck: ["stuck"] };
 function stillTrue(it) {
   if (it.gen != null && it.gen !== voiceGen) return false; // Esc, mute, or a newer reply since
+  if (it.toolUse && !tracker.running(it.toolUse)) return false; // the command it was about has finished
   if (!it.session || !it.expect) return true;
   const s = S.listSessions().find((x) => x.id === it.session);
   return s ? it.expect.includes(s.status) : it.kind === "exited";
@@ -81,6 +84,12 @@ const narrator = createNarrator({
   },
   earcon: (name) => V.playEarcon(name),
   isCurrent: stillTrue,
+  // verbosity, quiet hours (a P0 becomes a desktop toast, unless the desktop setting already shows it), typing
+  admit: (it) => {
+    const vs = V.settings(), why = admitItem(it, { verbosity: vs.verbosity, quiet: vs.quiet, typingAt: it.session ? S.lastInputAt(it.session) : 0 });
+    if (why && it.priority === 0 && why.startsWith("quiet hours") && !desktopWants(notifySettings().desktop, { needsUser: true })) showDesktop("AXA", it.text);
+    return why;
+  },
   log: (e) => console.log(`[${new Date().toISOString()}] ${logLine(e)}`),
 });
 // a notification as a narrator item
@@ -132,6 +141,24 @@ onCommanderReply((id, message, t0) => {
     if (text) narrator.add({ ...item, text, how: r.how === "summary" ? "summary" : "rest", gen, t0: Date.now() });
   }).finally(() => { summarizing--; });
 });
+// Anticipating (anticipate.mjs, durations.mjs): the approval heads-up the moment AXA's approver (or the policy)
+// sends a step to you; "usually about a minute" when a command that usually takes a while starts, and "taking
+// longer than usual" once; the turn's ETA for "what's up". Durations are learned into <AXA home>/durations.json.
+const sessionName = (id) => S.listSessions().find((x) => x.id === id)?.name || "a session";
+const tracker = createTracker({ store: fileStore(), nameOf: sessionName, say: (it) => V.settings().on && narrator.add({ ...it, name: sessionName(it.session), text: V.toSpeech(safe(it.text), { more: false }), expect: ["working"] }) });
+onLine((line) => {
+  let e; try { e = JSON.parse(line); } catch { return; }
+  try { tracker.event(e); } catch {}
+  if (isEscalation(e) && V.settings().on) {
+    const name = sessionName(e.terminal);
+    narrator.add({ kind: "escalate", session: e.terminal, name, t0: e.ts, expect: ["working", "waiting", "needs_trust"], text: V.toSpeech(safe(escalationLine(e, name)), { more: false }) });
+  }
+});
+setInterval(() => { try { tracker.tick(); } catch {} }, 5_000).unref();
+// "what's up": every session in 1-3 sentences, said at once when the voice is on (you asked: verbosity doesn't
+// hold it back)
+const whatsUpNow = () => whatsUp(S.listSessions(), { etaOf: (s) => tracker.eta(s.id) });
+
 // Liveness: a session you gave a /goal, working > 3 min with nothing said about it: one short line, at most
 // every ~5 min (narrator.livenessLine), at verbosity normal or chatty
 const goals = new Set(), workingSince = new Map();
@@ -238,6 +265,11 @@ const routes = [
     return [200, startMilestone({ cwd, base: b.base || undefined, goal: b.goal, source: b.source === "cli" ? "cli" : "commander" })];
   }],
   // the daily brief, now (`axa brief now`): doesn't change when the daily one goes out
+  ["POST", /^\/api\/whatsup$/, () => {
+    const text = whatsUpNow(), spoken = V.settings().on;
+    if (spoken) narrator.add({ kind: "whatsup", key: "whatsup", solo: true, asked: true, text: V.toSpeech(safe(text), { more: false }) });
+    return [200, { text, spoken }];
+  }],
   ["POST", /^\/api\/brief$/, async () => { const n = notifier.push(await briefNotification(() => projectReview(true))); return [200, n || { error: "a brief was just sent" }]; }],
   // notifications for you (notify.mjs), oldest first; since: only those after that time (ms)
   ["GET", /^\/api\/notifications$/, (m, req, u) => { const since = Number(u.searchParams.get("since")) || 0, all = notifier.list(); return [200, { items: all.filter((n) => n.at > since).slice(-Math.min(200, Number(u.searchParams.get("limit")) || 200)), total: all.length }]; }],

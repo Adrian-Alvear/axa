@@ -48,6 +48,8 @@ process.stdin.on("end", () => {
       tool: e.tool_name,
       tool_use_id: e.tool_use_id,
       summary: e.tool_name ? summarize(e.tool_name, input) : undefined,
+      // a Bash command itself (secrets blanked): how long "npm test" usually takes is learned from it (durations.mjs)
+      command: e.tool_name === "Bash" && e.hook_event_name === "PreToolUse" ? clip(input.command, 300) : undefined,
       skill: e.tool_name === "Skill" ? input.skill : undefined,
       subagent_type: ["Agent", "Task"].includes(e.tool_name) ? input.subagent_type || "general-purpose" : undefined,
       prompt: logText ? clip(e.prompt || (["Agent", "Task"].includes(e.tool_name) ? input.prompt : undefined), 8000) : undefined, // room for a whole /goal (4000) plus context

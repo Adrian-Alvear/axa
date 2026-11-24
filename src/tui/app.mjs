@@ -60,6 +60,9 @@ export function projectChip(sessions = [], open = 0, idleFor = "") {
 }
 // spoken summaries (summary.mjs): ui.json "voiceSummary"
 const SUMMARY_HINT = { model: "a short summary (a fast model writes it)", "first-paragraph": "their first paragraph", full: "all of it" };
+// the narrator (narrator.mjs, anticipate.mjs): ui.json "voiceVerbosity", "voiceEarcons", "voiceQuiet"
+const VERBOSITY_HINT = { normal: "normal: what needs you, finished work, heads-ups", quiet: "quiet: only what needs you", chatty: "chatty: all progress too" };
+export const QUIET_HOURS = ["off", "22:00-07:00", "23:00-08:00", "21:00-07:00"];
 const NOTIFY_HINT = { "needs-you": "what needs you (and finished work, spoken)", all: "everything", off: "off" };
 const PANELS = ["control", "sessions", "chats", "agents", "projects"];
 const TITLES = { control: "Control", sessions: "Sessions", chats: "Chats", agents: "Agents", projects: "Projects" };
@@ -453,7 +456,7 @@ export async function runTui() {
     footHits = [];
     if (screen === "live") return null; // a session keeps every row; notices show in its header
     if (toast && Date.now() < toast.until) return line([[` ${toast.text}`, "text"]], W, [], "bar");
-    const per = { control: focusInput ? [["⏎", "send to the commander"], ["Esc", "stop typing"]] : zone === "chats" ? [["⏎", "resume chat"], ["↑↓", "pick"], ["←", "back to the map"], [":", "talk to AXA"]] : [["⏎", "open"], ["↑↓", "pick session"], ["→", "chats"], [":", "talk to AXA"], ["PgUp", "AXA's messages"], ["y/x", "answer"], ["d", "changes"], ...(W >= 170 ? [["drag", "copy"]] : [])], sessions: [["⏎", "open"], ["d", "changes"], ["g", "goal"], ["v", "checks"], ["r", "rename"], ["X", "close"]], chats: [["⏎", "resume"], ["/", "search"]], agents: [["⏎", "give a task"], ["/", "search"]], projects: [["⏎", "open"], ["g", "goal"], ["r", "review"], ["h", "handoff"], ["N", "new"], ["w", "worktree"], ["s", "shell"]] }[PANELS[focus]];
+    const per = { control: focusInput ? [["⏎", "send to the commander"], ["Esc", "stop typing"]] : zone === "chats" ? [["⏎", "resume chat"], ["↑↓", "pick"], ["←", "back to the map"], [":", "talk to AXA"]] : [["⏎", "open"], ["↑↓", "pick session"], ["→", "chats"], [":", "talk to AXA"], ["PgUp", "AXA's messages"], ["y/x", "answer"], ["w", "what's up"], ["d", "changes"], ...(W >= 170 ? [["drag", "copy"]] : [])], sessions: [["⏎", "open"], ["d", "changes"], ["g", "goal"], ["v", "checks"], ["r", "rename"], ["X", "close"]], chats: [["⏎", "resume"], ["/", "search"]], agents: [["⏎", "give a task"], ["/", "search"]], projects: [["⏎", "open"], ["g", "goal"], ["r", "review"], ["h", "handoff"], ["N", "new"], ["w", "worktree"], ["s", "shell"]] }[PANELS[focus]];
     const all = [["Tab", "switch"], ["a", "AXA"], ["n", "notifications"], ["N", "new"], ["?", "help"], ["q", "quit"]];
     const right = all.flatMap(([k, t], j) => [[` ${k} `, "keycap"], [j === all.length - 1 ? ` ${t}` : ` ${t}  `, "barDim"]]);
     // the panel's own hints, whole ones only, in the room the right side leaves (see line(): right + 1 gap)
@@ -816,6 +819,9 @@ export async function runTui() {
       { label: "Say when there's more on screen", hint: cfg.voiceMoreHint === false ? "off" : "on", value: "voiceMoreHint" },
       { label: "Test the voice", hint: "says \"AXA voice check.\"", value: "voiceTest" },
       { label: "Long replies are spoken as", hint: SUMMARY_HINT[cfg.voiceSummary] || SUMMARY_HINT.model, value: "voiceSummary" },
+      { label: "How much the voice says", hint: VERBOSITY_HINT[cfg.voiceVerbosity] || VERBOSITY_HINT.normal, value: "voiceVerbosity" },
+      { label: "Earcons (a tone before the words)", hint: cfg.voiceEarcons === "off" ? "off" : "on", value: "voiceEarcons" },
+      { label: "Quiet hours (no voice; needs-you as a toast)", hint: cfg.voiceQuiet || "off", value: "voiceQuiet" },
       { label: "Speak notifications", hint: NOTIFY_HINT[cfg.notify?.voice || "needs-you"], value: "notifyVoice" },
       { label: "Desktop notifications", hint: NOTIFY_HINT[cfg.notify?.desktop || "needs-you"], value: "notifyDesktop" },
       { label: "Daily brief (all projects, once a day)", hint: cfg.notify?.brief_at || "off", value: "brief" },
@@ -830,6 +836,9 @@ export async function runTui() {
       if (o.value === "voice") { if (voiceEnv) flash(`voice is forced ${voiceEnv} by AXA_VOICE`); else { cfg.voice = voiceOn() ? "off" : "on"; if (cfg.voice === "off") stopVoice(); } }
       if (o.value === "voiceSummary") cfg.voiceSummary = cycle(Object.keys(SUMMARY_HINT), SUMMARY_HINT[cfg.voiceSummary] ? cfg.voiceSummary : "model");
       if (o.value === "brief") cfg.notify = nextBrief(cfg.notify);
+      if (o.value === "voiceVerbosity") cfg.voiceVerbosity = cycle(Object.keys(VERBOSITY_HINT), VERBOSITY_HINT[cfg.voiceVerbosity] ? cfg.voiceVerbosity : "normal");
+      if (o.value === "voiceEarcons") cfg.voiceEarcons = cfg.voiceEarcons === "off" ? "on" : "off";
+      if (o.value === "voiceQuiet") { const v = cycle(QUIET_HOURS, cfg.voiceQuiet || "off"); if (v === "off") delete cfg.voiceQuiet; else cfg.voiceQuiet = v; }
       if (o.value === "notifyVoice") cfg.notify = { ...cfg.notify, voice: cycle(NOTIFY_LEVELS, cfg.notify?.voice || "needs-you") };
       if (o.value === "notifyDesktop") cfg.notify = { ...cfg.notify, desktop: cycle(NOTIFY_LEVELS, cfg.notify?.desktop || "needs-you") };
       if (o.value === "voiceMoreHint") cfg.voiceMoreHint = cfg.voiceMoreHint === false;
@@ -855,6 +864,7 @@ export async function runTui() {
       { text: "  /   filter the panel     y / x   answer the prompt in the yellow bar   !  go to it" },
       { text: "  o   web console          ,  settings             q   quit (sessions keep running)" },
       { text: "  Control: m   voice on/off (AXA reads its replies aloud) · Esc stops it speaking" },
+      { text: "  Control: w   what's up: every session in a few sentences (said aloud when the voice is on)" },
       { text: "" },
       { text: "Mouse", role: "head" },
       { text: "  Control: click the commander's box (or its conversation) to talk to AXA · ⏎ send sends" },
@@ -943,6 +953,10 @@ export async function runTui() {
     try { const s = await call("/api/terms", { method: "POST", body: { mode: "axa", cwd, cols: W, rows: H - 1 } }); pendingSend = { id: s.id, text }; flash("starting the commander; it gets your message when it's ready", 6000); await pollSessions(); }
     catch (e) { flash(`couldn't start the commander: ${e.message}`); }
   }
+  // "what's up": every session in a few sentences, shown here and said when the voice is on
+  function whatsUpNow() {
+    call("/api/whatsup", { method: "POST" }).then((r) => flash(r.text, 9000), (e) => flash(`couldn't ask: ${e.message}`));
+  }
   function controlKey(k) {
     if (focusInput) {
       if (k === "\x1b[5~") { cmdScroll += 8; return true; }
@@ -974,6 +988,7 @@ export async function runTui() {
     if (k === ESC) stopVoice(); // Esc hushes AXA's voice
     if (zone === "chats" && k === ESC) { zone = "map"; return true; }
     if (k === "m") { toggleVoice(); return true; }
+    if (k === "w") { whatsUpNow(); return true; }
     if (cur && { d: 1, g: 1, v: 1, r: 1, X: 1 }[k]) { ({ d: showDiff, g: giveGoal, v: runVerify, r: rename, X: closeSession })[k](cur); return true; }
     return false;
   }

@@ -36,6 +36,8 @@ export function settings() {
     earcons: cfg.voiceEarcons !== "off",
     // how much is said (narrator.mjs): "quiet" (only what needs you) | "normal" (default) | "chatty" (all progress)
     verbosity: VERBOSITY.includes(cfg.voiceVerbosity) ? cfg.voiceVerbosity : "normal",
+    // quiet hours ("22:00-07:00"): nothing is said; what needs you becomes a desktop toast. Default off.
+    quiet: /^([01]\d|2[0-3]):[0-5]\d-([01]\d|2[0-3]):[0-5]\d$/.test(cfg.voiceQuiet || "") ? cfg.voiceQuiet : null,
     engineChoice, engine: pickEngine(engineChoice, installed),
     // ui.json "voiceFallback": what speaks when Kokoro can't start at all: "system" or "silent" (default: silent
     // when Kokoro is installed, the system voice when it isn't). Never used for a slow sentence.
@@ -236,8 +238,10 @@ export function logOov(file, oov) {
 // a space). Chunk 1 plays while chunk 2 is made, so the voice starts in about a second and no single synthesis
 // is long. Each chunk gets its own timeout, scaled to its length.
 export const CHUNK = 200;
-// the first chunk is kept short (its first sentence, or two short ones): it's what you wait for
-export const FIRST_CHUNK = 80;
+// the first chunk is its first sentence alone (it's what you wait for, and its end is the first point where a
+// P0 can cut in); only a very short one ("Done.", under FIRST_ALONE characters) takes the next with it, up to
+// FIRST_CHUNK in all
+export const FIRST_CHUNK = 80, FIRST_ALONE = 25;
 export function chunkText(text, max = CHUNK, first = max) {
   const t = String(text || "").replace(/\s+/g, " ").trim();
   if (!t) return [];
@@ -254,7 +258,7 @@ export function chunkText(text, max = CHUNK, first = max) {
   }
   const out = [];
   for (const p of parts) {
-    if (out.length && out[out.length - 1].length + 1 + p.length <= (out.length === 1 ? first : max)) out[out.length - 1] += " " + p;
+    if (out.length && out[out.length - 1].length + 1 + p.length <= (out.length === 1 ? (first < max && out[0].length >= FIRST_ALONE ? 0 : first) : max)) out[out.length - 1] += " " + p;
     else out.push(p);
   }
   return out;

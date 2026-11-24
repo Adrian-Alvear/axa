@@ -79,7 +79,24 @@ the summary fails or takes too long, it says the first sentences that fit (never
 "There's more detail in the chat."; a question for you is always said. `"voiceSummary"` in `ui.json` (or
 `,` settings): `model` (default), `first-paragraph` (the old short version) or `full`. Summaries are cached by
 reply, the hub never waits for one, the status bar shows "🔊 speaking summary", and `Esc` on Control stops it
-(also one still being written). Batches of notifications and the daily brief are summarised the same way.
+(also one still being written). The daily brief is summarised the same way.
+
+The voice is a **narrator** that stays current (`src/core/narrator.mjs`): one queue by priority (what needs
+you, failed, usage limits, exits first; finished work and replies next; progress last), a newer state of a
+session replaces its older one still waiting, and anything stale or no longer true (you already answered,
+the session moved on) is dropped, never said late. What needs you cuts in after the sentence being spoken.
+Events that arrive together are said as one line from templates ("Two sessions finished, axa and feed. Feed
+needs you."). A long reply's first sentence is said at once and its summary follows (it starts as the turn
+ends); a short tone (an **earcon**: a chime for done, two beeps for needs-you, a falling tone for failed) plays
+while the first words are made. It also **anticipates**: when AXA's approver sends a step to you it says so
+right away ("feed is about to need you: it wants to push to main"); it learns how long commands usually take
+per project (`durations.json` in AXA's folder) and says "feed is running the tests, usually about a minute",
+then "taking longer than usual" once; a session you gave a `/goal` gets a "still working" line every ~5 min.
+`w` on Control (or `axa whatsup`) says every session's state in a few sentences, with the turn's ETA when
+known. Settings (`,`, or `ui.json`): `"voiceVerbosity"` `quiet` (only what needs you) / `normal` (default) /
+`chatty` (all progress); `"voiceEarcons"` `on`/`off`; `"voiceQuiet"` e.g. `"22:00-07:00"` (nothing said; what
+needs you becomes a desktop toast). No progress chatter about a session you're typing in. Every line said or
+dropped, with why, and the time to first audio are in the daemon's log.
 **Kokoro speaks sentence by sentence:** a reply is cut into chunks of whole sentences (about 200 characters),
 the first plays while the next is made (so it starts in about a second), each chunk has its own timeout (4 s
 plus 40 ms per character), and a reply's new words are loaded once before its first sentence. A chunk that's
@@ -248,8 +265,8 @@ agents/ skills/      axa:builder / reviewer / researcher, the review gate's prom
   (`src/core/notify.mjs`; the last 200 in `~/.axa/notifications.jsonl`, repeats within 60 s dropped).
   You see them in the hub (the bell in the title bar counts the unread, `n` lists them, Enter goes to
   the session, `c` clears), as `⚙ notice` lines in the commander's chat (they cost it no tokens) and
-  at `GET /api/notifications`. With the voice on, what needs you and finished work are spoken, at most
-  one per 20 s (the rest as "3 more updates on screen"), and what needs you shows as a desktop
+  at `GET /api/notifications`. With the voice on, what needs you and finished work are spoken (by the
+  narrator: by priority, stale ones dropped, bursts as one line), and what needs you shows as a desktop
   notification (a Windows toast from WSL, `osascript` on macOS, `notify-send` on Linux). Settings
   (`,` in the hub, or `~/.axa/ui.json` `"notify": { "voice", "desktop" }`): `all`, `needs-you`
   (default) or `off`. The **daily brief** (`,` → Daily brief, or `axa brief 09:00` / `off`; `axa brief now`

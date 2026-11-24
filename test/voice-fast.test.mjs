@@ -86,6 +86,10 @@ test("the first chunk is short: the first sentence, not 200 characters of them",
   assert.ok(c[0].length <= FIRST_CHUNK, c[0]);
   assert.equal(c[0], "Done. The tests pass and the build is green on the branch.");
   assert.equal(c.join(" "), t);
+  // a first sentence of some length is alone: its end is where a P0 can cut in
+  assert.deepEqual(chunkText("Three sessions finished, axa, feed and docs. The review of api approved it.", 200, FIRST_CHUNK),
+    ["Three sessions finished, axa, feed and docs.", "The review of api approved it."]);
+  assert.deepEqual(chunkText("Three sessions finished, axa, feed and docs. The review of api approved it."), ["Three sessions finished, axa, feed and docs. The review of api approved it."], "(the default: 200-character chunks)");
 });
 
 test("liveness: after 3 min of work with nothing said, at most every 5 min, not when quiet", () => {
