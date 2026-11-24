@@ -177,6 +177,8 @@
   #diffbody .a { color: #8ff7d6; background: rgba(94,242,194,.07); display: inline-block; min-width: 100%; }
   #diffbody .d { color: #ff8a98; background: rgba(255,84,104,.07); display: inline-block; min-width: 100%; }
   #diffbody .h { color: var(--accent); } #diffbody .f { color: #e9fbff; font-weight: 600; } #diffbody .n { color: var(--dim); }
+  #diffbody [data-i] { cursor: pointer; } #diffbody [data-i]:hover { outline: 1px solid var(--line2); }
+  #diffbody .note { color: var(--amber, #ffba52); display: inline-block; min-width: 100%; }
 
   /* phone navigation: hidden on wide screens */
   #mnav { display: none; }
@@ -330,7 +332,7 @@
   <section id="feedwrap"><p class="title">Activity</p><div id="feed"></div></section>
 </aside>
 <div id="diffview" hidden><div id="diffbox" role="dialog" aria-modal="true" aria-labelledby="diffname">
-  <div id="diffhead"><b id="diffname"></b><span class="meta" id="diffmeta"></span><button id="diffterm">Open terminal</button><button id="diffclose" title="Close (Esc)">✕</button></div>
+  <div id="diffhead"><b id="diffname"></b><span class="meta" id="diffmeta"></span><button id="diffsend" hidden title="Send your comments to this session as its next task">Send comments</button><button id="diffterm">Open terminal</button><button id="diffclose" title="Close (Esc)">✕</button></div>
   <pre id="diffbody"></pre>
 </div></div>
 <nav id="mnav" aria-label="Sections">
@@ -1180,6 +1182,7 @@ async function showDiff(p) {
   $("diffname").textContent = p.name;
   $("diffmeta").innerHTML = gitHtml(p.git) || esc(p.cwd);
   $("diffbody").textContent = "Loading…";
+  $("diffsend").hidden = true; diffData = null;
   $("diffview").hidden = false;
   $("diffclose").focus();
   try {
@@ -1187,12 +1190,45 @@ async function showDiff(p) {
     if (diffFor !== p) return;
     if (!r.ok || d.error) { $("diffbody").textContent = d.error || "Couldn't read the changes"; return; }
     if (d.git) $("diffmeta").innerHTML = gitHtml(d.git);
-    const cls = (l) => l.startsWith("diff --git") ? "f" : l.startsWith("+++") || l.startsWith("---") || l.startsWith("index ") ? "n" : l.startsWith("@@") ? "h" : l.startsWith("+") ? "a" : l.startsWith("-") ? "d" : "";
-    const lines = (d.diff || "").split("\n").map((l) => { const c = cls(l); return c ? `<span class="${c}">${esc(l)}</span>` : esc(l); });
-    const extra = d.untracked_total ? `\n<span class="f">New files (${d.untracked_total})</span>\n${d.untracked.map((f) => `<span class="a">+ ${esc(f)}</span>`).join("\n")}${d.untracked_total > d.untracked.length ? "\n…" : ""}` : "";
-    $("diffbody").innerHTML = (d.diff ? lines.join("\n") : `<span class="n">No changes to tracked files.</span>`) + extra + (d.truncated ? `\n<span class="n">(cut: the diff is too long to show here)</span>` : "");
+    diffData = d; renderDiff();
   } catch { $("diffbody").textContent = "Couldn't read the changes"; }
 }
+// Comments on lines (click one): kept per session until sent; "Send comments" packs them into one message the
+// session gets as its next task (POST /api/terms/:id/comments: the daemon's safe send path; it shows in its chat)
+let diffData = null;
+const diffNotes = new Map(); // session id -> [{ file, line, old, code, text }]
+const notesFor = () => (diffFor ? (diffNotes.get(diffFor.id) || diffNotes.set(diffFor.id, []).get(diffFor.id)) : []);
+const CLS = { file: "f", meta: "n", hunk: "h", add: "a", del: "d", ctx: "" };
+function renderDiff() {
+  const d = diffData, notes = notesFor(), rows = d?.rows || [];
+  const same = (r) => (n) => n.file === r.file && n.line === r.line && !!n.old === !!r.old;
+  const html = rows.map((r, i) => {
+    const can = ["add", "del", "ctx"].includes(r.kind), c = CLS[r.kind];
+    const line = `<span${c ? ` class="${c}"` : ""}${can ? ` data-i="${i}" title="Click to comment on ${esc(r.file)}:${r.line}"` : ""}>${esc(r.text)}</span>`;
+    return line + (can ? notes.filter(same(r)).map((n) => `\n<span class="note">   » ${esc(n.text)}</span>`).join("") : "");
+  });
+  const extra = d.untracked_total ? `\n<span class="f">New files (${d.untracked_total})</span>\n${d.untracked.map((f) => `<span class="a">+ ${esc(f)}</span>`).join("\n")}${d.untracked_total > d.untracked.length ? "\n…" : ""}` : "";
+  $("diffbody").innerHTML = (d.diff ? html.join("\n") : `<span class="n">No changes to tracked files.</span>`) + extra + (d.truncated ? `\n<span class="n">(cut: the diff is too long to show here)</span>` : "");
+  $("diffsend").hidden = !notes.length;
+  $("diffsend").textContent = `Send ${notes.length} comment${notes.length === 1 ? "" : "s"}`;
+}
+$("diffbody").onclick = (ev) => {
+  const el = ev.target.closest("[data-i]");
+  if (!el || !diffData) return;
+  const r = diffData.rows[+el.dataset.i], text = prompt(`Comment on ${r.file}:${r.line}${r.old ? " (a removed line)" : ""}`);
+  if (!text || !text.trim()) return;
+  notesFor().push({ file: r.file, line: r.line, old: !!r.old, code: r.text.slice(0, 200), text: text.trim() });
+  renderDiff();
+};
+$("diffsend").onclick = async () => {
+  const p = diffFor, notes = notesFor();
+  if (!p || !notes.length) return;
+  const r = await fetch(`/api/terms/${p.id}/comments`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ comments: notes }) });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) { alert(`Not sent: ${j.error || r.status}`); return; }
+  notes.length = 0; renderDiff();
+  $("diffsend").hidden = false; $("diffsend").textContent = "Sent ✓"; setTimeout(() => renderDiff(), 2500);
+};
 const closeDiff = () => { $("diffview").hidden = true; diffFor = null; };
 $("diffclose").onclick = closeDiff;
 $("diffview").onclick = (ev) => { if (ev.target === $("diffview")) closeDiff(); };

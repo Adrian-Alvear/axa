@@ -18,6 +18,7 @@ import { sliceAnsi } from "./ansi.mjs";
 import { BRIEF_TIMES, IDLE_DAYS, ageText, gitLine, handoffPath } from "../core/projects.mjs";
 import { MODES, RECAP_IDLE_MS } from "../core/attention.mjs";
 import { usd } from "../core/usage.mjs";
+import { commentable } from "../core/diffcomments.mjs";
 import { LiveView } from "./live.mjs";
 import { agentDetail, agentName, axaStatusLine, controlRows, msgText, selectedText } from "./control.mjs";
 import { copyToClipboard, pasteFile, readClipboard } from "./clipboard.mjs";
@@ -834,14 +835,57 @@ export async function runTui() {
     if (c.open_in) { const s = data.sessions.find((x) => x.id === c.open_in); if (s) return openLive(s); }
     return start({ resume: c.id }, `"${cut(clean(c.title), 30)}"`);
   }
-  async function showDiff(s) {
-    try {
-      const d = await call(`/api/terms/${s.id}/diff`);
-      const lines = (d.diff || "").split("\n").map((l) => ({ text: l, role: l.startsWith("diff --git") ? "head" : l.startsWith("@@") ? "hunk" : /^(\+\+\+|---)/.test(l) ? "dim" : l.startsWith("+") ? "add" : l.startsWith("-") ? "del" : "" }));
-      if (d.untracked_total) lines.push({ text: "" }, { text: `New files (${d.untracked_total})`, role: "head" }, ...d.untracked.map((f) => ({ text: `+ ${f}`, role: "add" })));
-      const empty = !d.diff?.trim() && !d.untracked_total;
-      viewer(`${nameOf(s)} · changes · ${gitText(d.git) || "no git"}`, d.error ? [{ text: d.error, role: "stuck" }] : empty ? [{ text: "No uncommitted changes.", role: "dim" }] : lines, { wrap: false });
-    } catch (e) { flash(`couldn't read the changes: ${e.message}`); }
+  // The changes view (d): the session's diff, with a line cursor. c comments on the line, x removes that line's
+  // comments, S sends them all to the session as one message (its next task: it shows in its chat).
+  // Comments are kept per session until they're sent.
+  const diffNotes = new Map(); // session id -> [{ file, line, old, code, text }]
+  async function showDiff(s, keepSel = null) {
+    let d;
+    try { d = await call(`/api/terms/${s.id}/diff`); } catch (e) { return flash(`couldn't read the changes: ${e.message}`); }
+    const title = `${nameOf(s)} · changes · ${gitText(d.git) || "no git"}`;
+    if (d.error) return viewer(title, [{ text: d.error, role: "stuck" }], { wrap: false });
+    const rows = [...(d.rows || []), ...(d.untracked_total ? [{ text: "", kind: "meta" }, { text: `New files (${d.untracked_total})`, kind: "file" }, ...d.untracked.map((f) => ({ text: `+ ${f}`, kind: "meta" }))] : [])];
+    if (!rows.length) return viewer(title, [{ text: "No uncommitted changes.", role: "dim" }], { wrap: false });
+    const notes = diffNotes.get(s.id) || [];
+    diffNotes.set(s.id, notes);
+    const ROLE = { file: "head", hunk: "hunk", meta: "dim", add: "add", del: "del", ctx: "" };
+    const at = (r) => (n) => n.file === r.file && n.line === r.line && !!n.old === !!r.old;
+    const first = rows.findIndex(commentable);
+    const ov = { title, size: "wide", wrap: false, sel: keepSel ?? Math.max(0, first) };
+    const hintOf = () => `↑/↓ line · c comment · x remove · S send ${notes.length} comment${notes.length === 1 ? "" : "s"} to ${nameOf(s)} · Esc`;
+    ov.hint = hintOf();
+    ov.render = (w) => {
+      const out = [];
+      rows.forEach((r, i) => {
+        if (i === ov.sel) ov.follow = out.length;
+        const t = r.text.replace(/\t/g, "    ");
+        out.push({ raw: i === ov.sel ? paint("sel", pad(` ${t}`, w + 2)) : " " + paint(ROLE[r.kind] || "", pad(t, w + 1)) });
+        if (commentable(r)) for (const n of notes.filter(at(r))) out.push({ raw: " " + paint("wait", pad(`   » ${n.text}`, w + 1)) });
+      });
+      return out;
+    };
+    const move = (dlt) => { let i = ov.sel; for (let k = 0; k < Math.abs(dlt); k++) { let j = i + Math.sign(dlt); while (j >= 0 && j < rows.length && !commentable(rows[j])) j += Math.sign(dlt); if (j < 0 || j >= rows.length) break; i = j; } ov.sel = i; };
+    ov.onKey = (k) => {
+      const r = rows[ov.sel];
+      if (k === "\x1b[A" || k === "k") move(-1);
+      else if (k === "\x1b[B" || k === "j") move(1);
+      else if (k === "\x1b[5~") move(-20);
+      else if (k === "\x1b[6~" || k === " ") move(20);
+      else if (k === "c" && commentable(r)) {
+        ask(`Comment on ${r.file}:${r.line}${r.old ? " (removed)" : ""}`, (text) => { notes.push({ file: r.file, line: r.line, old: !!r.old, code: r.text.slice(0, 200), text }); showDiff(s, ov.sel); }, { lines: [{ text: r.text.slice(0, 200), role: ROLE[r.kind] }] });
+        return true;
+      } else if (k === "x" && commentable(r)) { for (let i = notes.length - 1; i >= 0; i--) if (at(r)(notes[i])) notes.splice(i, 1); }
+      else if (k === "S") {
+        if (!notes.length) { flash("no comments yet: c comments on the line under the cursor"); return true; }
+        closeOverlay();
+        call(`/api/terms/${s.id}/comments`, { method: "POST", body: { comments: notes } }).then(() => { flash(`${notes.length} comment${notes.length === 1 ? "" : "s"} sent to ${nameOf(s)}`); notes.length = 0; }, (e) => flash(`couldn't send: ${e.message}`, 6000));
+        return true;
+      } else return false;
+      ov.hint = hintOf();
+      return true;
+    };
+    ov.pickAt = (i) => { let n = 0; for (const [ri, r] of rows.entries()) { if (n === i) { if (commentable(r)) ov.sel = ri; return; } n += 1 + (commentable(r) ? notes.filter(at(r)).length : 0); if (n > i) return; } };
+    overlay = ov; schedule();
   }
   function giveGoal(s) {
     if (s.mode === "shell") return flash("goals go to Claude sessions, not shells");

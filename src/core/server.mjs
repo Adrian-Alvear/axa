@@ -26,6 +26,7 @@ import { DEFAULT_VOICE, VOICES } from "./kokoro.mjs";
 import { SHORT } from "./speech.mjs";
 import { RUNAWAY, byProjectDay, limitsText, readLimits, runawayCheck, runawayText } from "./usage.mjs";
 import { headOf } from "./git.mjs";
+import { commentMessage, diffLines, validComments } from "./diffcomments.mjs";
 import { branchFacts, capRefusal, createCheckTracker, createSendQueue, maxWorking, queueRow, queueText, sortQueue } from "./queue.mjs";
 import { briefNotification, briefTick, reviewProjects } from "./projects.mjs";
 import { MORE_DETAIL, firstLine, notesNeedSummary, prefetchSummary, spokenReply, summaryMode } from "./summary.mjs";
@@ -361,7 +362,17 @@ const routes = [
     return [r.ok ? 200 : 409, r];
   }],
   ["GET", /^\/api\/terms\/([\w-]+)\/screen$/, (m, req, u) => { const r = S.readScreen(m[1], Number(u.searchParams.get("lines")) || 60); return [r ? 200 : 404, r || { error: "no such session" }]; }],
-  ["GET", /^\/api\/terms\/([\w-]+)\/diff$/, async (m) => { const r = await S.diffSession(m[1]); return [r ? 200 : 404, r || { error: "no such session" }]; }],
+  ["GET", /^\/api\/terms\/([\w-]+)\/diff$/, async (m) => { const r = await S.diffSession(m[1]); return [r ? 200 : 404, r ? { ...r, rows: diffLines(r.diff) } : { error: "no such session" }]; }],
+  // comments on a session's diff (diffcomments.mjs): packed into one message and typed into that session through
+  // the usual safe send path, so it shows in its chat. Only you comment (the hub or the web page).
+  ["POST", /^\/api\/terms\/([\w-]+)\/comments$/, async (m, req) => {
+    if (!fromUser(req)) return [403, { error: "only the user comments on a diff (from the hub or the web console)" }];
+    const text = commentMessage(validComments(await readBody(req)));
+    if (!text) return [400, { error: "no comments to send" }];
+    const r = await S.sendText(m[1], text, { enter: true });
+    if (r.ok) S.noteInput(m[1]);
+    return [r.ok ? 200 : 409, { ...r, text }];
+  }],
   ["POST", /^\/api\/terms\/([\w-]+)\/input$/, async (m, req) => {
     const b = await readBody(req);
     if (typeof b.text !== "string") return [400, { error: "text required" }];
