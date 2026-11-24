@@ -63,5 +63,5 @@ export function overlayHit(g, mx, my) {
 }
 
 // The key a footer hint stands for ("⏎" -> Enter, "PgUp" -> its escape...); null when it isn't a key
-const KEYS = { "⏎": "\r", Esc: "\x1b", Tab: "\t", "↑↓": "\x1b[B", "→": "\x1b[C", "←": "\x1b[D", PgUp: "\x1b[5~", PgDn: "\x1b[6~" };
+const KEYS = { "⏎": "\r", Esc: "\x1b", Tab: "\t", "↑↓": "\x1b[B", "→": "\x1b[C", "←": "\x1b[D", PgUp: "\x1b[5~", PgDn: "\x1b[6~", "^P": "\x10", "Ctrl+P": "\x10", Space: " " };
 export const hintKey = (k) => KEYS[k] ?? ([...k].length === 1 ? k : null);

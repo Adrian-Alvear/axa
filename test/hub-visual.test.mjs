@@ -59,9 +59,9 @@ test("footer hints: whole ones only, in order, in the room there is", () => {
 });
 
 test("a project card's chip: the most urgent session in the session list's words and colors", () => {
-  assert.deepEqual(projectChip([{ status: "working" }, { status: "waiting" }], 2), [" NEEDS YOU ", "chipWait"]);
+  assert.deepEqual(projectChip([{ status: "working" }, { status: "waiting" }], 2), [" NEEDS YOU ", "wait"]);
   assert.deepEqual(projectChip([{ status: "failed" }, { status: "stuck" }], 2), [" STUCK ", "chipStuck"]);
-  assert.deepEqual(projectChip([{ status: "needs_trust" }], 1), [" NEEDS TRUST ", "chipWait"]);
+  assert.deepEqual(projectChip([{ status: "needs_trust" }], 1), [" NEEDS TRUST ", "wait"]);
   assert.deepEqual(projectChip([{ status: "working" }], 1), [" 1 OPEN ", "chipIdle"]);
   assert.deepEqual(projectChip([], 0, "5 weeks"), [" idle 5 weeks ", "chipOff"]);
   assert.deepEqual(projectChip(undefined, 0, ""), ["", ""]);

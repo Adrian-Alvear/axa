@@ -93,7 +93,7 @@ test("hintKey: footer hints to the keys they stand for", () => {
   assert.equal(hintKey("drag"), null);
 });
 
-test("controlRows: the approval buttons, the input line and its send button are where the hit boxes say", async () => {
+test("controlRows: no approval buttons of its own (the bar is the one CTA), the input line and its send button are where the hit boxes say", async () => {
   const { controlRows } = await import("../src/tui/control.mjs");
   const now = Date.now();
   const cmd = { id: "c1", mode: "axa", alive: true, status: "ready", name: "axa", cwd: "/tmp", created: now };
@@ -101,11 +101,9 @@ test("controlRows: the approval buttons, the input line and its send button are 
   const ctx = (armed, input = "") => ({ motion: "off", sessions: [cmd, w], act: null, selId: "s1", focusInput: false, input, nameOf: (s) => s.name, question: (c) => c.question, yesOpt: (c) => c.options[0], noOpt: (c) => c.options[1], waiting: w, waitingCount: 1, armed, order: [cmd, w], chats: [], zone: "map", chatSel: 0, cmdStatus: null, mapHits: [], chatHits: [], apHits: [], cmdMsgs: [], cmdScroll: 0 });
   const c = ctx(false), rows = controlRows(c, 160, 50).map(plain);
   const cell = (row, h) => [...rows[row]].slice(h.x0 - 1, h.x1).join("");
-  const yes = c.apHits.find((h) => h.which === "yes"), no = c.apHits.find((h) => h.which === "no");
-  assert.match(cell(yes.y, yes), /^ y {2}Yes/);
-  assert.match(cell(no.y, no), /^ x {2}No/);
+  // one urgency component: no buttons of its own (the yellow bar answers), a pointer to it instead
+  assert.deepEqual(c.apHits, []);
+  assert.ok(rows.some((r) => /answer in the yellow bar: y yes · x no · ! go there/.test(r)));
   assert.match(rows[c.inputRow], /Click here or press : to talk to AXA…/);
   assert.equal(cell(c.inputRow, c.sendHit), " ⏎ send ");
-  const a = ctx(true), ra = controlRows(a, 160, 50).map(plain), ya = a.apHits.find((h) => h.which === "yes");
-  assert.match([...ra[ya.y]].slice(ya.x0 - 1, ya.x1).join(""), /^ click again to approve /);
 });

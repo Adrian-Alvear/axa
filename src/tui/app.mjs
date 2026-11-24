@@ -60,6 +60,46 @@ export function projectChip(sessions = [], open = 0, idleFor = "") {
   const busy = URGENT.map((st) => sessions.find((s) => s.status === st)).find(Boolean);
   return busy ? chipOf({ status: busy.status, mode: "claude" }) : open ? [` ${open} OPEN `, "chipIdle"] : idleFor ? [` idle ${idleFor} `, "chipOff"] : ["", ""];
 }
+// ---------- the keymap: one per screen. The footer shows the first FOOTER_KEYS of the current screen (most used
+// first); the help (?) lists all of them from the same table, so the two can't drift. [key, what it does]
+export const KEYMAP = {
+  control: [["⏎", "open"], ["Space", "next that needs you"], ["y/x", "answer"], [":", "talk to AXA"], ["w", "what's up"], ["↑↓", "pick session"], ["→", "chats"], ["PgUp", "AXA's messages"], ["d", "changes"], ["m", "voice on/off"], ["Esc", "stop the voice"], ["drag", "copy"]],
+  sessions: [["⏎", "open"], ["d", "changes"], ["g", "goal"], ["v", "checks"], ["r", "rename"], ["X", "close"], ["/", "filter"]],
+  chats: [["⏎", "resume"], ["/", "search"]],
+  agents: [["⏎", "give a task"], ["/", "search"]],
+  projects: [["⏎", "open"], ["g", "goal"], ["r", "review"], ["h", "handoff"], ["N", "new"], ["w", "worktree"], ["s", "shell"], ["/", "filter"]],
+  global: [["Ctrl+P", "commands: sessions, projects, actions, settings"], ["Space", "the next session that needs you"], ["Tab / 1-5", "switch panel"], ["n", "notifications"], ["L", "review queue"], ["$", "usage"], ["N", "new session"], ["a", "the AXA commander"], [",", "settings"], ["o", "web console"], ["R", "refresh"], ["?", "all keys"], ["q", "quit (sessions keep running)"]],
+};
+export const FOOTER_KEYS = 6;
+// Synchronized output (mode 2026): a frame between BSU and ESU is shown at once, never half-drawn. Probed once
+// (DECRQM); the reply "CSI ? 2026 ; Ps $ y" with Ps 1 or 2 means supported. No reply: never used.
+export const SYNC_PROBE = "\x1b[?2026$p";
+export function syncReply(d) {
+  const m = /\x1b\[\?2026;(\d)\$y/.exec(d);
+  return m ? { supported: m[1] === "1" || m[1] === "2", rest: d.replace(m[0], "") } : { supported: null, rest: d };
+}
+export const syncFrame = (o, on) => (on && o ? `\x1b[?2026h${o}\x1b[?2026l` : o);
+// Ctrl+P's fuzzy match: the query's letters in order; consecutive letters and word starts score higher. null: no match
+export function fuzzyScore(q, text) {
+  q = String(q || "").toLowerCase().replace(/\s+/g, "");
+  if (!q) return 0;
+  const t = String(text || "").toLowerCase();
+  let from = 0, last = -2, score = 0;
+  for (const ch of q) {
+    const j = t.indexOf(ch, from);
+    if (j < 0) return null;
+    score += j === last + 1 ? 3 : j === 0 || /[\s\-_/.]/.test(t[j - 1]) ? 2 : 0.5;
+    last = j; from = j + 1;
+  }
+  return score - t.length * 0.01;
+}
+export const rankPalette = (entries, q) => entries.map((e) => ({ e, s: fuzzyScore(q, `${e.label} ${e.kind} ${e.key || ""}`) })).filter((x) => x.s !== null).sort((a, b) => b.s - a.s).map((x) => x.e);
+export const PANEL_NAMES = { control: "Control", sessions: "Sessions", chats: "Chats", agents: "Agents", projects: "Projects" };
+// the help's key sections, from KEYMAP
+export const keymapHelp = () => [
+  { text: "Everywhere in the hub", role: "head" }, ...KEYMAP.global.map(([k, t]) => ({ text: `  ${k.padEnd(11)} ${t}` })),
+  ...Object.entries(PANEL_NAMES).flatMap(([p, name]) => [{ text: "" }, { text: name, role: "head" }, { text: `  ${KEYMAP[p].map(([k, t]) => `${k} ${t}`).join(" · ")}` }]),
+];
 // spoken summaries (summary.mjs): ui.json "voiceSummary"
 const SUMMARY_HINT = { model: "a short summary (a fast model writes it)", "first-paragraph": "their first paragraph", full: "all of it" };
 // the narrator (narrator.mjs, anticipate.mjs): ui.json "voiceVerbosity", "voiceEarcons", "voiceQuiet"
@@ -112,7 +152,8 @@ export async function runTui() {
   let titleHits = [], alertHits = [], footHits = [], alertY = 0, footY = 0, listArea = null;
 
   const call = (path, opts = {}) => api(path, { ...opts, headers: { "x-axa-client": "tui", ...(opts.headers || {}) } });
-  const flash = (text, ms = 3500) => { toast = { text, until: Date.now() + ms }; schedule(); setTimeout(schedule, ms + 50); };
+  // (short confirmations: a 3 s toast)
+  const flash = (text, ms = 3000) => { toast = { text, until: Date.now() + ms }; schedule(); setTimeout(schedule, ms + 50); };
 
   // ---------- data ----------
   const byUrgency = (a, b) => URGENCY.indexOf(a.status) - URGENCY.indexOf(b.status) || (b.last_event_at || b.created) - (a.last_event_at || a.created);
@@ -420,7 +461,7 @@ export async function runTui() {
     const n = (st) => data.sessions.filter((s) => s.status === st).length, needs = n("waiting") + n("needs_trust") + n("stuck"), work = n("working");
     const clock = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
     const un = unread();
-    const right = [[` ${I.bell} ${un || ""} `, un ? "chipWait" : "barDim"], [" ", "bar"], [needs ? ` ${I.wait} ${needs} NEED${needs > 1 ? "" : "S"} YOU ` : "", "chipWait"], [needs && work ? " " : "", "bar"], [work ? ` ${spinner()} ${work} WORKING ` : "", "chipWork"], [!needs && !work ? `${I.done} all quiet` : "", "barDim"], [`   ${clock}`, "barDim"]];
+    const right = [[` ${I.bell} ${un || ""} `, un ? "chipWait" : "barDim"], [" ", "bar"], [needs ? ` ${I.wait} ${needs} ` : "", "wait"], [needs && work ? " " : "", "bar"], [work ? ` ${spinner()} ${work} WORKING ` : "", "chipWork"], [!needs && !work ? `${I.done} all quiet` : "", "barDim"], [`   ${clock}`, "barDim"]];
     titleHits = [];
     if (screen === "hub") {
       const left = [[` ${I.axa} AXA`, "barTitle"], [err ? `   ${err}` : "", "stuck"]], spans = segSpans(left, W, right).right;
@@ -460,8 +501,9 @@ export async function runTui() {
     footHits = [];
     if (screen === "live") return null; // a session keeps every row; notices show in its header
     if (toast && Date.now() < toast.until) return line([[` ${toast.text}`, "text"]], W, [], "bar");
-    const per = { control: focusInput ? [["⏎", "send to the commander"], ["Esc", "stop typing"]] : zone === "chats" ? [["⏎", "resume chat"], ["↑↓", "pick"], ["←", "back to the map"], [":", "talk to AXA"]] : [["⏎", "open"], ["↑↓", "pick session"], ["→", "chats"], [":", "talk to AXA"], ["PgUp", "AXA's messages"], ["y/x", "answer"], ["w", "what's up"], ["d", "changes"], ...(W >= 170 ? [["drag", "copy"]] : [])], sessions: [["⏎", "open"], ["d", "changes"], ["g", "goal"], ["v", "checks"], ["r", "rename"], ["X", "close"]], chats: [["⏎", "resume"], ["/", "search"]], agents: [["⏎", "give a task"], ["/", "search"]], projects: [["⏎", "open"], ["g", "goal"], ["r", "review"], ["h", "handoff"], ["N", "new"], ["w", "worktree"], ["s", "shell"]] }[PANELS[focus]];
-    const all = [["Tab", "switch"], ["a", "AXA"], ["n", "notifications"], ["N", "new"], ["?", "help"], ["q", "quit"]];
+    // (one keymap per screen: KEYMAP; typing to the commander and its chats list have their own few keys)
+    const per = PANELS[focus] === "control" && focusInput ? [["⏎", "send to the commander"], ["Esc", "stop typing"]] : PANELS[focus] === "control" && zone === "chats" ? [["⏎", "resume chat"], ["↑↓", "pick"], ["←", "back to the map"]] : KEYMAP[PANELS[focus]].slice(0, FOOTER_KEYS);
+    const all = [["^P", "commands"], ["?", "all keys"]];
     const right = all.flatMap(([k, t], j) => [[` ${k} `, "keycap"], [j === all.length - 1 ? ` ${t}` : ` ${t}  `, "barDim"]]);
     // the panel's own hints, whole ones only, in the room the right side leaves (see line(): right + 1 gap)
     const rw = right.reduce((a, [t]) => a + width(t), 0) + 1;
@@ -532,7 +574,7 @@ export async function runTui() {
     // the cursor: in a text box, or where the live session has it
     if (overlay?.cursorAt) o += `${ESC}[${overlay.cursorAt.y + 1};${overlay.cursorAt.x + 1}H${ESC}[?25h`;
     else if (screen === "live" && live && !live.dead && !overlay) { const c = live.cursor(); if (c) o += `${ESC}[${c.y + 1 + live.top};${c.x + 1}H${ESC}[?25h`; }
-    out.write(o);
+    out.write(syncFrame(o, syncOutput));
   }
 
   // ---------- dialogs: floating over whatever is underneath ----------
@@ -638,6 +680,55 @@ export async function runTui() {
     if (days.length) { lines.push({ text: "" }, { text: "Per project per day (estimate)", role: "head" }); for (const r of days) lines.push({ text: `  ${r.d}  ${pad(r.p, 22)} ${k(r.tokens).padStart(7)} tokens  ${usd(r.cost).padStart(7)}` }); }
     viewer("Usage", lines);
   }
+  // ---------- Ctrl+P: one searchable list of sessions, projects, actions (with their keys) and settings ----------
+  function paletteEntries() {
+    const keyed = (k) => ({ Space: " " })[k] ?? ([...k].length === 1 ? k : null);
+    const actions = [...KEYMAP.global, ...KEYMAP[PANELS[focus]]].map(([k, t]) => ({ kind: "action", label: t, key: k, k: keyed(k) })).filter((e) => e.k);
+    return [
+      ...orderedSessions().filter((s) => s.alive).map((s) => ({ kind: "session", label: nameOf(s), hint: look(s)[1], run: () => openLive(s) })),
+      ...data.projects.map((p) => ({ kind: "project", label: p.name, hint: where(p.path), run: () => { focus = PANELS.indexOf("projects"); sel.projects = Math.max(0, items("projects").findIndex((it) => it.p?.path === p.path)); } })),
+      ...actions.map((e) => ({ ...e, run: () => hubKey(e.k) })),
+      ...settingsOpts().map((o, i) => ({ kind: "setting", label: o.label, hint: o.hint, run: () => settings(i) })),
+    ];
+  }
+  function openPalette() {
+    const entries = paletteEntries(), ov = { title: "Commands", input: "", size: "wide", sel: 0, hint: "type to search · ↑/↓ choose · Enter runs it · Esc closes" };
+    const shown = () => rankPalette(entries, ov.input);
+    ov.render = (w) => shown().map((e, i) => {
+      const segs = [[`${e.kind.padEnd(8)} `, "dim"], [e.label, "head"], [e.key ? `  ${e.key}` : "", "key"], [e.hint ? `  ${clean(e.hint)}` : "", "dim"]];
+      return { raw: i === ov.sel ? paint("sel", pad(` ${segs.map(([t]) => t).join("")}`, w + 2)) : " " + line(segs, w + 1) };
+    });
+    ov.onKey = (k) => {
+      const list = shown();
+      if (k === "\x1b[A") ov.sel = Math.max(0, ov.sel - 1);
+      else if (k === "\x1b[B") ov.sel = Math.min(Math.max(0, list.length - 1), ov.sel + 1);
+      else if (k === "\r") { const e = list[ov.sel]; closeOverlay(); e?.run(); return true; }
+      else if (k === "\x7f" || k === "\b") { ov.input = [...ov.input].slice(0, -1).join(""); ov.sel = 0; }
+      else if (k.length && !k.startsWith(ESC) && k >= " ") { ov.input += k; ov.sel = 0; }
+      else return false;
+      ov.follow = ov.sel;
+      return true;
+    };
+    ov.pickAt = (i) => { if (i === ov.sel) return ov.onKey("\r"); ov.sel = ov.follow = i; };
+    overlay = ov; schedule();
+  }
+  // ---------- Space: the next session that needs you, its prompt right here (y / x / Enter / Space) ----------
+  let needIdx = 0;
+  function nextNeedsYou() {
+    const list = data.sessions.filter((s) => s.alive && ["waiting", "needs_trust", "stuck", "failed", "limited"].includes(s.status)).sort(byUrgency);
+    if (!list.length) return flash("nothing needs you right now", 3000);
+    const i = needIdx++ % list.length, s = list[i], c = s.choices;
+    const lines = [{ text: `${nameOf(s)} · ${look(s)[1]} · ${where(s.worktree?.repo || s.cwd)}`, role: "head" }, { text: "" },
+      ...(c ? [{ text: question(c), role: "wait" }, ...c.options.map((o) => ({ text: `  ${o.n}. ${clean(o.label)}` }))] : [{ text: clean(s.doing || s.error || s.hint || "open it to see what it needs"), role: "dim" }])];
+    overlay = { title: `Needs you · ${i + 1} of ${list.length}`, lines, size: "small", hint: c ? "y approve · x decline · Enter go there · Space next · Esc" : "Enter go there · Space next · Esc",
+      onKey: (k) => {
+        if (c && (k === "y" || k === "x")) { closeOverlay(); answerAlert(k === "y" ? "yes" : "no", s); return true; }
+        if (k === "\r") { closeOverlay(); openLive(s); return true; }
+        if (k === " ") { closeOverlay(); nextNeedsYou(); return true; }
+        return false;
+      } };
+    schedule();
+  }
   // ---------- the review queue (L): finished work waiting for you; Enter opens that session ----------
   function openQueue() {
     call("/api/queue").then((q) => {
@@ -680,6 +771,7 @@ export async function runTui() {
   // the focus gate: the daemon says nothing routine about the session you're looking at (sent on change, and
   // every 20 s while it holds; the daemon forgets it after a minute)
   let focusSent = { id: undefined, at: 0 };
+  let syncOutput = false; // the terminal said it does synchronized output (mode 2026)
   function syncFocus() {
     const id = screen === "live" && live && !live.dead ? live.id : null;
     if (id === focusSent.id && Date.now() - focusSent.at < 20_000) return;
@@ -850,30 +942,32 @@ export async function runTui() {
       back();
     }, { selected: now === "kokoro" ? 0 : 1 });
   }
+  // the settings rows (also listed in the Ctrl+P palette)
+  const settingsOpts = () => [
+    { label: "Theme", hint: cfg.theme, value: "theme" },
+    { label: "Prefix key", hint: keyName(), value: "prefix" },
+    { label: "Icons", hint: cfg.icons === "nerd" ? "Nerd Font" : "plain Unicode", value: "icons" },
+    { label: "Bell when a session needs you", hint: cfg.bell ? "on" : "off", value: "bell" },
+    { label: "Motion (map animation)", hint: motionNow() + (envReduced && cfg.motion === "full" ? " (AXA_REDUCED_MOTION)" : ""), value: "motion" },
+    { label: "Voice (reads AXA's replies aloud)", hint: (voiceOn() ? "on" : "off") + (voiceEnv ? " (AXA_VOICE)" : ""), value: "voice" },
+    { label: "Voice engine", hint: voiceInfo ? (voiceInfo.engine === "kokoro" ? "Kokoro" : "System") + (voiceInfo.kokoro?.installed ? "" : " (Kokoro: not installed)") : cfg.voiceEngine === "kokoro" ? "Kokoro" : cfg.voiceEngine === "system" ? "System" : "automatic", value: "voiceEngine" },
+    { label: "Voice name", hint: cfg.voiceName || (voiceInfo?.engine === "kokoro" ? "af_heart" : "default"), value: "voiceName" },
+    { label: "Voice speed", hint: SPEEDS[cfg.voiceRate] || "normal", value: "voiceRate" },
+    { label: "Say when there's more on screen", hint: cfg.voiceMoreHint === false ? "off" : "on", value: "voiceMoreHint" },
+    { label: "Test the voice", hint: "says \"AXA voice check.\"", value: "voiceTest" },
+    { label: "Long replies are spoken as", hint: SUMMARY_HINT[cfg.voiceSummary] || SUMMARY_HINT.model, value: "voiceSummary" },
+    { label: "How much the voice says", hint: VERBOSITY_HINT[cfg.voiceVerbosity] || VERBOSITY_HINT.normal, value: "voiceVerbosity" },
+    { label: "Earcons (a tone before the words)", hint: cfg.voiceEarcons === "off" ? "off" : "on", value: "voiceEarcons" },
+    { label: "Quiet hours (no voice; needs-you as a toast)", hint: cfg.voiceQuiet || "off", value: "voiceQuiet" },
+    { label: "Working sessions at most (the commander's cap)", hint: String(cfg.sessions?.maxWorking || 5), value: "maxWorking" },
+    { label: "Interruptions", hint: MODE_HINT[cfg.notify?.mode] || MODE_HINT.live, value: "notifyMode" },
+    { label: "A voice per project (Kokoro)", hint: cfg.voicePerProject === "on" ? "on" : "off", value: "voicePerProject" },
+    { label: "Speak notifications", hint: NOTIFY_HINT[cfg.notify?.voice || "needs-you"], value: "notifyVoice" },
+    { label: "Desktop notifications", hint: NOTIFY_HINT[cfg.notify?.desktop || "needs-you"], value: "notifyDesktop" },
+    { label: "Daily brief (all projects, once a day)", hint: cfg.notify?.brief_at || "off", value: "brief" },
+  ];
   function settings(start = 0) {
-    const opts = () => [
-      { label: "Theme", hint: cfg.theme, value: "theme" },
-      { label: "Prefix key", hint: keyName(), value: "prefix" },
-      { label: "Icons", hint: cfg.icons === "nerd" ? "Nerd Font" : "plain Unicode", value: "icons" },
-      { label: "Bell when a session needs you", hint: cfg.bell ? "on" : "off", value: "bell" },
-      { label: "Motion (map animation)", hint: motionNow() + (envReduced && cfg.motion === "full" ? " (AXA_REDUCED_MOTION)" : ""), value: "motion" },
-      { label: "Voice (reads AXA's replies aloud)", hint: (voiceOn() ? "on" : "off") + (voiceEnv ? " (AXA_VOICE)" : ""), value: "voice" },
-      { label: "Voice engine", hint: voiceInfo ? (voiceInfo.engine === "kokoro" ? "Kokoro" : "System") + (voiceInfo.kokoro?.installed ? "" : " (Kokoro: not installed)") : cfg.voiceEngine === "kokoro" ? "Kokoro" : cfg.voiceEngine === "system" ? "System" : "automatic", value: "voiceEngine" },
-      { label: "Voice name", hint: cfg.voiceName || (voiceInfo?.engine === "kokoro" ? "af_heart" : "default"), value: "voiceName" },
-      { label: "Voice speed", hint: SPEEDS[cfg.voiceRate] || "normal", value: "voiceRate" },
-      { label: "Say when there's more on screen", hint: cfg.voiceMoreHint === false ? "off" : "on", value: "voiceMoreHint" },
-      { label: "Test the voice", hint: "says \"AXA voice check.\"", value: "voiceTest" },
-      { label: "Long replies are spoken as", hint: SUMMARY_HINT[cfg.voiceSummary] || SUMMARY_HINT.model, value: "voiceSummary" },
-      { label: "How much the voice says", hint: VERBOSITY_HINT[cfg.voiceVerbosity] || VERBOSITY_HINT.normal, value: "voiceVerbosity" },
-      { label: "Earcons (a tone before the words)", hint: cfg.voiceEarcons === "off" ? "off" : "on", value: "voiceEarcons" },
-      { label: "Quiet hours (no voice; needs-you as a toast)", hint: cfg.voiceQuiet || "off", value: "voiceQuiet" },
-      { label: "Working sessions at most (the commander's cap)", hint: String(cfg.sessions?.maxWorking || 5), value: "maxWorking" },
-      { label: "Interruptions", hint: MODE_HINT[cfg.notify?.mode] || MODE_HINT.live, value: "notifyMode" },
-      { label: "A voice per project (Kokoro)", hint: cfg.voicePerProject === "on" ? "on" : "off", value: "voicePerProject" },
-      { label: "Speak notifications", hint: NOTIFY_HINT[cfg.notify?.voice || "needs-you"], value: "notifyVoice" },
-      { label: "Desktop notifications", hint: NOTIFY_HINT[cfg.notify?.desktop || "needs-you"], value: "notifyDesktop" },
-      { label: "Daily brief (all projects, once a day)", hint: cfg.notify?.brief_at || "off", value: "brief" },
-    ];
+    const opts = settingsOpts;
     const cycle = (arr, v) => arr[(arr.indexOf(v) + 1) % arr.length];
     const again = (selected) => pick("Settings (Enter changes)", opts(), (o) => {
       if (o.value === "theme") { cfg.theme = cycle(THEME_NAMES, cfg.theme); setTheme(cfg.theme); }
@@ -906,18 +1000,16 @@ export async function runTui() {
   function help() {
     const k = keyName();
     viewer("AXA keys", [
-      { text: "The hub", role: "head" },
-      { text: "  Tab / Shift-Tab or 1-5   move between Control, Sessions, Chats, Agents, Projects" },
+      ...keymapHelp(),
+      { text: "" },
+      { text: "More", role: "head" },
       { text: "  Control: ↑/↓ pick a session (or click it on the map or table) · : talk to the commander" },
       { text: "  ↑/↓ or j/k, PgUp/PgDn    move in a panel        Enter   open the selected thing" },
       { text: "  a   the AXA commander (opens it, or starts it)   N   new session (pick a folder)" },
-      { text: "  L   review queue: finished work waiting for you (commits, diff size, checks, reviewer, ready to land)" },
-      { text: "  $   usage: tokens (official) and cost (estimate) per session and project, the 5-hour / weekly limits" },
       { text: "  n   notifications (newest first: Enter goes to the session, c clears; the bell counts the unread)" },
       { text: "  /   filter the panel     y / x   answer the prompt in the yellow bar   !  go to it" },
       { text: "  o   web console          ,  settings             q   quit (sessions keep running)" },
       { text: "  Control: m   voice on/off (AXA reads its replies aloud) · Esc stops it speaking" },
-      { text: "  Control: w   what's up: every session in a few sentences (said aloud when the voice is on)" },
       { text: "" },
       { text: "Mouse", role: "head" },
       { text: "  Control: click the commander's box (or its conversation) to talk to AXA · ⏎ send sends" },
@@ -927,15 +1019,6 @@ export async function runTui() {
       { text: "  Approve takes two clicks (the button reads \"click again to approve\"); Decline takes one" },
       { text: "  Popups: click an item to select it, click it again (or double-click) to choose; ✕ or a click outside closes" },
       { text: "  Shift+drag uses your terminal's own selection instead" },
-      { text: "" },
-      { text: "Sessions panel", role: "head" },
-      { text: "  Enter open live · d changes (diff) · g give a goal · v run checks · r rename · X close" },
-      { text: "Chats panel", role: "head" },
-      { text: "  Enter resume the chat in a live session (● = already open: it jumps there)" },
-      { text: "Agents", role: "head" },
-      { text: "  Enter give it a task (the commander runs it with that agent); the preview shows its instructions" },
-      { text: "Projects panel", role: "head" },
-      { text: "  Enter open its session (or start one) · N new · w new in its own worktree · s shell" },
       { text: "" },
       { text: `Inside a session (everything you type goes to it; ${k} then a key is for AXA)`, role: "head" },
       { text: `  ${k} h   back to the hub (the session keeps running)` },
@@ -1033,7 +1116,7 @@ export async function runTui() {
       case "\x1b[D": case "h": zone = "map"; return true;
       case "\x1b[A": case "k": if (zone === "chats") chatSel = Math.max(0, chatSel - 1); else go(-1); return true;
       case "\x1b[B": case "j": if (zone === "chats") chatSel = Math.min(Math.max(0, nChats - 1), chatSel + 1); else go(1); return true;
-      case "\r": case " ":
+      case "\r":
         if (zone === "chats") { const c = data.chats[chatSel]; if (c) resumeChat(c); return true; }
         if (cur) openLive(cur); else openCommander();
         return true;
@@ -1080,6 +1163,8 @@ export async function runTui() {
       case "a": return openCommander();
       case "n": return openNotifications();
       case "$": return openUsage();
+      case "\x10": return openPalette();
+      case " ": return nextNeedsYou();
       case "L": return openQueue();
       case "N": return panel === "projects" && it?.kind === "project" ? newSession(it.p) : newSession();
       case "y": return answerAlert("yes");
@@ -1323,6 +1408,9 @@ export async function runTui() {
   process.stdin.on("data", (buf) => {
     noteActive();
     let d = pasteBuf + decoder.write(buf);
+    // the terminal's answer to the mode-2026 probe (never a key)
+    const sr = syncReply(d);
+    if (sr.supported !== null) { syncOutput = sr.supported; d = sr.rest; if (!d) return; }
     pasteBuf = "";
     // a paste split across chunks: hold it until its end marker arrives
     const ps = d.lastIndexOf(PS);
@@ -1369,7 +1457,8 @@ export async function runTui() {
 
   // ---------- start and stop ----------
   // mouse: clicks and wheel (1000), drags (1002), SGR form (1006)
-  const enter = () => { out.write(`${ESC}[?1049h${ESC}[?2004h${ESC}[?1000h${ESC}[?1002h${ESC}[?1006h${ESC}[?25l${ESC}[?7l${ESC}[2J`); process.stdin.setRawMode(true); process.stdin.resume(); };
+  // (and asks once whether the terminal does synchronized output, mode 2026: its answer arrives as input)
+  const enter = () => { out.write(`${ESC}[?1049h${ESC}[?2004h${ESC}[?1000h${ESC}[?1002h${ESC}[?1006h${ESC}[?25l${ESC}[?7l${ESC}[2J${SYNC_PROBE}`); process.stdin.setRawMode(true); process.stdin.resume(); };
   const leave = () => { out.write(`${ESC}[?2004l${ESC}[?1002l${ESC}[?1000l${ESC}[?1006l${ESC}[0m${ESC}[?7h${ESC}[?25h${ESC}[?1049l`); try { process.stdin.setRawMode(false); } catch {} };
   function quit() {
     quitting = true;

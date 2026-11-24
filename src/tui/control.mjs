@@ -243,11 +243,31 @@ function comet(cv, x0, y0, x1, y1, t, linkRole) {
   const [x, y] = at(t);
   cv.disc(x, y, 1.5, sgrOf("head"));
 }
+// ---------- the map as dense rows: one line per session (state, name, what it's doing); clickable ----------
+export const DENSE_FEW = 2, DENSE_MANY = 6;
+function denseRows(ctx, shown, cols, rows) {
+  const out = [], list = shown.slice(0, Math.max(0, rows - 1));
+  if (!shown.length) out.push(line([["  No sessions yet · N starts one, a opens the commander", "dim"]], cols));
+  for (const [i, s] of list.entries()) {
+    const [g, , role] = look(s), on = s.id === ctx.selId ? "selDim" : null;
+    out.push(line([["  ", ""], [`${g} `, role], [cut(clean(s.name), 18).padEnd(19), "head"], [clean(s.doing || "").slice(0, 200), "dim"]], cols, [chipOf(s)], on));
+    ctx.mapHits.push({ col0: 0, col1: cols, row0: i, row1: i, id: s.id });
+  }
+  if (shown.length > list.length) out.push(line([[`  … ${shown.length - list.length} more in Sessions`, "dim"]], cols));
+  while (out.length < rows) out.push(" ".repeat(cols));
+  return out.slice(0, rows);
+}
+// consecutive entries with the same key become one, counted (n), keeping the latest
+export function collapseRepeats(list, key) {
+  const out = [];
+  for (const x of list) { const last = out.at(-1); if (last && key(last) === key(x)) out[out.length - 1] = { ...x, n: last.n + 1 }; else out.push({ ...x, n: 1 }); }
+  return out;
+}
 function mapRows(ctx, cols, rows) {
   const cv = new Canvas(cols, rows);
   const S = (role) => sgrOf(role);
   const { sessions, selId } = ctx;
-  const motion = ctx.motion || "full", full = motion === "full";
+  const motion = ctx.mapMotion || ctx.motion || "full", full = motion === "full";
   const now = Date.now(), t = now / 1000;
   let anim = false; // something moves this frame (Control redraws faster)
   const present = new Set();
@@ -512,7 +532,10 @@ export function controlRows(ctx, W, B) {
   const ms = mapSessions(sessions, ctx.selId), cmd = sessions.find((s) => s.mode === "axa" && s.alive);
   const midL = !ms.shown.length && !commanderAgents(cmd).length ? Math.round(W * 0.38) : L, mR = W - midL;
   ctx.midL = midL;
-  const map = mapRows(ctx, midL - 2, midH - 2);
+  // motion only for meaning: nothing working, nothing moves. A map that's mostly empty (<= 2 sessions) or crowded
+  // (> 6) is shown as dense rows instead.
+  ctx.mapMotion = sessions.some((s) => s.alive && ["working", "starting"].includes(s.status)) ? ctx.motion : "off";
+  const map = ms.shown.length <= DENSE_FEW || ms.shown.length > DENSE_MANY ? denseRows(ctx, ms.shown, midL - 2, midH - 2) : mapRows(ctx, midL - 2, midH - 2);
   const mapPanel = panel("Live map", midL, midH, map, { tag: `${ms.shown.length} session${ms.shown.length === 1 ? "" : "s"}${ms.hidden ? ` · ${ms.hidden} idle` : ""} · ${alive.reduce((n, s) => n + (s.helpers || []).filter((h) => h.status === "running").length, 0)} agents` });
   const w = ctx.waiting;
   const apH = Math.min(midH - 6, w ? 13 : 3); // nothing waiting: a 3-row strip, the commander gets the rest
@@ -520,25 +543,19 @@ export function controlRows(ctx, W, B) {
   const iw = mR - 2;
   if (w) {
     const opts = w.choices.options;
-    ab.push(line([["  SESSION  ", "dim"], [ctx.nameOf(w), "head"]], iw, [chipOf(w)]));
+    // (one urgency component: the yellow bar above is where you answer; this panel shows the detail, quietly)
+    ab.push(line([["  SESSION  ", "dim"], [ctx.nameOf(w), "head"]], iw));
     ab.push(line([["  WHERE    ", "dim"], [w.cwd.replace(process.env.HOME || "", "~"), "text"]], iw));
     ab.push(" ".repeat(iw));
-    for (const l of wrap(ctx.question(w.choices), iw - 4).slice(0, Math.max(1, apH - 9 - Math.min(4, opts.length)))) ab.push(line([["  " + l, "wait"]], iw));
+    for (const l of wrap(ctx.question(w.choices), iw - 4).slice(0, Math.max(1, apH - 7 - Math.min(4, opts.length)))) ab.push(line([["  " + l, "wait"]], iw));
     for (const o of opts.slice(0, 4)) ab.push(line([[`   ${o.n}. ${clean(o.label)}`, "dim"]], iw));
-    while (ab.length < apH - 4) ab.push(" ".repeat(iw));
-    ab.length = apH - 4; // keep room for the buttons
-    const no = ctx.noOpt(w.choices), yes = ctx.yesOpt(w.choices);
-    const bw = Math.floor((iw - 6) / 2);
-    ab.push(" ".repeat(iw));
-    // the buttons are clickable (approve takes two clicks: ctx.armed is the first)
-    const btn = [["  ", ""], [cut(` x  ${no.label} `.padEnd(bw), bw), "keycap"], ["  ", ""], [cut(ctx.armed ? " click again to approve ".padEnd(bw) : ` y  ${yes.label} `.padEnd(bw), bw), ctx.armed ? "chipWait" : "tabOn"]];
-    const sp = segSpans(btn, iw, [], midL + 2), row = (topH || 0) + 1 + ab.length;
-    for (const s of sp.left) if (s.i === 1 || s.i === 3) (ctx.apHits ||= []).push({ y: row, x0: s.x0, x1: s.x1, which: s.i === 1 ? "no" : "yes" });
-    ab.push(line(btn, iw));
+    while (ab.length < apH - 3) ab.push(" ".repeat(iw));
+    ab.length = apH - 3;
+    ab.push(line([["  answer in the yellow bar: y yes · x no · ! go there", "dim"]], iw));
   } else {
     ab.push(line([["  ✓ Nothing needs your approval", "done"], [` · ${act?.runs?.approvals ?? 0} handled by AXA today`, "dim"]], iw));
   }
-  const apPanel = panel(w ? "Requires approval" : "Approvals", mR, apH, ab, { tag: w ? `${ctx.waitingCount} waiting` : "", on: !!w });
+  const apPanel = panel(w ? "Waiting on you" : "Approvals", mR, apH, ab, { tag: w ? `${ctx.waitingCount} waiting` : "" });
   // the commander: the conversation (yours and AXA's messages), scrollable, and a box to talk to it
   const chH = midH - apH, cb = [];
   // Claude Code's own status, mirrored from the commander's screen: the activity line above the input,
@@ -603,7 +620,7 @@ export function controlRows(ctx, W, B) {
     cb2.push(line([[` ${c.open_in ? "●" : I.chat} `, c.open_in ? "work" : "dim"], [clean(c.title), sel ? "head" : "text"]], ciw, [[`${c.cwd === process.env.HOME ? "~" : c.project} · ${ago(c.updated)}`, "dim"]], sel ? "sel" : null));
     ctx.chatHits.push({ row: k, i: k });
   });
-  if (!chats.length) cb2.push(line([["  no chats yet", "dim"]], ciw));
+  if (!chats.length) cb2.push(line([["  No chats yet · N starts a session", "dim"]], ciw));
   const chatPanel = panel("Recent chats", chW, botH, cb2, { tag: ctx.zone === "chats" ? "⏎ resume · ← map" : "→ to pick", on: ctx.zone === "chats" });
   const ab2 = [], aiw = agW - 2;
   const running = sessions.flatMap((s) => (s.helpers || []).map((h) => ({ s, h }))).filter(({ h }) => h.status === "running" || Date.now() - h.at < 10 * 60_000).sort((a, b) => (a.h.status === "running" ? 0 : 1) - (b.h.status === "running" ? 0 : 1) || b.h.at - a.h.at);
@@ -612,17 +629,18 @@ export function controlRows(ctx, W, B) {
     ab2.push(line([[` ${on ? spinner() : I.done} `, on ? "violet" : "done"], [h.type.split(":").pop(), on ? "head" : "dim"], [`  in ${s.mode === "axa" ? "AXA" : clean(s.name)}`, "dim"]], aiw, [[`${h.calls || 0} steps · ${mins}m`, "dim"]]));
     ab2.push(line([[`   ${clean(on ? h.doing || h.desc : h.report || h.desc) || "…"}`, on ? "text" : "dim"]], aiw));
   }
-  if (!running.length) { ab2.push(line([["  no agents running", "dim"]], aiw)); ab2.push(line([["  helpers show up here as sessions start them", "dim"]], aiw)); }
+  if (!running.length) ab2.push(line([["  No agents running (sessions start them)", "dim"]], aiw));
   const nRun = running.filter(({ h }) => h.status === "running").length;
   const agentPanel = panel("Agents at work", agW, botH, ab2, { tag: nRun ? `${nRun} running` : "" });
   const tablePanel = beside([chatPanel, chW], [agentPanel, agW]);
   ctx.tableTop = B - botH + 1; // body row of the chats panel's first row
   const lb = [], lw = R - 2;
   const names = new Map(sessions.map((s) => [s.id, s.mode === "axa" ? "AXA" : clean(s.name)]));
-  const evs = (act?.events || []).map((e) => [e, said(e)]).filter(([, d]) => d).slice(-(botH - 2));
-  for (const [e, [text, role]] of evs) {
+  // repeats in a row are one line ("AXA woke the commander ×4", at the latest time)
+  const evs = collapseRepeats((act?.events || []).map((e) => [e, said(e)]).filter(([, d]) => d).map(([e, [text, role]]) => ({ e, text, role, who: names.get(e.terminal) || (e.event === "MilestoneReview" ? "review" : "?") })), (x) => `${x.who}\n${x.text}`).slice(-(botH - 2));
+  for (const { e, text, role, who, n } of evs) {
     const t = new Date(e.ts).toLocaleTimeString([], { hour12: false });
-    lb.push(line([[` ${t} `, "dim"], [`${cut(names.get(e.terminal) || (e.event === "MilestoneReview" ? "review" : "?"), 10)} `, "accent"], [text, role]], lw));
+    lb.push(line([[` ${t} `, "dim"], [`${cut(who, 10)} `, "accent"], [text, role], [n > 1 ? ` ×${n}` : "", "dim"]], lw));
   }
   if (!evs.length) lb.push(line([["  quiet: nothing has happened in the last hour", "dim"]], lw));
   const logPanel = panel("Log", R, botH, lb, { tag: "live" });

@@ -1,5 +1,6 @@
 import { readdirSync } from "node:fs";
 import { spawnSync } from "node:child_process";
+import { graphemes, gw, sanitize, strWidth } from "./width.mjs";
 // Drawing helpers for the terminal UI: themes, colors by role, display width, boxes.
 export const ESC = "\x1b";
 
@@ -55,9 +56,9 @@ export const spinner = () => (motion === "off" ? SPIN[0] : SPIN[Math.floor(Date.
 
 // Status of a session: glyph, word, color role. Never color alone.
 // [glyph, word, color role, chip role]
-const LOOK = () => ({ waiting: [I.wait, "needs you", "wait", "chipWait"], needs_trust: [I.wait, "needs trust", "wait", "chipWait"], stuck: [I.stuck, "stuck", "stuck", "chipStuck"], working: [spinner(), "working", "work", "chipWork"], limited: [I.stuck, "limited", "waitSoft", "chipWait"], failed: [I.off, "failed", "stuck", "chipStuck"], done: [I.done, "done", "done", "chipDone"], ready: [I.ready, "ready", "idle", "chipIdle"], starting: [spinner(), "starting", "off", "chipOff"], exited: [I.off, "exited", "off", "chipOff"] });
+const LOOK = () => ({ waiting: [I.wait, "needs you", "wait", "wait"], needs_trust: [I.wait, "needs trust", "wait", "wait"], stuck: [I.stuck, "stuck", "stuck", "chipStuck"], working: [spinner(), "working", "work", "chipWork"], limited: [I.stuck, "limited", "waitSoft", "chipWait"], failed: [I.off, "failed", "stuck", "chipStuck"], done: [I.done, "done", "done", "chipDone"], ready: [I.ready, "ready", "idle", "chipIdle"], starting: [spinner(), "starting", "off", "chipOff"], exited: [I.off, "exited", "off", "chipOff"] });
 export const look = (s) => (s.mode === "shell" && ["starting", "ready"].includes(s.status) ? [I.shell, "shell", "idle", "chipIdle"] : LOOK()[s.status] || ["?", s.status, "idle", "chipIdle"]);
-// a status chip: " NEEDS YOU "
+// a status chip: " NEEDS YOU " (needs-you ones are a quiet amber badge: the yellow bar is the one call to action)
 export const chipOf = (s) => { const [, word, , role] = look(s); return [` ${word.toUpperCase()} `, role]; };
 // the independent reviewer's verdict on a session's last turn, as a small badge
 const REVIEW_BADGE = { reviewing: "… reviewing", approve: "✓ reviewed", warn: "⚠ review", block: "✗ blocked", error: "? unreviewed" };
@@ -65,11 +66,11 @@ export const reviewBadge = (s) => REVIEW_BADGE[s?.review?.verdict] || (s?.fixer 
 export const URGENCY = ["waiting", "needs_trust", "stuck", "failed", "limited", "working", "done", "ready", "starting", "exited"];
 
 // ---------- text ----------
-export const clean = (s) => String(s ?? "").replace(/[\u0000-\u001f\u007f-\u009f]+/g, " ").replace(/\s+/g, " ").trim();
-// display width: wide East Asian characters and emoji take two columns
-const cw = (ch) => { const c = ch.codePointAt(0); return (c >= 0x1100 && c <= 0x115f) || (c >= 0x2e80 && c <= 0xa4cf) || (c >= 0xac00 && c <= 0xd7a3) || (c >= 0xf900 && c <= 0xfaff) || (c >= 0xfe30 && c <= 0xfe4f) || (c >= 0xff00 && c <= 0xff60) || (c >= 0xffe0 && c <= 0xffe6) || (c >= 0x1f300 && c <= 0x1faff) || (c >= 0x20000 && c <= 0x3fffd) ? 2 : 1; };
-export const width = (s) => { let n = 0; for (const ch of s) n += cw(ch); return n; };
-export const cut = (s, n) => { if (n <= 0) return ""; if (width(s) <= n) return s; let o = "", w = 0; for (const ch of s) { if (w + cw(ch) > n - 1) break; o += ch; w += cw(ch); } return o + "…"; };
+// (untrusted text: sanitized, see width.mjs; then control characters and runs of space become one space)
+export const clean = (s) => sanitize(s).replace(/[\u0000-\u001f\u007f-\u009f]+/g, " ").replace(/\s+/g, " ").trim();
+// display width, by grapheme (width.mjs: the one width function ansi.mjs uses too)
+export const width = (s) => strWidth(s);
+export const cut = (s, n) => { if (n <= 0) return ""; if (width(s) <= n) return s; let o = "", w = 0; for (const g of graphemes(s)) { const x = gw(g); if (w + x > n - 1) break; o += g; w += x; } return o + "…"; };
 export const pad = (s, n) => { const c = cut(s, n); return c + " ".repeat(Math.max(0, n - width(c))); };
 export const center = (s, n) => { const c = cut(s, n), l = Math.floor((n - width(c)) / 2); return " ".repeat(Math.max(0, l)) + c + " ".repeat(Math.max(0, n - l - width(c))); };
 
