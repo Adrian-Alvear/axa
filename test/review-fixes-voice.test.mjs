@@ -143,5 +143,6 @@ test("the hub's plain icons are all single-width (the bell too)", () => {
   assert.equal(D.I.bell, "◎");
   const app = readFileSync(join(ROOT, "src/tui/app.mjs"), "utf8");
   assert.match(app, /\$\{ESC\}\[\?7l/);
-  assert.match(app, /\$\{ESC\}\[0m\$\{ESC\}\[K`/);
+  // each changed row is erased before it's written (not after: see test/hub-visual.test.mjs)
+  assert.match(app, /o \+= rowsOut\(rows, prevRows\);/);
 });

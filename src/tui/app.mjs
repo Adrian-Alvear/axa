@@ -38,6 +38,26 @@ export function nextBrief(notify = {}) {
   if (v === "off") delete n.brief_at; else n.brief_at = v;
   return n;
 }
+// The bytes that repaint the rows that changed. Autowrap is off in the hub (?7l), so a glyph the terminal draws
+// wider than counted can't spill onto the next row. Each changed row is erased first (2K) and then written:
+// nothing from the previous screen is left behind, and the last column survives (an erase AFTER a full-width
+// row starts at the last column, where the cursor stays with autowrap off, and wiped it).
+export const rowsOut = (rows, prev = []) => rows.map((r, y) => (prev[y] === r ? "" : `${ESC}[${y + 1};1H${ESC}[0m${ESC}[2K${r}${ESC}[0m`)).join("");
+// Key hints [[key, text], ...] that fit in n columns as whole hints (` k  text  ` each): the ones that don't
+// fit are left out instead of being cut mid-word
+export function fitHints(hints, n) {
+  let used = 0;
+  const outH = [];
+  for (const h of hints) { const w = width(` ${h[0]} `) + width(` ${h[1]}  `); if (used + w > n) break; outH.push(h); used += w; }
+  return outH;
+}
+// A project card's chip: the most urgent open session in the session list's own words and colors
+// ("NEEDS YOU", "STUCK"), else how many are open, else how long it has been idle
+export const URGENT = ["waiting", "needs_trust", "stuck", "failed", "limited"];
+export function projectChip(sessions = [], open = 0, idleFor = "") {
+  const busy = URGENT.map((st) => sessions.find((s) => s.status === st)).find(Boolean);
+  return busy ? chipOf({ status: busy.status, mode: "claude" }) : open ? [` ${open} OPEN `, "chipIdle"] : idleFor ? [` idle ${idleFor} `, "chipOff"] : ["", ""];
+}
 // spoken summaries (summary.mjs): ui.json "voiceSummary"
 const SUMMARY_HINT = { model: "a short summary (a fast model writes it)", "first-paragraph": "their first paragraph", full: "all of it" };
 const NOTIFY_HINT = { "needs-you": "what needs you (and finished work, spoken)", all: "everything", off: "off" };
@@ -170,9 +190,9 @@ export async function runTui() {
     }
     if (it.kind === "project") {
       const p = it.p, r = p.review, lc = r?.git?.last_commit, idle = r?.idle_days != null && r.idle_days >= IDLE_DAYS;
-      const busy = (r?.sessions || []).find((s) => ["waiting", "needs_trust", "stuck", "failed", "limited"].includes(s.status));
-      const chip = busy ? [` ${busy.status.replace("_", " ").toUpperCase()} `, "chipWait"] : p.sessions ? [` ${p.sessions} OPEN `, "chipIdle"] : idle ? [` idle ${ageText(Date.now() - lc.at)} `, "chipOff"] : ["", ""];
-      const sub = r?.git ? `${gitLine(r.git)}${lc ? ` · ${clean(lc.subject)} (${ageText(Date.now() - lc.at)})` : ""}` : `${where(p.path)}  ${gitText(p.git)}`;
+      const chip = projectChip(r?.sessions, p.sessions, idle ? ageText(Date.now() - lc.at) : "");
+      // the last commit's age before its subject: a long subject is what gets cut
+      const sub = r?.git ? `${gitLine(r.git)}${lc ? ` · ${ageText(Date.now() - lc.at)} ago: ${clean(lc.subject)}` : ""}` : `${where(p.path)}  ${gitText(p.git)}`;
       return [[[[`${I.project} `, idle ? "dim" : "accent"], [p.name, idle ? "dim" : "head"]], [chip]], [[["  " + sub, "dim"]], []]];
     }
     return [[[[`${I.home} `, "accent"], ["Home folder", "head"]], []], [[["  a session in ~", "dim"]], []]];
@@ -205,13 +225,14 @@ export async function runTui() {
   }
 
   // ---------- preview ----------
-  const wrapText = (text, w, indent = "") => {
+  // hang: the indent of a paragraph's wrapped lines (a bullet's text lines up under its first word)
+  const wrapText = (text, w, indent = "", hang = indent) => {
     const outL = [];
     for (const para of String(text ?? "").replace(/\r/g, "").split("\n")) {
       let cur = indent;
       for (const word of para.split(/(\s+)/)) {
         if (!word) continue;
-        if (width(cur + word) > w && cur.trim()) { outL.push(cur.trimEnd()); cur = indent + word.trimStart(); }
+        if (width(cur + word) > w && cur.trim()) { outL.push(cur.trimEnd()); cur = hang + word.trimStart(); }
         else cur += word;
       }
       outL.push(cur.trimEnd());
@@ -270,9 +291,12 @@ export async function runTui() {
     const head = (icon, iconRole, title, chip) => { P.push([[], [], "pvHead"]); P.push([[[`  ${icon}  `, iconRole], [title, "pvHead"]], chip ? [chip, ["  ", ""]] : [], "pvHead"]); };
     const meta = (text) => { P.push([[[`  ${text}`, "barDim"]], [], "pvHead"]); P.push([[], [], "pvHead"]); };
     const gap = () => P.push([[], [], "pv"]);
-    const label = (text) => P.push([[[`  ${text.toUpperCase()}`, "accent"]], [], "pv"]);
-    const para = (text, role = "text", indent = "  ") => { for (const l of wrapText(text, w - 3, indent)) P.push([[[l, role]], [], "pv"]); };
-    const rule = (text = "") => P.push([[[`  ${text ? text.toUpperCase() + " " : ""}`, "dim"], ["─".repeat(w), "frame"]], [], "pv"]);
+    // note: shown as written after the label (a file name keeps its case)
+    const label = (text, note = "") => P.push([[[`  ${text.toUpperCase()}`, "accent"], [note ? `  ${note}` : "", "dim"]], [], "pv"]);
+    const para = (text, role = "text", indent = "  ", hang = indent) => { for (const l of wrapText(text, w - 3, indent, hang)) P.push([[[l, role]], [], "pv"]); };
+    let pinned = []; // rows kept at the bottom when the rest doesn't fit (a project's action keys)
+    // (the rule stops one column short of the edge: longer, it would be cut with a "…")
+    const rule = (text = "") => { const t = `  ${text ? text.toUpperCase() + " " : ""}`; P.push([[[t, "dim"], ["─".repeat(Math.max(0, w - width(t) - 1)), "frame"]], [], "pv"]); };
     let tail = null; // rows (already rendered) that fill the rest from the bottom up
     if (!it) { head(I.search, "dim", "Nothing selected"); }
     else if (it.kind === "commander-off" || (it.kind === "session" && it.s.mode === "axa" && !it.s.alive)) {
@@ -345,8 +369,8 @@ export async function runTui() {
         if (r.handoff) {
           for (const [k, t] of [["in_progress", "In progress"], ["next", "Next up"]]) {
             if (!r.handoff[k].length) continue;
-            label(`${t} (${r.handoff.file})`);
-            for (const x of r.handoff[k]) para(`• ${clean(x)}`, "text", "   ");
+            label(t, r.handoff.file);
+            for (const x of r.handoff[k]) para(`• ${clean(x)}`, "text", "   ", "     ");
             gap();
           }
         }
@@ -363,9 +387,13 @@ export async function runTui() {
       for (const c of cs) P.push([[[`  ${I.chat} `, "dim"], [clean(c.title), "text"]], [[ago(c.updated), "dim"]], "pv"]);
       const ag = data.agents.filter((a) => a.project === p.name);
       if (ag.length) { gap(); label("Agents"); for (const a of ag) P.push([[[`  ${I.agent} `, "violet"], [a.name, "head"], [`  ${clean(a.description)}`, "dim"]], [], "pv"]); }
-      gap(); P.push([[["  ", ""], [" Enter ", "keycap"], [" open  ", "dim"], [" N ", "keycap"], [" new  ", "dim"], [" w ", "keycap"], [" worktree  ", "dim"], [" s ", "keycap"], [" shell", "dim"]], [], "pv"]);
-      if (it.kind === "project") P.push([[["  ", ""], [" g ", "keycap"], [" goal  ", "dim"], [" r ", "keycap"], [" milestone review  ", "dim"], [" h ", "keycap"], [" handoff file", "dim"]], [], "pv"]);
+      gap();
+      pinned = [[[["  ", ""], [" Enter ", "keycap"], [" open  ", "dim"], [" N ", "keycap"], [" new  ", "dim"], [" w ", "keycap"], [" worktree  ", "dim"], [" s ", "keycap"], [" shell", "dim"]], [], "pv"]];
+      if (it.kind === "project") pinned.push([[["  ", ""], [" g ", "keycap"], [" goal  ", "dim"], [" r ", "keycap"], [" milestone review  ", "dim"], [" h ", "keycap"], [" handoff file", "dim"]], [], "pv"]);
     }
+    // pinned rows follow the rest, or take the last rows (after a "…" row) when it's too long
+    if (P.length + pinned.length > h && pinned.length) P.splice(Math.max(0, h - pinned.length - 1), Infinity, [[["  …", "dim"]], [], "pv"]);
+    P.push(...pinned);
     const rows = P.map(([segs, right, on]) => line(segs, w, right, on));
     if (tail) {
       const room = Math.max(0, h - rows.length);
@@ -427,8 +455,10 @@ export async function runTui() {
     if (toast && Date.now() < toast.until) return line([[` ${toast.text}`, "text"]], W, [], "bar");
     const per = { control: focusInput ? [["⏎", "send to the commander"], ["Esc", "stop typing"]] : zone === "chats" ? [["⏎", "resume chat"], ["↑↓", "pick"], ["←", "back to the map"], [":", "talk to AXA"]] : [["⏎", "open"], ["↑↓", "pick session"], ["→", "chats"], [":", "talk to AXA"], ["PgUp", "AXA's messages"], ["y/x", "answer"], ["d", "changes"], ...(W >= 170 ? [["drag", "copy"]] : [])], sessions: [["⏎", "open"], ["d", "changes"], ["g", "goal"], ["v", "checks"], ["r", "rename"], ["X", "close"]], chats: [["⏎", "resume"], ["/", "search"]], agents: [["⏎", "give a task"], ["/", "search"]], projects: [["⏎", "open"], ["g", "goal"], ["r", "review"], ["h", "handoff"], ["N", "new"], ["w", "worktree"], ["s", "shell"]] }[PANELS[focus]];
     const all = [["Tab", "switch"], ["a", "AXA"], ["n", "notifications"], ["N", "new"], ["?", "help"], ["q", "quit"]];
-    const segs = per.flatMap(([k, t]) => [[` ${k} `, "keycap"], [` ${t}  `, "barDim"]]);
     const right = all.flatMap(([k, t], j) => [[` ${k} `, "keycap"], [j === all.length - 1 ? ` ${t}` : ` ${t}  `, "barDim"]]);
+    // the panel's own hints, whole ones only, in the room the right side leaves (see line(): right + 1 gap)
+    const rw = right.reduce((a, [t]) => a + width(t), 0) + 1;
+    const segs = fitHints(per, rw < W - 4 ? W - rw - 1 : W).flatMap(([k, t]) => [[` ${k} `, "keycap"], [` ${t}  `, "barDim"]]);
     // every hint is a button for its key (y/x: the y half approves, the x half declines)
     const sp = segSpans(segs, W, right);
     for (const [spans, src] of [[sp.left, per], [sp.right, all]]) for (const s of spans) {
@@ -490,9 +520,7 @@ export async function runTui() {
     W = out.columns || 120; H = out.rows || 36;
     const rows = frame();
     let o = `${ESC}[?25l`;
-    // autowrap is off in the hub (?7l): a glyph the terminal draws wider than counted can't spill onto the next
-    // row, and each changed row is cleared to its end (K) so nothing from the previous screen is left behind
-    rows.forEach((r, y) => { if (prevRows[y] !== r) o += `${ESC}[${y + 1};1H${r}${ESC}[0m${ESC}[K`; });
+    o += rowsOut(rows, prevRows);
     prevRows = rows;
     // the cursor: in a text box, or where the live session has it
     if (overlay?.cursorAt) o += `${ESC}[${overlay.cursorAt.y + 1};${overlay.cursorAt.x + 1}H${ESC}[?25h`;

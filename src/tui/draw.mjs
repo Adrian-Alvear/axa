@@ -78,7 +78,9 @@ export const center = (s, n) => { const c = cut(s, n), l = Math.floor((n - width
 // each segment's own color on top of it.
 export function line(segs, n, right = [], on = null) {
   const base = on ? sgrOf(on) : "";
-  const p = (role, t) => { const c = [base, sgrOf(role) || (role && !theme[role] ? role : "")].filter(Boolean).join(";"); return c ? `${ESC}[${c}m${t}${ESC}[0m` : t; };
+  // the background and the segment's color as two sequences: joined, two 24-bit colors each make ~22
+  // parameters, more than some terminals take in one sequence (tmux 3.4 drops it whole: a chip lost its color)
+  const p = (role, t) => { const c = [base, sgrOf(role) || (role && !theme[role] ? role : "")].filter(Boolean); return c.length ? `${c.map((x) => `${ESC}[${x}m`).join("")}${t}${ESC}[0m` : t; };
   // the right side always ends one column before the edge
   right = right.filter(([t]) => t);
   if (right.length) right = [...right.slice(0, -1), [right.at(-1)[0].trimEnd() + " ", right.at(-1)[1]]];

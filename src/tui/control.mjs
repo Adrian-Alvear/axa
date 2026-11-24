@@ -415,12 +415,17 @@ export const modelName = (m) => {
 };
 const dur = (ms) => { const m = Math.floor(ms / 60000); return m < 60 ? `${m}m` : `${Math.floor(m / 60)}h ${m % 60}m`; };
 
+// the voice states the daemon reports (server.mjs voiceNow), and the status line's slot for them
+export const VOICE_STATES = ["speaking", "speaking summary", "writing summary"];
+const VOICE_SLOT = Math.max(width("voice on"), ...VOICE_STATES.map((s) => width(`🔊 ${s}`)));
+const padTo = (s, n) => s + " ".repeat(Math.max(0, n - width(s)));
 // AXA's own status line for the commander: mode · model · context · tokens · uptime · agents · sessions.
 // Pieces drop from the right when it's narrow. `on` ("bar") draws it as a status bar.
 export function axaStatusLine(cmd, sessions, w, maxRows = 2, { mode = "", on = null, voice = false } = {}) {
   const u = cmd.usage || {}, segs = [];
-  // voice: true (on) or what it's doing now ("speaking summary")
-  if (voice) segs.push([voice === true ? "voice on" : `🔊 ${voice}`, "accent"]);
+  // voice: true (on) or what it's doing now ("speaking summary"), in a slot as wide as the longest state so
+  // nothing after it moves when it changes
+  if (voice) segs.push([padTo(voice === true ? "voice on" : `🔊 ${voice}`, VOICE_SLOT), "accent"]);
   if (mode) segs.push([`${mode.startsWith("plan") ? "⏸" : "⏵⏵"} ${mode}`, mode.startsWith("bypass") ? "stuck" : "accent"]);
   if (u.model) segs.push([`◆ ${modelName(u.model)}`, "accent"]);
   if (u.context) {
@@ -432,7 +437,7 @@ export function axaStatusLine(cmd, sessions, w, maxRows = 2, { mode = "", on = n
   if (cmd.created) segs.push([`up ${dur(Date.now() - cmd.created)}`, "dim"]);
   const hs = cmd.helpers || [], run = hs.filter((h) => h.status === "running").length;
   if (hs.length) segs.push([run ? `${spinner()} ${run} agent${run > 1 ? "s" : ""} running` : `✓ ${hs.length} agent${hs.length > 1 ? "s" : ""} done`, run ? "violet" : "dim"]);
-  const ws = sessions.filter((s) => s.alive && s.mode !== "axa"), wait = ws.filter((s) => ["waiting", "needs_trust"].includes(s.status)).length, busy = ws.filter((s) => s.status === "working").length;
+  const ws = sessions.filter((s) => s.alive && s.mode !== "axa"), wait = ws.filter((s) => ["waiting", "needs_trust", "stuck"].includes(s.status)).length, busy = ws.filter((s) => s.status === "working").length;
   segs.push([`${ws.length} session${ws.length === 1 ? "" : "s"}${busy ? ` · ${busy} working` : ""}${wait ? ` · ${wait} need you` : ""}`, wait ? "wait" : "dim"]);
   if (cmd.git?.branch) segs.push([`${I.branch} ${cmd.git.branch}`, "dim"]);
   // fit: whole pieces separated by " · ", wrapping onto up to `maxRows` rows
