@@ -32,7 +32,7 @@ export const P0 = 0, P1 = 1, P2 = 2, P3 = 3;
 export const TIERS = ["important", "message", "text", "notification", "progress", "routine"];
 const TIER_PRIORITY = { important: P0, message: P1, text: P1, notification: P2, progress: P2, routine: P3 };
 export const KIND_TIER = {
-  waiting: "important", needs_trust: "important", escalate: "important", limited: "important", realert: "important", runaway: "important",
+  waiting: "important", needs_trust: "important", escalate: "important", limited: "important", realert: "important", runaway: "important", breaker: "important",
   done: "message", failed: "message", exited: "message", stuck: "message", milestone: "message", brief: "message", whatsup: "message", digest: "message", recap: "message",
   reply: "text",
   eta: "notification", link: "notification", declined: "notification", fixer: "notification",

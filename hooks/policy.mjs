@@ -55,6 +55,8 @@ if (isMain) {
 }
 
 // ---------- context: project root, scratch folder, per-project settings ----------
+// The policy's verdict for one tool call by a role (the hook's own dispatch; `axa approver test` dry runs use it)
+export const policyVerdict = (role, tool, input, e) => (role === "commander" ? decideCommander : role === "reviewer" ? decideReviewer : decide)(tool, input || {}, context(e));
 export function context(e) {
   const cwd = e.cwd || process.cwd();
   const root = real(process.env.CLAUDE_PROJECT_DIR || cwd);

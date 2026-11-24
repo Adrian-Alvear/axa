@@ -326,21 +326,20 @@ test("the real hook has no stub switch: test env vars are ignored", () => {
   assert.equal(decisions(s)[0].by, "error");
   // and it still answers read-only calls itself when run as the hook
   assert.deepEqual(run(s, "Read", { file_path: "/usr/share/doc/x" }, { script: HOOK, env: { PATH: empty } }), { behavior: "allow" });
-  // with no model, a local and reversible request is still allowed by the fallback
-  assert.deepEqual(sh(s, "mkdir -p src/new", { script: HOOK, env: { PATH: empty } }), { behavior: "allow" });
+  // with no model, nothing is approved: the user decides
+  assert.equal(sh(s, "mkdir -p src/new", { script: HOOK, env: { PATH: empty } }), null);
   assert.equal(decisions(s).at(-1).failure, "claude not available");
 });
 
 // ---------- the fallback when the model can't be reached ----------
-test("model unavailable: local and reversible requests are allowed by local-only rules, never remembered", () => {
+test("model unavailable (timeout, error, no answer, nonsense): never approves; the user decides; never remembered", () => {
   const s = sandbox();
   for (const [judge, failure] of [["throw", "usage limit"], ["fail", "no answer"], ['{"decision":"yes"}', "unparseable reply"], ["hang", "timed out"]]) {
-    assert.deepEqual(sh(s, "mkdir -p src/new", { judge, env: { AXA_TEST_JUDGE_MS: "300" } }), { behavior: "allow" }, judge);
+    assert.equal(sh(s, "mkdir -p src/new", { judge, env: { AXA_TEST_JUDGE_MS: "300" } }), null, judge);
     const d = decisions(s).at(-1);
-    assert.deepEqual([d.decision, d.by, d.fallback, d.failure, d.reason], ["allow", "fallback", "local-rules", failure, "approver unavailable; allowed by local-only rules"], judge);
+    assert.deepEqual([d.decision, d.by, d.fallback, d.failure], ["escalate", "error", "escalated", failure], judge);
   }
-  assert.deepEqual(run(s, "Write", { file_path: join(s.proj, "sub/x.txt") }, { judge: "throw" }), { behavior: "allow" });
-  assert.deepEqual(sh(s, "rm -rf dist", { judge: "throw" }), { behavior: "allow" });
+  assert.equal(run(s, "Write", { file_path: join(s.proj, "sub/x.txt") }, { judge: "throw" }), null);
   // never remembered: once the model is back, it's asked
   const before = calls(s).length;
   assert.equal(sh(s, "mkdir -p src/new", { judge: '{"decision":"deny","reason":"not needed."}' }).behavior, "deny");
@@ -459,7 +458,7 @@ test("commander: reads in the home folder skip the model; AXA's folder and /answ
   assert.equal(calls(s).length, 2);
 });
 
-test("commander: the fallback only applies inside a real project it runs in", () => {
+test("commander: the model unavailable means the user decides, in or out of a project", () => {
   const s = sandbox();
   const work = join(s.home, "work");
   mkdirSync(work, { recursive: true });
@@ -467,12 +466,12 @@ test("commander: the fallback only applies inside a real project it runs in", ()
   assert.equal(decisions(s).at(-1).fallback, "escalated");
   const proj = join(s.home, "proj");
   mkdirSync(proj);
-  assert.deepEqual(sh(s, "mkdir -p x", { ...commander(s, { cwd: proj, projectDir: proj }), judge: "throw" }), { behavior: "allow" });
-  assert.equal(decisions(s).at(-1).fallback, "local-rules");
+  assert.equal(sh(s, "mkdir -p x", { ...commander(s, { cwd: proj, projectDir: proj }), judge: "throw" }), null, "no fallback approves, in a project either");
+  assert.equal(decisions(s).at(-1).fallback, "escalated");
 });
 
 // ---------- the current task: the latest /goal, and the spec file it cites ----------
-test("a newer /goal citing a spec outranks an older 'don't change anything else'; the spec is shown as data", () => {
+test("a newer /goal citing a spec outranks an older 'don't change anything else'; the spec is named, not inlined", () => {
   const s = sandbox();
   const log = join(s.axa, "events.jsonl");
   const prompt = (p) => appendFileSync(log, JSON.stringify({ ts: 1, event: "UserPromptSubmit", session: "sess-1", prompt: p }) + "\n");
@@ -492,9 +491,9 @@ test("a newer /goal citing a spec outranks an older 'don't change anything else'
   const p = calls(s).at(-1).prompt;
   assert.match(p, /CURRENT TASK \(the latest \/goal; it outranks anything older below\):\n<command-name>\/goal/);
   assert.match(p, /Older prompts \(from before the current task; where they conflict with it, the current task wins\):\nFix exactly these findings/);
-  assert.ok(p.includes(`<spec_file path="${realpathSync(spec)}" note="the first 6 KB">\n# Task\n## Part A\n1. One notification stream in src/core/notify.mjs.`));
-  const shown = /<spec_file[^>]*>\n([\s\S]*?)\n<\/spec_file>/.exec(p)[1];
-  assert.ok(shown.length <= 6 * 1024);
+  // the spec is named, never read into the prompt (file contents are where an injection would live)
+  assert.ok(p.includes(`The task cites ${realpathSync(spec)} as its spec`));
+  assert.ok(!p.includes("One notification stream") && !p.includes("filler line"));
   assert.match(p, /an older prompt's limits don't apply to it/);
   // a follow-up after the goal doesn't replace it as the current task
   prompt("Stop hook feedback: keep going");
@@ -503,7 +502,7 @@ test("a newer /goal citing a spec outranks an older 'don't change anything else'
   assert.match(calls(s).at(-1).prompt, /Later messages within this task \(newest last\):\nStop hook feedback/);
 });
 
-test("only spec files in the project, AXA's tasks folder or a Claude scratchpad are inlined", () => {
+test("only spec files in the project, AXA's tasks folder or a Claude scratchpad are named; none is inlined", () => {
   const s = sandbox();
   mkdirSync(join(s.proj, "docs"), { recursive: true });
   writeFileSync(join(s.proj, "docs", "spec.md"), "PROJECT SPEC");
@@ -518,7 +517,8 @@ test("only spec files in the project, AXA's tasks folder or a Claude scratchpad 
   appendFileSync(log, JSON.stringify({ ts: 1, event: "UserPromptSubmit", session: "sess-1", prompt: `/goal follow ${join(s.proj, "docs", "spec.md")}, ${join(s.axa, "tasks", "t.md")} and ${join(s.home, "elsewhere.md")} and ${join(s.proj, "docs", "notes.txt")}` }) + "\n");
   sh(s, "make a", { env });
   const p = calls(s).at(-1).prompt;
-  assert.ok(p.includes("PROJECT SPEC") && p.includes("TASKS SPEC"));
-  assert.ok(!p.includes("OUTSIDE SPEC") && !p.includes("NOT MARKDOWN"));
+  assert.ok(p.includes(join(s.proj, "docs", "spec.md")) && p.includes("t.md as its spec") || p.includes(join(s.axa, "tasks", "t.md")));
+  assert.ok(!p.includes("PROJECT SPEC") && !p.includes("TASKS SPEC") && !p.includes("OUTSIDE SPEC") && !p.includes("NOT MARKDOWN"));
+  assert.ok(!/The task cites [^\n]*elsewhere\.md/.test(p) && !/The task cites [^\n]*notes\.txt/.test(p));
   assert.deepEqual(old, { HOME: process.env.HOME, AXA_HOME: process.env.AXA_HOME });
 });

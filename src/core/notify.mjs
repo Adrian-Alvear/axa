@@ -86,6 +86,8 @@ export function fromEvent(e) {
     return null;
   }
   if (e.event === "ChainFired") return { kind: "link", session: e.terminal || null, project: one(e.to, 40), title: `link fired: ${one(e.from, 40)} → ${one(e.to, 40)}`, body: one(e.text, 200), needsUser: false };
+  // the approver's circuit breaker: it stopped deciding for that session (needs you)
+  if (e.event === "AxaDecision" && e.by === "breaker") return { kind: "breaker", session: e.terminal || null, project: e.cwd ? basename(e.cwd) : "", title: `AXA stopped deciding${e.cwd ? ` in ${basename(e.cwd)}` : ""}`, body: one(`${e.reason || ""} · ${e.tool || "a tool"}${e.summary ? ` ${e.summary}` : ""}`, 240), needsUser: true };
   if (e.event === "AxaDecision" && e.decision === "deny") return { kind: "declined", session: e.terminal || null, project: e.cwd ? basename(e.cwd) : "", title: `AXA declined a step${e.cwd ? ` in ${basename(e.cwd)}` : ""}`, body: one(`${e.tool || "a tool"}${e.summary ? ` ${e.summary}` : ""} · ${e.reason || ""}`, 240), needsUser: false };
   return null;
 }
