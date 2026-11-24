@@ -34,6 +34,8 @@ export function settings() {
     moreHint: cfg.voiceMoreHint !== false, // "You can read the rest on screen." after a shortened reply
     // earcons (earcons.mjs): a tone before a line, or alone for routine things; "voiceEarcons": "off" stops them
     earcons: cfg.voiceEarcons !== "off",
+    // "voicePerProject": "on": each project's lines in its own Kokoro voice (attention.voiceFor); default off
+    perProject: cfg.voicePerProject === "on",
     // how much is said (narrator.mjs): "quiet" (only what needs you) | "normal" (default) | "chatty" (all progress)
     verbosity: VERBOSITY.includes(cfg.voiceVerbosity) ? cfg.voiceVerbosity : "normal",
     // quiet hours ("22:00-07:00"): nothing is said; what needs you becomes a desktop toast. Default off.
@@ -127,6 +129,7 @@ export function speak(text, opts = {}) {
   me.between = typeof rest.between === "function" ? rest.between : null;
   me.onStart = typeof rest.onStart === "function" ? rest.onStart : null;
   me.intro = rest.intro || null;
+  me.onHeard = typeof rest.onHeard === "function" ? rest.onHeard : null;
   current = me;
   return speakWith(String(text), s, { kokoro: kokoroSpeak, system: systemSpeak, log, job: me })
     .catch(() => null).finally(() => { if (current === me) current = null; });
@@ -273,7 +276,8 @@ export const chunkTimeout = (chunk, cli = false) => 4000 + 40 * String(chunk).le
 // between() (optional) is asked after each sentence: true stops there, cleanly (nothing is cut mid-word).
 // intro (optional): a WAV played first, while the first sentence is being made (an earcon). onStart(what) is
 // called as the first sound plays ("sound") and as the first words play ("words").
-export async function speakChunks(chunks, { synth, play, log = () => {}, job = newJob(), timeoutOf = chunkTimeout, cleanup = () => {}, between = null, onStart = null, intro = null }) {
+// onHeard(i): sentence chunk i has been played in full (the narrator keeps what was heard, never replays it).
+export async function speakChunks(chunks, { synth, play, log = () => {}, job = newJob(), timeoutOf = chunkTimeout, cleanup = () => {}, between = null, onStart = null, intro = null, onHeard = null }) {
   const make = async (i) => {
     for (let attempt = 0; attempt < 2; attempt++) {
       if (job.stopped) return null;
@@ -294,7 +298,7 @@ export async function speakChunks(chunks, { synth, play, log = () => {}, job = n
     next = i + 1 < chunks.length ? make(i + 1) : null;
     if (!wav) continue;
     if (!played && onStart) { started("words"); onStart = null; }
-    try { await play(wav, i); if (!job.stopped) played++; } catch (e) { if (job.stopped) { cleanup(wav); return played; } log(`Kokoro: couldn't play sentence ${i + 1} (${e.message})`); }
+    try { await play(wav, i); if (!job.stopped) { played++; try { onHeard?.(i); } catch {} } } catch (e) { if (job.stopped) { cleanup(wav); return played; } log(`Kokoro: couldn't play sentence ${i + 1} (${e.message})`); }
     cleanup(wav);
     if (job.stopped) { const w = await next?.catch(() => null); if (w) cleanup(w); return played; }
     // a sentence boundary: give way if asked (the rest isn't made or played)
@@ -314,7 +318,8 @@ async function kokoroSpeak(text, s, job) {
   let lexicon = null;
   try { lexicon = P.loadLexicon(join(st.model, "lexicon-us-en.txt")); } catch (e) { log(`phonemes skipped (${e.message})`); }
   // each chunk made speakable (every word: phonemes.mjs), and the reply's new words loaded once, up front
-  const chunks = chunkText(pronounce(text), CHUNK, FIRST_CHUNK).map((c) => { try { return lexicon ? P.phonemize(c, lexicon) : { text: c, chunks: [], oov: [], extra: {} }; } catch { return { text: c, chunks: [], oov: [], extra: {} }; } });
+  // chunked on the text as given (so "heard" is an exact prefix of it), each chunk then made speakable
+  const chunks = chunkText(text, CHUNK, FIRST_CHUNK).map((c) => pronounce(c)).map((c) => { try { return lexicon ? P.phonemize(c, lexicon) : { text: c, chunks: [], oov: [], extra: {} }; } catch { return { text: c, chunks: [], oov: [], extra: {} }; } });
   logOov(oovLogFile(st.dir), chunks.flatMap((c) => c.oov));
   const words = Object.assign({}, ...chunks.map((c) => c.extra));
   const sid = K.sidOf(s.name), speed = K.speedOf(s.rate);
@@ -350,7 +355,7 @@ async function kokoroSpeak(text, s, job) {
   }
   const player = await wavPlayer(job, temp);
   try {
-    return await speakChunks(chunks, { synth, play: (w) => player.play(w.out), log, job, timeoutOf: (c) => chunkTimeout(c.text, st.mode !== "resident"), cleanup: (w) => { try { unlinkSync(w.out); } catch {} }, between: job.between, onStart: job.onStart, intro: job.intro });
+    return await speakChunks(chunks, { synth, play: (w) => player.play(w.out), log, job, timeoutOf: (c) => chunkTimeout(c.text, st.mode !== "resident"), cleanup: (w) => { try { unlinkSync(w.out); } catch {} }, between: job.between, onStart: job.onStart, intro: job.intro, onHeard: job.onHeard });
   } finally {
     player.close();
     if (extraLexicon) try { unlinkSync(extraLexicon); } catch {}

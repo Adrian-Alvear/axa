@@ -24,6 +24,8 @@ const USAGE = `AXA: one place for all your Claude Code sessions, chats and agent
   axa review --reset-milestone [path]   forget that repo+branch's stored milestone (the next review's base)
   axa stop [--all]     stop the background daemon (--all also ends every session)
   axa restart          restart the daemon (sessions keep running)
+  axa notify [live|digest|quiet]   interruptions: as they happen, only one-way doors + failures (a digest
+                       for the rest), or none
   axa whatsup          what every session is doing now, in a few sentences (spoken when the voice is on)
   axa brief [HH:MM|off|now]   the daily brief: show it, set its time, turn it off, or get one right away
   axa trust <path>     trust a project (its git repo root) for Claude Code, so sessions AXA starts there
@@ -165,6 +167,16 @@ switch (cmd) {
       const list = await api(`/api/projects${flags.has("--fresh") ? "?fresh=1" : ""}`);
       console.log(flags.has("--json") ? JSON.stringify(list, null, 2) : projectsText(list).replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g, ""));
     } catch (e) { console.error(`axa projects: ${e.message}`); process.exit(1); }
+    break;
+  }
+  case "notify": {
+    // interruptions: live (as it happens) | digest (only one-way doors and failures interrupt; the rest every N min)
+    // | quiet (nothing interrupts). No argument: show it.
+    const { notifySettings, writeNotifyMode } = await import(join(root, "src", "core", "notify.mjs"));
+    const arg = rest.find((a) => !a.startsWith("--"));
+    if (arg === undefined) { const st = notifySettings(); console.log(`Interruptions: ${st.mode}${st.mode === "digest" ? ` (a digest every ${st.digestMin} min)` : ""}. Set with: axa notify live | digest | quiet`); break; }
+    try { writeNotifyMode(files.ui, arg); } catch (e) { console.error(`axa notify: ${e.message}`); process.exit(1); }
+    console.log(`Interruptions: ${arg}.${arg === "digest" ? " Only one-way doors and failures interrupt; the rest is said as a digest (w says it now)." : arg === "quiet" ? " Nothing interrupts; w says what's up." : ""}`);
     break;
   }
   case "whatsup": {

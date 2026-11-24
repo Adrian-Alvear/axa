@@ -16,6 +16,7 @@ import { basename, join } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { files, home, isWsl } from "../paths.mjs";
 import { clip, safe } from "./text.mjs";
+import { stripSpoken } from "./attention.mjs";
 
 export const KEEP = 200;
 export const DEDUPE_MS = 60_000;
@@ -31,7 +32,25 @@ export function notifySettings(cfg) {
     voice: LEVELS.includes(n.voice) ? n.voice : "needs-you",
     desktop: LEVELS.includes(n.desktop) ? n.desktop : "needs-you",
     brief_at: typeof n.brief_at === "string" && /^([01]\d|2[0-3]):[0-5]\d$/.test(n.brief_at) ? n.brief_at : null,
+    // interruptions (attention.mjs): live (default) | digest | quiet, and the digest's period in minutes
+    mode: ["live", "digest", "quiet"].includes(n.mode) ? n.mode : "live",
+    digestMin: Number.isInteger(n.digestMin) && n.digestMin >= 1 && n.digestMin <= 240 ? n.digestMin : 15,
   };
+}
+// `axa notify live|digest|quiet`: ui.json's notify.mode, read-modify-write (every other setting kept; a file that
+// isn't valid JSON is never overwritten)
+export function writeNotifyMode(f, mode) {
+  if (!["live", "digest", "quiet"].includes(mode)) throw new Error(`isn't a mode: use live, digest or quiet`);
+  let cfg = {};
+  if (existsSync(f)) {
+    const raw = readFileSync(f, "utf8");
+    try { cfg = raw.trim() ? JSON.parse(raw) : {}; } catch (e) { throw new Error(`${f} isn't valid JSON (${e.message}); not touching it`); }
+  }
+  cfg.notify = { ...(cfg.notify && typeof cfg.notify === "object" ? cfg.notify : {}), mode };
+  const tmp = `${f}.${process.pid}.tmp`;
+  writeFileSync(tmp, JSON.stringify(cfg, null, 2) + "\n", { mode: 0o600 });
+  renameSync(tmp, f);
+  return cfg;
 }
 // What a level lets through. "needs-you" for the voice also says finished work ("feed finished: ...").
 export const voiceWants = (level, n) => level === "all" || (level === "needs-you" && (n.needsUser || n.kind === "done" || n.kind === "brief"));
@@ -39,7 +58,8 @@ export const desktopWants = (level, n) => level === "all" || (level === "needs-y
 
 // ---------- what a session's status means for you ----------
 const one = (t, n = 200) => clip(safe(String(t || "").replace(/\s+/g, " ").trim()), n);
-const firstLine = (t) => one(String(t || "").split(/\n\s*\n/)[0], 200);
+// (the agent's own spoken line, "🔊 ...", is for the voice: never shown in a notification)
+const firstLine = (t) => one(stripSpoken(String(t || "")).split(/\n\s*\n/)[0], 200);
 export const projectOf = (s) => basename(s.worktree?.repo || s.cwd || "") || s.name;
 export function fromStatus(s) {
   const name = s.mode === "axa" ? "AXA" : one(s.name, 40);

@@ -16,6 +16,7 @@ import { SOCKET, TMUX_CONF, tmuxEnv } from "../core/tmux-client.mjs";
 import { ESC, I, THEME_NAMES, nerdFontInstalled, URGENCY, ago, chipOf, clean, cut, fmtTok, gitText, line, look, pad, paint, reviewBadge, selLine, setIcons, setMotion, setTheme, spinner, truecolor, width } from "./draw.mjs";
 import { sliceAnsi } from "./ansi.mjs";
 import { BRIEF_TIMES, IDLE_DAYS, ageText, gitLine, handoffPath } from "../core/projects.mjs";
+import { MODES, RECAP_IDLE_MS } from "../core/attention.mjs";
 import { LiveView } from "./live.mjs";
 import { agentDetail, agentName, axaStatusLine, controlRows, msgText, selectedText } from "./control.mjs";
 import { copyToClipboard, pasteFile, readClipboard } from "./clipboard.mjs";
@@ -62,6 +63,7 @@ export function projectChip(sessions = [], open = 0, idleFor = "") {
 const SUMMARY_HINT = { model: "a short summary (a fast model writes it)", "first-paragraph": "their first paragraph", full: "all of it" };
 // the narrator (narrator.mjs, anticipate.mjs): ui.json "voiceVerbosity", "voiceEarcons", "voiceQuiet"
 const VERBOSITY_HINT = { normal: "normal: what needs you, finished work, heads-ups", quiet: "quiet: only what needs you", chatty: "chatty: all progress too" };
+const MODE_HINT = { live: "live: as it happens", digest: "digest: only one-way doors and failures interrupt", quiet: "quiet: nothing interrupts (w asks)" };
 export const QUIET_HOURS = ["off", "22:00-07:00", "23:00-08:00", "21:00-07:00"];
 const NOTIFY_HINT = { "needs-you": "what needs you (and finished work, spoken)", all: "everything", off: "off" };
 const PANELS = ["control", "sessions", "chats", "agents", "projects"];
@@ -130,6 +132,7 @@ export async function runTui() {
   async function pollSessions() {
     try { data.sessions = await call("/api/terms"); err = ""; } catch (e) { err = e.message; }
     if (voiceOn()) call("/api/voice/now").then((v) => { if (v.now !== voiceState) { voiceState = v.now; schedule(); } }, () => {});
+    syncFocus();
     afterPoll();
   }
   async function pollNotes() {
@@ -486,7 +489,7 @@ export async function runTui() {
       if (cmdSel && cmdSel.scroll !== cmdScroll) cmdSel = null; // the conversation scrolled: the selection goes
       // one full-width status bar under it: mode · model · context · tokens · agents · sessions
       const c = commander();
-      rowsOut.push(c ? axaStatusLine(c, data.sessions, W, 1, { mode: ctl.cmdStatus.mode, on: "bar", voice: voiceOn() && (voiceState || true) })[0] : line([[" AXA is offline · press a to start it", "barDim"]], W, [], "bar"));
+      rowsOut.push(c ? axaStatusLine(c, data.sessions, W, 1, { mode: ctl.cmdStatus.mode, on: "bar", voice: voiceOn() && (voiceState || true), notifyMode: cfg.notify?.mode })[0] : line([[" AXA is offline · press a to start it", "barDim"]], W, [], "bar"));
       return rowsOut;
     }
     if (W < 90) { listArea = { x0: 1, x1: W, y0, y1: y0 + h - 1, panel }; return listRows(panel, 1, y0, W, h); }
@@ -646,9 +649,26 @@ export async function runTui() {
     live?.close();
     const top = 1 + (waitingOthers().filter((x) => x.id !== s.id).length ? 1 : 0);
     live = new LiveView({ socket: SOCKET, conf: TMUX_CONF, env: tmuxEnv(), session: s, cols: W, rows: Math.max(5, H - top), onUpdate: schedule, noColor });
-    screen = "live"; prevRows = []; schedule();
+    screen = "live"; prevRows = []; schedule(); syncFocus();
   }
-  function toHub() { screen = "hub"; prevRows = []; pollHub(); schedule(); }
+  function toHub() { screen = "hub"; prevRows = []; pollHub(); schedule(); syncFocus(); }
+  // the focus gate: the daemon says nothing routine about the session you're looking at (sent on change, and
+  // every 20 s while it holds; the daemon forgets it after a minute)
+  let focusSent = { id: undefined, at: 0 };
+  function syncFocus() {
+    const id = screen === "live" && live && !live.dead ? live.id : null;
+    if (id === focusSent.id && Date.now() - focusSent.at < 20_000) return;
+    focusSent = { id, at: Date.now() };
+    call("/api/focus", { method: "POST", body: { session: id } }).catch(() => {});
+  }
+  // "while you were away": the first key or click after >= 10 min idle asks the daemon for a recap
+  let lastActive = Date.now();
+  function noteActive() {
+    const now = Date.now(), idle = now - lastActive;
+    lastActive = now;
+    if (idle < RECAP_IDLE_MS) return;
+    call("/api/recap", { method: "POST", body: { since: now - idle } }).then((r) => { if (r.text) flash(r.text, 12_000); }, () => {});
+  }
   async function start(body, label) {
     try {
       flash(`starting ${label}…`, 2000);
@@ -822,6 +842,8 @@ export async function runTui() {
       { label: "How much the voice says", hint: VERBOSITY_HINT[cfg.voiceVerbosity] || VERBOSITY_HINT.normal, value: "voiceVerbosity" },
       { label: "Earcons (a tone before the words)", hint: cfg.voiceEarcons === "off" ? "off" : "on", value: "voiceEarcons" },
       { label: "Quiet hours (no voice; needs-you as a toast)", hint: cfg.voiceQuiet || "off", value: "voiceQuiet" },
+      { label: "Interruptions", hint: MODE_HINT[cfg.notify?.mode] || MODE_HINT.live, value: "notifyMode" },
+      { label: "A voice per project (Kokoro)", hint: cfg.voicePerProject === "on" ? "on" : "off", value: "voicePerProject" },
       { label: "Speak notifications", hint: NOTIFY_HINT[cfg.notify?.voice || "needs-you"], value: "notifyVoice" },
       { label: "Desktop notifications", hint: NOTIFY_HINT[cfg.notify?.desktop || "needs-you"], value: "notifyDesktop" },
       { label: "Daily brief (all projects, once a day)", hint: cfg.notify?.brief_at || "off", value: "brief" },
@@ -837,6 +859,8 @@ export async function runTui() {
       if (o.value === "voiceSummary") cfg.voiceSummary = cycle(Object.keys(SUMMARY_HINT), SUMMARY_HINT[cfg.voiceSummary] ? cfg.voiceSummary : "model");
       if (o.value === "brief") cfg.notify = nextBrief(cfg.notify);
       if (o.value === "voiceVerbosity") cfg.voiceVerbosity = cycle(Object.keys(VERBOSITY_HINT), VERBOSITY_HINT[cfg.voiceVerbosity] ? cfg.voiceVerbosity : "normal");
+      if (o.value === "notifyMode") cfg.notify = { ...cfg.notify, mode: cycle(MODES, MODES.includes(cfg.notify?.mode) ? cfg.notify.mode : "live") };
+      if (o.value === "voicePerProject") cfg.voicePerProject = cfg.voicePerProject === "on" ? "off" : "on";
       if (o.value === "voiceEarcons") cfg.voiceEarcons = cfg.voiceEarcons === "off" ? "on" : "off";
       if (o.value === "voiceQuiet") { const v = cycle(QUIET_HOURS, cfg.voiceQuiet || "off"); if (v === "off") delete cfg.voiceQuiet; else cfg.voiceQuiet = v; }
       if (o.value === "notifyVoice") cfg.notify = { ...cfg.notify, voice: cycle(NOTIFY_LEVELS, cfg.notify?.voice || "needs-you") };
@@ -1266,6 +1290,7 @@ export async function runTui() {
   // inside a session: an empty paste (an image-only clipboard) or Alt+V pastes the clipboard image
   const livePasteImage = () => { if (pasting) return; pasting = pasteImage().finally(() => { pasting = null; const rest = held.splice(0).join(""); if (rest) sendLive(rest); }); };
   process.stdin.on("data", (buf) => {
+    noteActive();
     let d = pasteBuf + decoder.write(buf);
     pasteBuf = "";
     // a paste split across chunks: hold it until its end marker arrives

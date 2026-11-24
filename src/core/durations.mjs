@@ -120,5 +120,14 @@ export function createTracker({ store, now = Date.now, nameOf = (t) => t, projec
     if (el > LONGER * st.p90) return "taking longer than usual";
     return el < st.median ? `usually done in ${about(st.median - el)}` : null;
   }
-  return { event, tick, eta, running: (id) => inflight.has(id) };
+  // how long the work in this session usually takes in all (the turn's median, or a running command's): for
+  // heartbeats (only work expected over 2 min gets one)
+  function expected(terminal) {
+    const ms = [];
+    const turn = turns.get(terminal), st = turn && store.stats(turn.key);
+    if (known(st)) ms.push(st.median);
+    for (const r of inflight.values()) if (r.terminal === terminal && known(r.st)) ms.push(r.st.median);
+    return ms.length ? Math.max(...ms) : null;
+  }
+  return { event, tick, eta, expected, running: (id) => inflight.has(id) };
 }

@@ -99,8 +99,9 @@ test("only the last 200 are kept, and the file holds them", () => {
 
 // ---------- voice: the narrator (test/narrator.test.mjs) ----------
 test("settings: what is spoken and shown by default", () => {
-  assert.deepEqual(N.notifySettings({}), { voice: "needs-you", desktop: "needs-you", brief_at: null });
-  assert.deepEqual(N.notifySettings({ notify: { voice: "all", desktop: "off", brief_at: "09:00" } }), { voice: "all", desktop: "off", brief_at: "09:00" });
+  assert.deepEqual(N.notifySettings({}), { voice: "needs-you", desktop: "needs-you", brief_at: null, mode: "live", digestMin: 15 });
+  assert.deepEqual(N.notifySettings({ notify: { voice: "all", desktop: "off", brief_at: "09:00", mode: "digest", digestMin: 30 } }), { voice: "all", desktop: "off", brief_at: "09:00", mode: "digest", digestMin: 30 });
+  assert.equal(N.notifySettings({ notify: { mode: "loud", digestMin: 0 } }).mode, "live");
   assert.equal(N.notifySettings({ notify: { voice: "loud", brief_at: "9am" } }).voice, "needs-you");
   assert.equal(N.notifySettings({ notify: { brief_at: "25:00" } }).brief_at, null);
   const done = { kind: "done", needsUser: false }, wait = { kind: "waiting", needsUser: true }, link = { kind: "link", needsUser: false };

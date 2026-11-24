@@ -18,19 +18,34 @@
 // Every item said or dropped is logged with its reason (the daemon's console log), to tune the thresholds.
 // Pure: time, timers, speech and the session state are injected (unit-tested; server.mjs wires the real ones).
 export const P0 = 0, P1 = 1, P2 = 2, P3 = 3;
+// Tiers, as speech-dispatcher (SSIP) has them (research/voice-narration.md):
+//   important     needs you, blocked (a limit), an approval heading your way, a re-alert: never interrupted; it
+//                 cancels queued notification/progress and postpones message/text (cut at a sentence, the
+//                 unheard rest said after it, what was heard never replayed)
+//   message       done, failed, exited, a review verdict, digests and recaps
+//   text          AXA's replies and their summaries: latest wins (a newer one replaces a queued or playing one)
+//   notification  a tool starting ("running the tests, usually a minute"), links: only when nothing else is
+//                 queued, and only the last one kept
+//   progress      ticks (still working, heartbeats, taking longer): dropped while anything speaks; the final
+//                 item of a stream (final: true) is promoted to message so a completion is never lost
+//   routine       an earcon at most, never words
+export const TIERS = ["important", "message", "text", "notification", "progress", "routine"];
+const TIER_PRIORITY = { important: P0, message: P1, text: P1, notification: P2, progress: P2, routine: P3 };
+export const KIND_TIER = {
+  waiting: "important", needs_trust: "important", escalate: "important", limited: "important", realert: "important",
+  done: "message", failed: "message", exited: "message", stuck: "message", milestone: "message", brief: "message", whatsup: "message", digest: "message", recap: "message",
+  reply: "text",
+  eta: "notification", link: "notification", declined: "notification", fixer: "notification",
+  progress: "progress", liveness: "progress", heartbeat: "progress", longer: "progress",
+  routine: "routine",
+};
+export const KIND_PRIORITY = Object.fromEntries(Object.entries(KIND_TIER).map(([k, t]) => [k, TIER_PRIORITY[t]]));
 export const TTL = [Infinity, 90_000, 15_000, 5_000];
 // the budget per priority: the least time between two lines of it (P3: between two earcons)
 export const GAP = [0, 0, 20_000, 10_000];
 export const BURST_MS = 4_000; // a burst is merged into one line, said at most this long after its first item
 export const SETTLE_MS = 1_200; // ...or this long after its last one, whichever comes first
 export const REPEAT_MS = 60_000;
-
-export const KIND_PRIORITY = {
-  waiting: P0, needs_trust: P0, failed: P0, limited: P0, exited: P0, escalate: P0,
-  done: P1, stuck: P1, milestone: P1, brief: P1, reply: P1, whatsup: P1,
-  fixer: P2, link: P2, declined: P2, progress: P2, eta: P2, longer: P2, liveness: P2,
-  routine: P3,
-};
 // a session's state: one slot per session, a newer state replaces the older one
 const STATE_KINDS = new Set(["waiting", "needs_trust", "failed", "limited", "exited", "done", "stuck", "escalate"]);
 
@@ -38,12 +53,13 @@ const NUM = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eig
 const cap = (s) => (s ? s[0].toUpperCase() + s.slice(1) : s);
 const names = (xs) => (xs.length === 1 ? xs[0] : `${xs.slice(0, -1).join(", ")} and ${xs.at(-1)}`);
 const count = (n) => cap(NUM[n] || String(n));
-// One line for a burst: the state each session is in now, grouped, what needs you last (it's what to act on)
+const GROUP = { done: "done", failed: "failed", limited: "limited", exited: "exited", stuck: "stuck", waiting: "needs", needs_trust: "needs", escalate: "needs", realert: "needs" };
+// One line for several sessions' states, grouped (what needs you last: it's what to act on). Used for the
+// rest of a salience line, digests and recaps.
 export function mergeLine(items) {
   const G = { done: [], failed: [], limited: [], exited: [], stuck: [], needs: [] }, other = [];
-  const group = { done: "done", failed: "failed", limited: "limited", exited: "exited", stuck: "stuck", waiting: "needs", needs_trust: "needs", escalate: "needs" };
   for (const it of items) {
-    const g = group[it.kind], n = it.name || "a session";
+    const g = GROUP[it.kind], n = it.name || "a session";
     if (g) { if (!G[g].includes(n)) G[g].push(n); } else other.push(it);
   }
   const many = (xs, verb) => (xs.length > 1 ? `${count(xs.length)} sessions ${verb}, ${names(xs)}.` : `${cap(xs[0])} ${verb}.`);
@@ -58,25 +74,67 @@ export function mergeLine(items) {
   return out.join(" ");
 }
 
-// raw item -> a queued one (priority from its kind, P2 by default; state kinds share the "state" key)
+// ---------- salience: several sessions with news at once (heard) ----------
+// The strongest is said in full, the rest as one short project-named line: needs you > failed > done. Among
+// "needs you", the blast radius ranks them: a one-way door > a question > a routine approval.
+const STRENGTH = { waiting: 50, needs_trust: 50, escalate: 50, realert: 50, limited: 40, failed: 40, exited: 30, done: 20, stuck: 20, milestone: 20, reply: 15 };
+const BLAST = { door: 3, question: 2, approval: 1 };
+export const strength = (it) => (STRENGTH[it.kind] ?? 10) + (BLAST[it.blast] || 0);
+// the session's name is said only when the speaker changes: "feed finished: x" right after feed spoke is "Finished: x"
+const escRe = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+export function withoutName(text, name) {
+  if (!name) return text;
+  const m = new RegExp(`^${escRe(name)}\\s+((?:finished|failed|needs|asks|hit|looks|is about to need you)\\b[\\s\\S]*)$`, "i").exec(text);
+  return m ? cap(m[1]) : text;
+}
+export function salienceLine(items, lastSpeaker = null) {
+  const sorted = [...items].sort((a, b) => strength(b) - strength(a) || a.at - b.at);
+  const top = sorted[0], head = top.name && top.name === lastSpeaker ? withoutName(top.text, top.name) : top.text;
+  const rest = sorted.slice(1).filter((x) => !(x.session && x.session === top.session));
+  if (!rest.length) return head;
+  return `${head.replace(/([^.!?])$/, "$1.")} Also, ${restLine(rest)}`;
+}
+// "axa and feed finished; docs failed." (short, every one named)
+export function restLine(items) {
+  const G = new Map();
+  const verb = { done: ["finished", "finished"], failed: ["failed", "failed"], limited: ["hit a usage limit", "hit usage limits"], exited: ["exited", "exited"], stuck: ["looks stuck", "look stuck"], needs: ["needs you", "need you"] };
+  let other = 0;
+  for (const it of items) {
+    const g = GROUP[it.kind];
+    if (!g) { other++; continue; }
+    if (!G.has(g)) G.set(g, []);
+    if (!G.get(g).includes(it.name)) G.get(g).push(it.name || "a session");
+  }
+  const parts = [...G].map(([g, xs]) => `${names(xs)} ${verb[g][xs.length > 1 ? 1 : 0]}`);
+  if (other) parts.push(`${count(other).toLowerCase()} more ${other > 1 ? "updates" : "update"} on screen`);
+  return parts.join("; ") + ".";
+}
+
+// raw item -> a queued one: its tier (from its kind; progress with final: true is promoted to message), its
+// priority (from the tier), its slot key (state kinds share "state") and TTL
 export function normalize(it, now) {
-  const priority = it.priority ?? KIND_PRIORITY[it.kind] ?? P2;
-  return { ...it, key: it.key || (STATE_KINDS.has(it.kind) ? "state" : it.kind || "note"), priority, at: it.at ?? now, ttl: it.ttl ?? TTL[priority], text: String(it.text || "").trim() };
+  let tier = it.tier || KIND_TIER[it.kind] || (it.priority === P0 ? "important" : it.priority === P1 ? "message" : it.priority === P3 ? "routine" : "notification");
+  if (tier === "progress" && it.final) tier = "message";
+  const priority = it.priority ?? TIER_PRIORITY[tier];
+  return { ...it, tier, key: it.key || (STATE_KINDS.has(it.kind) ? "state" : it.kind || "note"), priority, at: it.at ?? now, ttl: it.ttl ?? TTL[priority], text: String(it.text || "").trim() };
 }
 const slot = (it) => `${it.session ?? "-"}:${it.key}`;
+const LOW = new Set(["notification", "progress"]);
 
 // deps:
-//   speak(text, { items, priority, shouldYield }) -> Promise (resolves when said, or cut). shouldYield() is
-//     asked between sentences: true = stop there (a P0 is waiting, or what's being said went stale)
-//   earcon(name, items): a short tone, no words (P3)
+//   speak(text, { items, priority, tier, shouldYield }) -> Promise of { heard } (the part of text actually
+//     heard, whole sentences) or nothing. shouldYield() is asked between sentences: true = stop there.
+//   earcon(name, items): a short tone, no words (routine)
 //   isCurrent(item) -> bool: does the session's state still make this true?
-//   admit(item) -> null | why not (verbosity, quiet hours, typing: Part C), log(entry)
+//   admit(item) -> null | why not (verbosity, quiet hours, typing, focus, digest mode), log(entry)
 export function createNarrator({ now = Date.now, speak, earcon = () => {}, isCurrent = () => true, admit = () => null, log = () => {}, setTimer = setTimeout, clearTimer = clearTimeout, burstMs = BURST_MS, settleMs = SETTLE_MS } = {}) {
-  let pending = [], current = null, timer = null, burstFrom = 0;
+  let pending = [], current = null, timer = null, burstFrom = 0, lastSpeaker = null;
   const lastAt = [-Infinity, -Infinity, -Infinity, -Infinity];
-  const said = new Map(); // slot -> { at, text }
-  const drop = (it, why) => log({ act: "dropped", why, priority: it.priority, kind: it.kind, session: it.session, text: it.text });
-  const whyGone = (it, t) => (t - it.at > it.ttl ? "stale" : !isCurrent(it) ? "obsolete" : null);
+  const said = new Map(); // slot -> { at, text, kind }
+  const drop = (it, why) => log({ act: "dropped", why, priority: it.priority, tier: it.tier, kind: it.kind, session: it.session, text: it.text });
+  const current1 = (it) => (it.parts ? it.parts.every((p) => isCurrent(p)) : isCurrent(it));
+  const whyGone = (it, t) => (t - it.at > it.ttl ? "stale" : !current1(it) ? "obsolete" : null);
+  const busy = () => !!current || pending.some((p) => !LOW.has(p.tier) && p.tier !== "routine");
 
   function add(raw) {
     const t = now(), it = normalize(raw, t);
@@ -88,12 +146,19 @@ export function createNarrator({ now = Date.now, speak, earcon = () => {}, isCur
     // the approval heads-up (escalate) already told you: Claude Code's own "needs you" for it adds nothing
     const headsUp = (x) => x && x.kind === "escalate" && t - x.at < REPEAT_MS;
     if (it.kind === "waiting" && (headsUp(prev) || pending.some((p) => slot(p) === slot(it) && p.kind === "escalate"))) { drop(it, "heads-up already said"); return false; }
+    // one turn, one "finished" (the agent's own line at Stop, then the notification's template)
+    if (it.kind === "done" && prev?.kind === "done" && t - prev.at < REPEAT_MS) { drop(it, "already said"); return false; }
+    // progress: dropped while anything speaks or waits
+    if (it.tier === "progress" && busy()) { drop(it, "busy (progress)"); return false; }
     for (const p of pending) if (slot(p) === slot(it)) drop(p, "replaced");
-    pending = pending.filter((p) => slot(p) !== slot(it)).concat(it);
-    // a P0, or a solo item (a reply: said at once, alone), doesn't wait for a burst to settle
-    if (it.priority === P0 || it.solo) pump();
+    pending = pending.filter((p) => slot(p) !== slot(it));
+    if (it.tier === "important") { for (const p of pending.filter((p) => LOW.has(p.tier))) drop(p, "cancelled by important"); pending = pending.filter((p) => !LOW.has(p.tier)); }
+    if (it.tier === "text") { for (const p of pending.filter((p) => p.tier === "text")) drop(p, "a newer text"); pending = pending.filter((p) => p.tier !== "text"); }
+    if (it.tier === "notification") { for (const p of pending.filter((p) => p.tier === "notification")) drop(p, "a newer notification"); pending = pending.filter((p) => p.tier !== "notification"); }
+    pending.push(it);
+    // important, or a solo item (a reply: said at once, alone), doesn't wait for a burst to settle
+    if (it.tier === "important" || it.solo) pump();
     else {
-      // a burst: wait until it settles (or BURST_MS after it began), then say it as one line
       if (!burstFrom) burstFrom = t;
       if (timer) clearTimer(timer);
       timer = setTimer(flush, Math.max(0, Math.min(settleMs, burstFrom + burstMs - t)));
@@ -107,36 +172,59 @@ export function createNarrator({ now = Date.now, speak, earcon = () => {}, isCur
     const t = now();
     pending = pending.filter((it) => { const w = whyGone(it, t); if (w) drop(it, w); return !w; });
     if (!pending.length) return;
-    const top = Math.min(...pending.map((p) => p.priority));
-    const solo = top > P0 && pending.find((p) => p.solo);
-    if (top > P0 && !solo && timer) return; // a burst is still settling: only a P0 (or a reply) goes now
-    const take = top === P0 ? pending.filter((p) => p.priority === P0) : solo ? [solo] : pending;
+    const imp = pending.filter((p) => p.tier === "important");
+    const solo = !imp.length && pending.find((p) => p.solo);
+    if (!imp.length && !solo && timer) return; // a burst is still settling: only important (or a reply) goes now
+    // notification and progress only when nothing else is waiting
+    const high = pending.filter((p) => !LOW.has(p.tier));
+    // (important goes now, and the messages queued with it ride along as the line's short "Also, ..." part:
+    // the strongest in full, the rest named once)
+    const take = imp.length ? [...imp, ...pending.filter((p) => p.tier === "message" && !p.resumed)] : solo ? [solo] : high.length ? high : pending;
     pending = pending.filter((p) => !take.includes(p));
     const words = [], tones = [];
     for (const it of take) {
-      if (t - lastAt[it.priority] < GAP[it.priority]) { drop(it, "budget"); continue; }
-      (it.priority === P3 ? tones : words).push(it);
+      if (!it.resumed && t - lastAt[it.priority] < GAP[it.priority]) { drop(it, "budget"); continue; }
+      (it.tier === "routine" ? tones : words).push(it);
     }
     if (!words.length) {
       if (tones.length) { lastAt[P3] = t; log({ act: "earcon", priority: P3, kind: tones[0].kind, session: tones[0].session }); try { earcon(tones[0].earcon || "done", tones); } catch {} }
-      return;
+      return pump2();
     }
     for (const it of tones) drop(it, "merged into words");
-    const text = words.length === 1 ? words[0].text : mergeLine(words);
-    const me = { items: words, priority: Math.min(...words.map((w) => w.priority)), at: t };
+    const text = words.length === 1 ? (words[0].name && words[0].name === lastSpeaker && !words[0].resumed ? withoutName(words[0].text, words[0].name) : words[0].text) : salienceLine(words, lastSpeaker);
+    const top = [...words].sort((a, b) => strength(b) - strength(a))[0];
+    const me = { items: words, priority: Math.min(...words.map((w) => w.priority)), tier: TIERS[Math.min(...words.map((w) => TIERS.indexOf(w.tier)))], at: t, text, cut: null };
     current = me;
+    lastSpeaker = words.length === 1 || words.every((w) => w.name === top.name) ? top.name || null : null;
     for (const w of words) { lastAt[w.priority] = t; said.set(slot(w), { at: t, text: w.text, kind: w.kind }); }
-    log({ act: "spoke", priority: me.priority, kinds: words.map((w) => w.kind), sessions: words.map((w) => w.session), text, waited: t - Math.min(...words.map((w) => w.at)) });
-    const done = () => { if (current === me) current = null; pump(); };
-    try { Promise.resolve(speak(text, { items: words, priority: me.priority, shouldYield: () => shouldYield(me) })).then(done, done); } catch { done(); }
+    log({ act: "spoke", priority: me.priority, tier: me.tier, kinds: words.map((w) => w.kind), sessions: words.map((w) => w.session), text, waited: t - Math.min(...words.map((w) => w.at)) });
+    const done = (r) => {
+      if (current === me) current = null;
+      // postponed by important: the unheard rest comes back first, what was heard isn't replayed
+      if (me.cut === "postponed" && r && typeof r.heard === "string") {
+        const norm = text.replace(/\s+/g, " ").trim(), heard = r.heard.replace(/\s+/g, " ").trim();
+        const rest = norm.startsWith(heard) ? norm.slice(heard.length).trim() : "";
+        if (rest) { pending.unshift({ ...words[0], kind: words.length > 1 ? "resumed" : words[0].kind, key: "resumed", session: words.length > 1 ? null : words[0].session, parts: words, text: rest, resumed: true, tier: me.tier, priority: me.priority, at: now(), ttl: TTL[me.priority] }); log({ act: "postponed", tier: me.tier, priority: me.priority, text: rest }); }
+      }
+      pump();
+    };
+    try { Promise.resolve(speak(text, { items: words, priority: me.priority, tier: me.tier, shouldYield: () => shouldYield(me) })).then(done, () => done()); } catch { done(); }
   }
+  // (a pump with nothing said: try once more for what's left, e.g. after earcons)
+  function pump2() { if (!current && pending.length && !timer) pump(); }
 
-  // asked between sentences of what's being said. A P0 is never cut.
+  // asked between sentences. Important is never cut.
   function shouldYield(me) {
-    if (me !== current || me.priority === P0) return false;
-    if (pending.some((p) => p.priority === P0)) { log({ act: "cut", why: "a P0 cut in", priority: me.priority, kinds: me.items.map((i) => i.kind) }); return true; }
+    if (me !== current || me.tier === "important") return false;
+    const kinds = me.items.map((i) => i.kind);
+    if (pending.some((p) => p.tier === "important")) {
+      me.cut = LOW.has(me.tier) ? "cancelled" : "postponed";
+      log({ act: "cut", why: `important cut in (${me.cut})`, priority: me.priority, tier: me.tier, kinds });
+      return true;
+    }
+    if (me.tier === "text" && pending.some((p) => p.tier === "text")) { me.cut = "replaced"; log({ act: "cut", why: "a newer text", priority: me.priority, tier: me.tier, kinds }); return true; }
     const t = now();
-    if (me.priority >= P2 && me.items.every((it) => whyGone(it, t) || pending.some((p) => slot(p) === slot(it)))) { log({ act: "cut", why: "stale", priority: me.priority, kinds: me.items.map((i) => i.kind) }); return true; }
+    if (LOW.has(me.tier) && me.items.every((it) => whyGone(it, t) || pending.some((p) => slot(p) === slot(it)))) { me.cut = "stale"; log({ act: "cut", why: "stale", priority: me.priority, tier: me.tier, kinds }); return true; }
     return false;
   }
 
@@ -146,8 +234,8 @@ export function createNarrator({ now = Date.now, speak, earcon = () => {}, isCur
     clear() { for (const p of pending) drop(p, "cleared"); pending = []; if (timer) clearTimer(timer); timer = null; burstFrom = 0; },
     pending: () => pending.length,
     speaking: () => !!current,
-    current: () => current && { priority: current.priority, kinds: current.items.map((i) => i.kind) },
-    // when something about this session was last said (liveness lines, Part B)
+    current: () => current && { priority: current.priority, tier: current.tier, kinds: current.items.map((i) => i.kind) },
+    // when something about this session was last said (liveness lines, heartbeats)
     lastSaidAbout(session) { let at = 0; for (const [k, v] of said) if (k.startsWith(`${session}:`)) at = Math.max(at, v.at); return at; },
   };
 }

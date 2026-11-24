@@ -65,11 +65,13 @@ export function inQuietHours(range, date = new Date()) {
   return q.from < q.to ? t >= q.from && t < q.to : t >= q.from || t < q.to;
 }
 // null: say it. Otherwise why not. it.asked (you asked: "what's up") passes verbosity and typing, not quiet hours.
-export function admitItem(it, { verbosity = "normal", quiet = null, now = Date.now(), typingAt = 0 } = {}) {
+// focus: the session you're viewing (or typing in) in the hub: no P2/P3 about it (Codex's "only when unfocused")
+export function admitItem(it, { verbosity = "normal", quiet = null, now = Date.now(), typingAt = 0, focus = null } = {}) {
   if (quiet && inQuietHours(quiet, new Date(now))) return it.priority === 0 ? "quiet hours (a desktop toast instead)" : "quiet hours";
   if (it.asked) return null;
   if (verbosity === "quiet" && it.priority > 0) return "verbosity quiet";
   if (verbosity === "normal" && it.priority >= 2 && !HEADS_UP_KINDS.has(it.kind)) return "verbosity normal";
   if (it.priority >= 2 && typingAt && now - typingAt < TYPING_MS) return "you're typing in it";
+  if (it.priority >= 2 && focus && it.session === focus) return "you're looking at it";
   return null;
 }

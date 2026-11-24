@@ -20,3 +20,4 @@ How to work:
 - A "waiting" session shows its prompt and options. The user answers it from the yellow bar in the `axa` hub (y/x) or the web console; tell them which session and what you recommend.
 - A session marked "stuck" has had a step running with no activity for a long time: read its screen and tell the user; don't kill it unless they say so.
 - For planning and splitting work inside one project, follow the axa skill (subagents); use sessions when work spans projects or should keep running on its own.
+- Interruptions are the user's call: when they ask you to stop interrupting them (or to go back to live), run `axa notify digest` (only one-way doors and failures are spoken at once; the rest comes as a digest every 15 min, or when they press w), `axa notify quiet` (nothing interrupts) or `axa notify live`. `axa whatsup` gives every session's state in a few sentences.

@@ -28,7 +28,11 @@ function rig({ isCurrent = () => true, admit } = {}) {
 
 test("priorities and TTLs by kind; a session's states share one slot", () => {
   const it = (kind) => N.normalize({ kind, text: "x" }, 0);
-  assert.equal(it("waiting").priority, N.P0); assert.equal(it("exited").priority, N.P0); assert.equal(it("failed").priority, N.P0);
+  assert.equal(it("waiting").priority, N.P0); assert.equal(it("limited").priority, N.P0); assert.equal(it("escalate").priority, N.P0);
+  // speech-dispatcher tiers: done / failed / exited are messages (they never cut in); needs you is important
+  assert.equal(it("failed").tier, "message"); assert.equal(it("exited").priority, N.P1); assert.equal(it("waiting").tier, "important");
+  assert.equal(it("reply").tier, "text"); assert.equal(it("eta").tier, "notification"); assert.equal(it("heartbeat").tier, "progress");
+  assert.equal(N.normalize({ kind: "heartbeat", final: true, text: "x" }, 0).tier, "message", "a progress stream's final item is promoted");
   assert.equal(it("done").priority, N.P1); assert.equal(it("milestone").priority, N.P1);
   assert.equal(it("progress").priority, N.P2); assert.equal(it("routine").priority, N.P3);
   assert.equal(it("waiting").ttl, Infinity); assert.equal(it("done").ttl, 90_000); assert.equal(it("progress").ttl, 15_000);
@@ -51,15 +55,22 @@ test("TTL: a P2 queued behind a long line is dropped once 15 s old; a P0 never e
   r.n.add({ kind: "reply", session: "axa", text: "A long reply being read." });
   r.run(1300);
   assert.equal(r.said.length, 1);
-  r.n.add({ kind: "progress", session: "f", text: "feed is running tests" });
+  r.n.add({ kind: "eta", session: "f", text: "feed is running tests" });
   r.n.add({ kind: "waiting", session: "w", name: "web", text: "web needs you" });
   r.run(20_000); // the reply is still being read 20 s later (one long sentence: no boundary to cut in at)
   await r.end();
   // the slot frees: the P0 goes first, and the P2, now 20 s old, is dropped as stale
   assert.equal(r.said[1].text, "web needs you");
   await r.end();
-  assert.deepEqual(r.dropped("stale"), ["feed is running tests"]);
+  // (important cancels a queued notification at once: speech-dispatcher's rule)
+  assert.deepEqual(r.dropped("cancelled by important"), ["feed is running tests"]);
   assert.equal(r.said.length, 2);
+  // a notification alone behind a long line goes stale (15 s TTL)
+  const r2 = rig();
+  r2.n.add({ kind: "reply", session: "axa", solo: true, text: "A long reply." });
+  r2.n.add({ kind: "eta", session: "f", text: "feed is building" });
+  r2.run(20_000); await r2.end();
+  assert.deepEqual(r2.dropped("stale"), ["feed is building"]);
 });
 
 test("obsolete: the prompt was answered before the line came up, so it's never said", async () => {
@@ -79,14 +90,14 @@ test("preemption: a P0 cuts in after the current sentence; a P0 itself is never 
   r.n.add({ kind: "done", session: "a", name: "api", text: "api finished: long report." });
   r.run(1300);
   assert.equal(r.yields[0](), false, "nothing waiting: keep going");
-  r.n.add({ kind: "failed", session: "f", name: "feed", text: "feed failed: the build broke." });
+  r.n.add({ kind: "waiting", session: "f", name: "feed", text: "feed needs your approval: push to main." });
   assert.equal(r.said.length, 1, "it waits for the sentence boundary");
   assert.equal(r.yields[0](), true, "asked between sentences: give way");
   await r.end();
-  assert.equal(r.said[1].text, "feed failed: the build broke.");
+  assert.equal(r.said[1].text, "feed needs your approval: push to main.");
   r.n.add({ kind: "waiting", session: "w", text: "web needs you" });
   assert.equal(r.yields[1](), false, "a P0 being said is never cut");
-  assert.ok(r.logs.some((l) => l.act === "cut" && l.why === "a P0 cut in"));
+  assert.ok(r.logs.some((l) => l.act === "cut" && l.why === "important cut in (postponed)"));
 });
 
 test("a stale P2 being spoken stops at the next sentence", async () => {
@@ -99,7 +110,7 @@ test("a stale P2 being spoken stops at the next sentence", async () => {
   assert.equal(r.yields[0](), true);
 });
 
-test("a burst within ~4 s is said as one line about the current state, no model", async () => {
+test("a burst within ~4 s: the strongest in full, the rest as one short line; notifications wait until idle", async () => {
   const r = rig();
   r.n.add({ kind: "done", session: "1", name: "axa", text: "axa finished: x." });
   r.run(500); r.n.add({ kind: "done", session: "2", name: "feed", text: "feed finished: y." });
@@ -107,19 +118,16 @@ test("a burst within ~4 s is said as one line about the current state, no model"
   r.run(500); r.n.add({ kind: "done", session: "2", name: "feed", text: "feed finished: y." });
   assert.equal(r.said.length, 0, "still settling");
   r.run(1300);
-  assert.equal(r.said.length, 1);
-  assert.equal(r.said[0].text, "Two sessions finished, axa and feed. Link fired: web to api.");
-  // the line names the state now: who needs you goes last
-  assert.equal(N.mergeLine([
-    { kind: "done", name: "axa" }, { kind: "done", name: "feed" }, { kind: "waiting", name: "feed" },
-  ]), "Two sessions finished, axa and feed. Feed needs you.");
-  assert.equal(N.mergeLine([{ kind: "failed", name: "api" }, { kind: "limited", name: "web" }, { kind: "exited", name: "docs" }, { kind: "waiting", name: "a" }, { kind: "escalate", name: "b" }]),
-    "Api failed. Web hit a usage limit. Claude exited in docs. A and b need you.");
+  assert.deepEqual(r.said.map((x) => x.text), ["axa finished: x. Also, feed finished."]);
+  await r.end();
+  assert.equal(r.said[1].text, "link fired: web to api", "the notification, once idle");
   // a burst can't hold things back for long: said at most BURST_MS after it began
   const r2 = rig();
-  for (let i = 0; i < 8; i++) { r2.n.add({ kind: "done", session: String(i), name: `s${i}`, text: "x" }); r2.run(600); }
+  for (let i = 0; i < 8; i++) { r2.n.add({ kind: "done", session: String(i), name: `s${i}`, text: `s${i} finished.` }); r2.run(600); }
   assert.equal(r2.said.length, 1);
-  assert.match(r2.said[0].text, /^Seven sessions finished/);
+  assert.equal(r2.said[0].text, "s0 finished. Also, s1, s2, s3, s4, s5 and s6 finished.");
+  // mergeLine (digests, recaps): grouped, who needs you last
+  assert.equal(N.mergeLine([{ kind: "done", name: "axa" }, { kind: "done", name: "feed" }, { kind: "waiting", name: "feed" }]), "Two sessions finished, axa and feed. Feed needs you.");
 });
 
 test("budgets: P0 never limited; P2 at most one line per 20 s; P3 is an earcon, never words", async () => {

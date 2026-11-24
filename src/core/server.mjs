@@ -17,10 +17,13 @@ import { listAgents, listProjects, readRoster } from "./catalog.mjs";
 import { chatMessages, findChat, listChats } from "./claude-data.mjs";
 import { safe } from "./text.mjs";
 import { desktopWants, notifier, notifySettings, showDesktop, voiceHooks } from "./notify.mjs";
-import { createNarrator, lineFor, livenessLine, logLine } from "./narrator.mjs";
+import { createNarrator, lineFor, livenessLine, logLine, sentence1 } from "./narrator.mjs";
 import { earconFile, earconFor } from "./earcons.mjs";
 import { createTracker, fileStore } from "./durations.mjs";
 import { admitItem, escalationLine, isEscalation, whatsUp } from "./anticipate.mjs";
+import { blastOf, digestLine, heartbeatLine, modeAdmit, realertDue, realertLine, recapLine, spokenLineOf, voiceFor } from "./attention.mjs";
+import { DEFAULT_VOICE, VOICES } from "./kokoro.mjs";
+import { SHORT } from "./speech.mjs";
 import { briefNotification, briefTick, reviewProjects } from "./projects.mjs";
 import { MORE_DETAIL, firstLine, notesNeedSummary, prefetchSummary, spokenReply, summaryMode } from "./summary.mjs";
 import { readMilestones } from "./milestone.mjs";
@@ -75,28 +78,47 @@ const ttfa = (items) => {
   const t0 = Math.min(...items.map((i) => i.t0 ?? i.at)), what = [...new Set(items.map((i) => i.how || i.kind))].join("+");
   return (k) => console.log(`[${new Date().toISOString()}] voice: first ${k} ${Date.now() - t0} ms after the event (${what})`);
 };
+// the session you're looking at in the hub (POST /api/focus, refreshed while you are): no progress chatter about it
+let focus = { id: null, at: 0 };
+const focusedId = () => (Date.now() - focus.at < 60_000 ? focus.id : null);
+// digest / quiet mode (attention.mjs): what doesn't interrupt is held here and said as one digest
+let held = [], lastDigestAt = Date.now();
 const narrator = createNarrator({
   speak: async (text, { items, shouldYield }) => {
     voiceNow = items.some((i) => i.how === "summary") ? "speaking summary" : "speaking";
+    const vs = V.settings();
     // an earcon first (it plays while the first sentence is made): what kind of news, before the words
-    const tone = V.settings().earcons ? earconFor(items) : null;
-    try { await V.speak(text, { between: shouldYield, onStart: ttfa(items), intro: tone ? earconFile(tone) : null }); } finally { if (!V.speaking()) voiceNow = null; }
+    const tone = vs.earcons ? earconFor(items) : null;
+    // a voice per project (voicePerProject on, Kokoro): one session's line in its project's own voice
+    const one = items.length === 1 && items[0].session && items[0].name && items[0].name !== "AXA" ? items[0].name : null;
+    const name = vs.perProject && vs.engine === "kokoro" && one ? voiceFor(one, vs.name || DEFAULT_VOICE, VOICES) : undefined;
+    // the sentences actually heard: after a preemption the narrator says only the rest
+    const chunks = V.chunkText(text, V.CHUNK, V.FIRST_CHUNK); let heard = 0;
+    try { await V.speak(text, { between: shouldYield, onStart: ttfa(items), intro: tone ? earconFile(tone) : null, onHeard: (i) => { heard = Math.max(heard, i + 1); }, ...(name ? { name } : {}) }); }
+    finally { if (!V.speaking()) voiceNow = null; }
+    return { heard: chunks.slice(0, heard).join(" ") };
   },
   earcon: (name) => V.playEarcon(name),
   isCurrent: stillTrue,
   // verbosity, quiet hours (a P0 becomes a desktop toast, unless the desktop setting already shows it), typing
+  // ...the focus gate, and the interruption mode (digest / quiet: held for the digest)
   admit: (it) => {
-    const vs = V.settings(), why = admitItem(it, { verbosity: vs.verbosity, quiet: vs.quiet, typingAt: it.session ? S.lastInputAt(it.session) : 0 });
+    const vs = V.settings(), why = admitItem(it, { verbosity: vs.verbosity, quiet: vs.quiet, typingAt: it.session ? S.lastInputAt(it.session) : 0, focus: focusedId() });
     if (why && it.priority === 0 && why.startsWith("quiet hours") && !desktopWants(notifySettings().desktop, { needsUser: true })) showDesktop("AXA", it.text);
-    return why;
+    if (why) return why;
+    if (modeAdmit(it, notifySettings().mode) === "hold") { held.push(it); if (held.length > 100) held = held.slice(-100); return "held for the digest"; }
+    return null;
   },
   log: (e) => console.log(`[${new Date().toISOString()}] ${logLine(e)}`),
 });
 // a notification as a narrator item
 // (a template line: said the moment it happens, no model)
 const cap = (t) => (t ? t[0].toUpperCase() + t.slice(1) : t);
-const noteItem = (n) => ({ kind: n.kind, session: n.session || null, name: n.project || "AXA", expect: n.session ? EXPECT[n.kind] : undefined, t0: n.at,
-  text: cap(V.toSpeech(safe(lineFor(n)), { more: false })) });
+const noteItem = (n) => {
+  const it = { kind: n.kind, session: n.session || null, name: n.project || "AXA", expect: n.session ? EXPECT[n.kind] : undefined, t0: n.at,
+    text: cap(V.toSpeech(safe(lineFor(n)), { more: false })), question: /^asks you:/i.test(n.body || "") };
+  return { ...it, blast: blastOf({ ...it, text: `${n.title} ${n.body || ""}` }) || undefined };
+};
 Object.assign(voiceHooks, { on: () => V.settings().on, add: (n) => (n.kind === "brief" ? speakBrief(n) : narrator.add(noteItem(n))) });
 // fn(signal) -> { text, how }: Esc and mute abort the signal, which kills a summary still being written (its
 // claude -p child). What it returns goes to the narrator as `item` (superseded by a newer reply or by Esc).
@@ -151,9 +173,24 @@ onLine((line) => {
   try { tracker.event(e); } catch {}
   if (isEscalation(e) && V.settings().on) {
     const name = sessionName(e.terminal);
-    narrator.add({ kind: "escalate", session: e.terminal, name, t0: e.ts, expect: ["working", "waiting", "needs_trust"], text: V.toSpeech(safe(escalationLine(e, name)), { more: false }) });
+    narrator.add({ kind: "escalate", session: e.terminal, name, t0: e.ts, expect: ["working", "waiting", "needs_trust"], text: V.toSpeech(safe(escalationLine(e, name)), { more: false }), blast: blastOf({ kind: "escalate", reason: e.reason, text: e.summary }) });
   }
+  // a worker's turn ended: its own spoken line ("🔊 ...", asked for by hooks/spoken-line.mjs) at once; without
+  // one, a short report's first sentence, or a long one's Haiku summary (the template if that fails). The
+  // notification's "finished" that follows is then not said again (one turn, one "finished").
+  if (e.event === "Stop" && e.role === "worker" && !e.agent_id && e.terminal && e.message && V.settings().on) speakWorkerStop(e);
 });
+function speakWorkerStop(e) {
+  const name = sessionName(e.terminal), item = { kind: "done", session: e.terminal, name, t0: e.ts, expect: ["done"] };
+  const { line, rest } = spokenLineOf(safe(e.message));
+  if (line) return narrator.add({ ...item, how: "agent line", text: V.toSpeech(`${name} finished: ${line}`, { more: false }) });
+  const all = V.toSpeech(rest, { full: true });
+  if (!all) return;
+  if (all.length <= SHORT || summaryMode() !== "model") return narrator.add({ ...item, how: "template", text: V.toSpeech(`${name} finished: ${sentence1(all)}`, { more: false }) });
+  spokenReply(rest, { mode: "model", more: false }).catch(() => ({ how: "failed" })).then((r) => {
+    narrator.add({ ...item, how: r.how === "summary" ? "summary" : "template", text: r.how === "summary" ? `${name} finished. ${r.text}` : V.toSpeech(`${name} finished: ${sentence1(all)}`, { more: false }) });
+  });
+}
 setInterval(() => { try { tracker.tick(); } catch {} }, 5_000).unref();
 // "what's up": every session in 1-3 sentences, said at once when the voice is on (you asked: verbosity doesn't
 // hold it back)
@@ -176,6 +213,40 @@ setInterval(() => {
     if (text) narrator.add({ kind: "liveness", key: "liveness", session: s.id, name: s.name, text: V.toSpeech(safe(text), { more: false }), expect: ["working"] });
   }
 }, 20_000).unref();
+// Heartbeat (chatty): work expected to take over 2 min (the duration store) gets a <= 10-word status at most once
+// a minute. Re-alerts: a "needs you" not answered is said again after 60 s, 3 and 10 min (at most 3 times),
+// stopped the moment it's answered or you type in that session.
+const waitingSince = new Map(); // id -> { since, count }
+setInterval(() => {
+  const vs = V.settings(), now = Date.now();
+  for (const s of S.listSessions()) {
+    if (!s.alive || s.mode === "shell") continue;
+    if (vs.on && s.status === "working" && workingSince.has(s.id)) {
+      const last = narrator.lastSaidAbout(s.id);
+      const text = heartbeatLine({ name: s.name, doing: s.doing, expectedMs: tracker.expected(s.id), sinceSaid: last ? now - last : Infinity, verbosity: vs.verbosity });
+      if (text) narrator.add({ kind: "heartbeat", key: "heartbeat", session: s.id, name: s.name, text: V.toSpeech(safe(text), { more: false }), expect: ["working"] });
+    }
+    if (!["waiting", "needs_trust"].includes(s.status)) { waitingSince.delete(s.id); continue; }
+    if (!waitingSince.has(s.id)) waitingSince.set(s.id, { since: now, count: 0 });
+    const w = waitingSince.get(s.id);
+    if (!vs.on || !realertDue({ since: w.since, count: w.count, now, typedAt: S.lastInputAt(s.id) })) continue;
+    w.count++;
+    narrator.add({ kind: "realert", key: `realert${w.count}`, session: s.id, name: s.name, expect: ["waiting", "needs_trust"], text: realertLine(s.name, w.count) });
+  }
+}, 10_000).unref();
+// the digest (digest mode): every digestMin minutes, what was held, as one line (ranked: what needs you by
+// blast radius first). `w` says it at once too.
+function digestNow() {
+  const text = digestLine(held.filter((it) => { try { return !it.session || !it.expect || stillTrue(it); } catch { return true; } }));
+  held = []; lastDigestAt = Date.now();
+  return text;
+}
+setInterval(() => {
+  const st = notifySettings();
+  if (st.mode !== "digest" || !held.length || Date.now() - lastDigestAt < st.digestMin * 60_000) return;
+  const text = digestNow();
+  if (text && V.settings().on) narrator.add({ kind: "digest", key: "digest", asked: true, text: V.toSpeech(safe(text), { more: false }) });
+}, 30_000).unref();
 // the daily brief: one long notification, always summarised (when summaries are on)
 function speakBrief(n) {
   const text = `${n.title}${n.body ? `: ${n.body}` : ""}`;
@@ -265,8 +336,24 @@ const routes = [
     return [200, startMilestone({ cwd, base: b.base || undefined, goal: b.goal, source: b.source === "cli" ? "cli" : "commander" })];
   }],
   // the daily brief, now (`axa brief now`): doesn't change when the daily one goes out
+  // the session you're looking at in the hub (null: the hub itself): the focus gate
+  ["POST", /^\/api\/focus$/, async (m, req) => { const b = await readBody(req); focus = { id: typeof b.session === "string" ? b.session : null, at: Date.now() }; return [200, {}]; }],
+  // back at the hub after a while: "while you were away", from the notifications since then (summarised when long)
+  ["POST", /^\/api\/recap$/, async (m, req) => {
+    const b = await readBody(req), since = Number(b.since) || Date.now() - 10 * 60_000;
+    const text = recapLine(notifier.list().filter((n) => n.at > since));
+    if (!text) return [200, { text: null, spoken: false }];
+    const spoken = V.settings().on, item = { kind: "recap", key: "recap", asked: true, solo: true };
+    if (spoken) {
+      if (text.length > SHORT && summaryMode() === "model") planned((signal) => spokenReply(safe(text), { mode: "model", signal }), item);
+      else narrator.add({ ...item, text: V.toSpeech(safe(text), { more: false }) });
+    }
+    return [200, { text, spoken }];
+  }],
   ["POST", /^\/api\/whatsup$/, () => {
-    const text = whatsUpNow(), spoken = V.settings().on;
+    // in digest / quiet mode, what was held comes first
+    const digest = held.length ? digestNow() : null;
+    const text = [digest, whatsUpNow()].filter(Boolean).join(" "), spoken = V.settings().on;
     if (spoken) narrator.add({ kind: "whatsup", key: "whatsup", solo: true, asked: true, text: V.toSpeech(safe(text), { more: false }) });
     return [200, { text, spoken }];
   }],

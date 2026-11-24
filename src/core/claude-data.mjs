@@ -1,5 +1,6 @@
 // What AXA reads from Claude Code's own files in ~/.claude/projects: your past chats (to list and
 // resume them from the hub) and the tokens each chat has used.
+import { stripSpoken } from "./attention.mjs";
 import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
@@ -188,5 +189,6 @@ export function chatMessages(id, max = 12) {
     if (key && msgs.length && msgs.at(-1).key === key) msgs[msgs.length - 1].text = text;
     else msgs.push({ role, text: text.slice(0, 4000), key, at });
   }
-  return msgs.slice(-max).map(({ role, text, at }) => ({ role, text, ...(at ? { at } : {}) }));
+  // (the agent's spoken line, "🔊 ...", is for AXA's voice: not shown in the chat)
+  return msgs.slice(-max).map(({ role, text, at }) => ({ role, text: role === "you" ? text : stripSpoken(text), ...(at ? { at } : {}) }));
 }

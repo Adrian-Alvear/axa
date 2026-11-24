@@ -97,6 +97,21 @@ known. Settings (`,`, or `ui.json`): `"voiceVerbosity"` `quiet` (only what needs
 `chatty` (all progress); `"voiceEarcons"` `on`/`off`; `"voiceQuiet"` e.g. `"22:00-07:00"` (nothing said; what
 needs you becomes a desktop toast). No progress chatter about a session you're typing in. Every line said or
 dropped, with why, and the time to first audio are in the daemon's log.
+
+From the research (`research/voice-narration.md`): lines are queued in speech-dispatcher's tiers (important /
+message / text / notification / progress: what needs you is never cut and postpones a message, whose unheard
+rest is said after it, never what you already heard). When several sessions have news at once, the strongest
+is said in full and the rest named in one short line ("api needs your approval: push to main. Also, axa and feed
+finished."), and a session's name is said only when the speaker changes. AXA's worker sessions are asked to end
+a finished turn with a `🔊` line (12 words at most) that's said the moment the turn stops (hidden in the chat
+and notifications; the Haiku summary is the fallback). A "needs you" nobody answers is said again after 1, 3
+and 10 minutes, until you answer or type in it. Nothing routine is said about the session you're looking at in
+the hub. At verbosity `chatty`, long work (over 2 min, from the duration store) gets a 10-word status at most
+once a minute. Back at the hub after 10 min idle: "While you were away: …". **Interruptions**
+(`,` → Interruptions, `axa notify live|digest|quiet`, `ui.json` `"notify": { "mode", "digestMin" }`): `live`
+(default), `digest` (only one-way doors and failures interrupt; the rest is said as one digest every 15 min, or
+when you press `w`; what needs you ranked by blast radius) or `quiet`; the status bar shows it. `"voicePerProject":
+"on"` gives each project its own Kokoro voice.
 **Kokoro speaks sentence by sentence:** a reply is cut into chunks of whole sentences (about 200 characters),
 the first plays while the next is made (so it starts in about a second), each chunk has its own timeout (4 s
 plus 40 ms per character), and a reply's new words are loaded once before its first sentence. A chunk that's
