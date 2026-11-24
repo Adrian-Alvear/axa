@@ -421,12 +421,14 @@ const VOICE_SLOT = Math.max(width("voice on"), ...VOICE_STATES.map((s) => width(
 const padTo = (s, n) => s + " ".repeat(Math.max(0, n - width(s)));
 // AXA's own status line for the commander: mode · model · context · tokens · uptime · agents · sessions.
 // Pieces drop from the right when it's narrow. `on` ("bar") draws it as a status bar.
-export function axaStatusLine(cmd, sessions, w, maxRows = 2, { mode = "", on = null, voice = false, notifyMode = "live" } = {}) {
+export function axaStatusLine(cmd, sessions, w, maxRows = 2, { mode = "", on = null, voice = false, notifyMode = "live", usage = null } = {}) {
   const u = cmd.usage || {}, segs = [];
   // voice: true (on) or what it's doing now ("speaking summary"), in a slot as wide as the longest state so
   // nothing after it moves when it changes
   if (voice) segs.push([padTo(voice === true ? "voice on" : `🔊 ${voice}`, VOICE_SLOT), "accent"]);
   // interruptions held back (attention.mjs): shown whenever it isn't live
+  // spending: every session's estimated cost, and the account's limits (official) when known
+  if (usage && (usage.cost || usage.limits)) segs.push([[usage.cost ? `$${usage.cost < 10 ? usage.cost.toFixed(2) : Math.round(usage.cost)} est` : "", usage.limits || ""].filter(Boolean).join(" · "), "dim"]);
   if (notifyMode === "digest" || notifyMode === "quiet") segs.push([notifyMode === "digest" ? "◷ digest" : "◌ quiet", "waitSoft"]);
   if (mode) segs.push([`${mode.startsWith("plan") ? "⏸" : "⏵⏵"} ${mode}`, mode.startsWith("bypass") ? "stuck" : "accent"]);
   if (u.model) segs.push([`◆ ${modelName(u.model)}`, "accent"]);

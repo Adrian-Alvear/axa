@@ -26,6 +26,8 @@ const USAGE = `AXA: one place for all your Claude Code sessions, chats and agent
   axa restart          restart the daemon (sessions keep running)
   axa notify [live|digest|quiet]   interruptions: as they happen, only one-way doors + failures (a digest
                        for the rest), or none
+  axa usage [--json]   tokens (official) and cost (estimate) per session and per project per day, the 5-hour /
+                       weekly limits
   axa whatsup          what every session is doing now, in a few sentences (spoken when the voice is on)
   axa brief [HH:MM|off|now]   the daily brief: show it, set its time, turn it off, or get one right away
   axa trust <path>     trust a project (its git repo root) for Claude Code, so sessions AXA starts there
@@ -177,6 +179,21 @@ switch (cmd) {
     if (arg === undefined) { const st = notifySettings(); console.log(`Interruptions: ${st.mode}${st.mode === "digest" ? ` (a digest every ${st.digestMin} min)` : ""}. Set with: axa notify live | digest | quiet`); break; }
     try { writeNotifyMode(files.ui, arg); } catch (e) { console.error(`axa notify: ${e.message}`); process.exit(1); }
     console.log(`Interruptions: ${arg}.${arg === "digest" ? " Only one-way doors and failures interrupt; the rest is said as a digest (w says it now)." : arg === "quiet" ? " Nothing interrupts; w says what's up." : ""}`);
+    break;
+  }
+  case "usage": {
+    // per session (tokens: official, from Claude Code's transcripts; cost: an estimate), per project per day,
+    // and the account's 5-hour / weekly limits when Claude Code's status line has them
+    await daemon();
+    const u = await api("/api/usage");
+    if (flags.has("--json")) { console.log(JSON.stringify(u, null, 2)); break; }
+    const { usd } = await import(join(root, "src", "core", "usage.mjs"));
+    const k = (n) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : `${Math.round(n / 1e3)}k`);
+    console.log(`Limits (official): ${u.limits_text || "unknown (needs a status line that saves its input)"}`);
+    console.log(`Sessions: ${usd(u.total_cost)} in all (estimate)`);
+    for (const s of [...u.sessions].sort((a, b) => (b.cost || 0) - (a.cost || 0))) console.log(`  ${s.name.padEnd(20)} ${k(s.tokens).padStart(7)} tokens  ${usd(s.cost).padStart(7)}  ${s.model || ""}${s.over_budget ? "  OVER BUDGET" : ""}`);
+    const days = Object.entries(u.projects).flatMap(([p, ds]) => Object.entries(ds).map(([d, r]) => ({ p, d, ...r }))).sort((a, b) => b.d.localeCompare(a.d) || b.cost - a.cost).slice(0, 14);
+    if (days.length) { console.log("Per project per day (estimate):"); for (const r of days) console.log(`  ${r.d}  ${r.p.padEnd(20)} ${k(r.tokens).padStart(7)} tokens  ${usd(r.cost).padStart(7)}`); }
     break;
   }
   case "whatsup": {

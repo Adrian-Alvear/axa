@@ -17,6 +17,7 @@ import { ESC, I, THEME_NAMES, nerdFontInstalled, URGENCY, ago, chipOf, clean, cu
 import { sliceAnsi } from "./ansi.mjs";
 import { BRIEF_TIMES, IDLE_DAYS, ageText, gitLine, handoffPath } from "../core/projects.mjs";
 import { MODES, RECAP_IDLE_MS } from "../core/attention.mjs";
+import { usd } from "../core/usage.mjs";
 import { LiveView } from "./live.mjs";
 import { agentDetail, agentName, axaStatusLine, controlRows, msgText, selectedText } from "./control.mjs";
 import { copyToClipboard, pasteFile, readClipboard } from "./clipboard.mjs";
@@ -489,7 +490,7 @@ export async function runTui() {
       if (cmdSel && cmdSel.scroll !== cmdScroll) cmdSel = null; // the conversation scrolled: the selection goes
       // one full-width status bar under it: mode · model · context · tokens · agents · sessions
       const c = commander();
-      rowsOut.push(c ? axaStatusLine(c, data.sessions, W, 1, { mode: ctl.cmdStatus.mode, on: "bar", voice: voiceOn() && (voiceState || true), notifyMode: cfg.notify?.mode })[0] : line([[" AXA is offline · press a to start it", "barDim"]], W, [], "bar"));
+      rowsOut.push(c ? axaStatusLine(c, data.sessions, W, 1, { mode: ctl.cmdStatus.mode, on: "bar", voice: voiceOn() && (voiceState || true), notifyMode: cfg.notify?.mode, usage: usageInfo && { cost: usageInfo.total_cost, limits: usageInfo.limits_text } })[0] : line([[" AXA is offline · press a to start it", "barDim"]], W, [], "bar"));
       return rowsOut;
     }
     if (W < 90) { listArea = { x0: 1, x1: W, y0, y1: y0 + h - 1, panel }; return listRows(panel, 1, y0, W, h); }
@@ -622,6 +623,21 @@ export async function runTui() {
 
   // ---------- notifications ----------
   // newest first; Enter (or a click on the selected one) goes to its session; c clears the list
+  // ---------- usage ($): per session and per project per day; tokens official, cost an estimate ----------
+  let usageInfo = null;
+  async function pollUsage() { try { usageInfo = await call("/api/usage"); schedule(); } catch {} }
+  function openUsage() {
+    const u = usageInfo;
+    if (!u) { pollUsage(); return flash("usage: asking the daemon…"); }
+    const k = (n) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : `${Math.round((n || 0) / 1e3)}k`);
+    const lines = [{ text: `Account limits (official): ${u.limits_text || "unknown: Claude Code's status line data isn't available"}`, role: "head" }, { text: "" },
+      { text: `Sessions · ${usd(u.total_cost)} in all (cost: estimate; tokens: official)`, role: "head" }];
+    for (const x of [...u.sessions].sort((a, b) => (b.cost || 0) - (a.cost || 0))) lines.push({ text: `  ${pad(clean(x.name), 22)} ${k(x.tokens).padStart(7)} tokens  ${usd(x.cost).padStart(7)}  ${x.model || ""}${x.over_budget ? "  OVER BUDGET" : x.budget ? `  budget ${k(x.budget)}` : ""}`, role: x.over_budget ? "stuck" : "" });
+    if (!u.sessions.length) lines.push({ text: "  nothing yet", role: "dim" });
+    const days = Object.entries(u.projects || {}).flatMap(([p, ds]) => Object.entries(ds).map(([d, r]) => ({ p, d, ...r }))).sort((a, b) => b.d.localeCompare(a.d) || b.cost - a.cost).slice(0, 30);
+    if (days.length) { lines.push({ text: "" }, { text: "Per project per day (estimate)", role: "head" }); for (const r of days) lines.push({ text: `  ${r.d}  ${pad(r.p, 22)} ${k(r.tokens).padStart(7)} tokens  ${usd(r.cost).padStart(7)}` }); }
+    viewer("Usage", lines);
+  }
   function openNotifications() {
     const list = [...notes].reverse();
     cfg.notifySeen = Math.max(cfg.notifySeen || 0, ...notes.map((n) => n.at)); saveCfg();
@@ -884,6 +900,7 @@ export async function runTui() {
       { text: "  Control: ↑/↓ pick a session (or click it on the map or table) · : talk to the commander" },
       { text: "  ↑/↓ or j/k, PgUp/PgDn    move in a panel        Enter   open the selected thing" },
       { text: "  a   the AXA commander (opens it, or starts it)   N   new session (pick a folder)" },
+      { text: "  $   usage: tokens (official) and cost (estimate) per session and project, the 5-hour / weekly limits" },
       { text: "  n   notifications (newest first: Enter goes to the session, c clears; the bell counts the unread)" },
       { text: "  /   filter the panel     y / x   answer the prompt in the yellow bar   !  go to it" },
       { text: "  o   web console          ,  settings             q   quit (sessions keep running)" },
@@ -1050,6 +1067,7 @@ export async function runTui() {
       case "o": openUrl(webUrl()); return flash("opened the web console in your browser");
       case "a": return openCommander();
       case "n": return openNotifications();
+      case "$": return openUsage();
       case "N": return panel === "projects" && it?.kind === "project" ? newSession(it.p) : newSession();
       case "y": return answerAlert("yes");
       case "x": return answerAlert("no");
@@ -1362,6 +1380,8 @@ export async function runTui() {
   setInterval(pollSessions, 1000);
   pollNotes();
   setInterval(pollNotes, 3000);
+  pollUsage();
+  setInterval(pollUsage, 30_000);
   // the commander's conversation: refreshed while Control is open, and right after it finishes a turn
   let cmdLast = "";
   const pollCommander = async () => {

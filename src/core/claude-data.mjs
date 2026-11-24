@@ -1,5 +1,6 @@
 // What AXA reads from Claude Code's own files in ~/.claude/projects: your past chats (to list and
 // resume them from the hub) and the tokens each chat has used.
+import { costOf } from "./usage.mjs";
 import { stripSpoken } from "./attention.mjs";
 import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, statSync } from "node:fs";
 import { homedir } from "node:os";
@@ -91,7 +92,7 @@ function chatDir(chat) {
   return null;
 }
 function refreshUsage(chat) {
-  const c = usageCache.get(chat) || { files: new Map(), seen: new Map(), tot: { input: 0, cached: 0, output: 0 } };
+  const c = usageCache.get(chat) || { files: new Map(), seen: new Map(), tot: { input: 0, cached: 0, output: 0, written: 0 }, days: {} };
   usageCache.set(chat, c);
   if (c.busy || (c.at && Date.now() - c.at < USAGE_MS)) return;
   c.busy = true;
@@ -123,9 +124,12 @@ function refreshUsage(chat) {
         }
         // a streamed response repeats its line as it grows: count the largest numbers once
         const key = `${o.message.id}:${o.requestId}`;
-        const now = { input: (u.input_tokens || 0) + (u.cache_creation_input_tokens || 0), cached: u.cache_read_input_tokens || 0, output: u.output_tokens || 0 };
-        const was = c.seen.get(key) || { input: 0, cached: 0, output: 0 };
-        for (const k of ["input", "cached", "output"]) if (now[k] > was[k]) { c.tot[k] += now[k] - was[k]; was[k] = now[k]; }
+        const now = { input: (u.input_tokens || 0) + (u.cache_creation_input_tokens || 0), cached: u.cache_read_input_tokens || 0, output: u.output_tokens || 0, written: u.cache_creation_input_tokens || 0 };
+        const was = c.seen.get(key) || { input: 0, cached: 0, output: 0, written: 0 };
+        // (and per local day, for usage per project per day: usage.mjs)
+        const t = new Date(o.timestamp || Date.now()), day = `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, "0")}-${String(t.getDate()).padStart(2, "0")}`;
+        const d = (c.days[day] ||= { input: 0, cached: 0, output: 0, written: 0 });
+        for (const k of ["input", "cached", "output", "written"]) if (now[k] > was[k]) { c.tot[k] += now[k] - was[k]; d[k] += now[k] - was[k]; was[k] = now[k]; }
         c.seen.set(key, was);
       }
     }
@@ -146,7 +150,8 @@ export function usageOf(chat, cwd, live) {
   const c = usageCache.get(chat), tot = c?.tot;
   if (!tot) return null;
   const tokens = tot.input + tot.output, budget = budgetFor(cwd);
-  return { tokens, input: tot.input, cached: tot.cached, output: tot.output, budget: budget || undefined, over_budget: budget > 0 && tokens > budget, model: c.model, context: c.context };
+  // tokens: official (Claude Code's own transcript); cost: an estimate (usage.mjs list prices)
+  return { tokens, input: tot.input, cached: tot.cached, output: tot.output, written: tot.written, cost: costOf(tot, c.model), cost_label: "estimate", days: c.days, budget: budget || undefined, over_budget: budget > 0 && tokens > budget, model: c.model, context: c.context };
 }
 
 // ---------- a chat's last messages, for the hub's preview ----------

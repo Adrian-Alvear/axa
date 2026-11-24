@@ -42,7 +42,7 @@ function describe(s) {
   if (s.doing) said.push(`now: ${s.doing}`);
   if (s.git) said.push(`git: ${gitLine(s.git)}`);
   if (s.worktree) said.push(`worktree: its own folder ${s.worktree.path} on branch ${s.worktree.branch} (repo ${s.worktree.repo})`);
-  if (s.usage) said.push(`usage: ${fmtTokens(s.usage.tokens)} tokens${s.usage.budget ? ` of a ${fmtTokens(s.usage.budget)} budget${s.usage.over_budget ? " — OVER BUDGET: give it no more work" : ""}` : ""}`);
+  if (s.usage) said.push(`usage: ${fmtTokens(s.usage.tokens)} tokens (official)${s.usage.cost != null ? `, about $${s.usage.cost.toFixed(2)} (estimate)` : ""}${s.usage.budget ? ` of a ${fmtTokens(s.usage.budget)} budget${s.usage.over_budget ? " — OVER BUDGET: give it no more work" : ""}` : ""}`);
   if (s.choices) said.push(`prompt on screen (only the user may answer it): ${s.choices.question.replace(/\s+/g, " ").slice(-300)} → ${s.choices.options.map((o) => `${o.n}. ${o.label}`).join(" | ")}`);
   if (s.error) said.push(`last error: ${s.error}`);
   if (s.review) said.push(reviewText(s.review));

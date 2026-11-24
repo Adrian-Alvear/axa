@@ -24,6 +24,8 @@ import { admitItem, escalationLine, isEscalation, whatsUp } from "./anticipate.m
 import { blastOf, digestLine, heartbeatLine, modeAdmit, realertDue, realertLine, recapLine, spokenLineOf, voiceFor } from "./attention.mjs";
 import { DEFAULT_VOICE, VOICES } from "./kokoro.mjs";
 import { SHORT } from "./speech.mjs";
+import { RUNAWAY, byProjectDay, limitsText, readLimits, runawayCheck, runawayText } from "./usage.mjs";
+import { headOf } from "./git.mjs";
 import { briefNotification, briefTick, reviewProjects } from "./projects.mjs";
 import { MORE_DETAIL, firstLine, notesNeedSummary, prefetchSummary, spokenReply, summaryMode } from "./summary.mjs";
 import { readMilestones } from "./milestone.mjs";
@@ -254,6 +256,36 @@ function speakBrief(n) {
   return planned((signal) => spokenReply(safe(text), { mode: "model", signal }), { kind: "brief", name: "axa" });
 }
 
+// ---------- usage: runaway spending (usage.mjs) ----------
+// Every minute: each working session's tokens (official, from its transcript), its HEAD (a commit resets the
+// clock) and its last turn end. Past the policy's "runaway" threshold: a needs-you notification, once an hour.
+const spend = new Map(); // id -> { samples: [{at, tokens}], head, lastCommitAt, lastStopAt, warnedAt }
+onLine((line) => { try { const e = JSON.parse(line); if (e.event === "Stop" && e.terminal && !e.agent_id && spend.has(e.terminal)) spend.get(e.terminal).lastStopAt = e.ts; } catch {} });
+const runawayLimit = () => { try { return Number(JSON.parse(readFileSync(files.policy, "utf8")).runaway?.tokens15m) || RUNAWAY.tokens; } catch { return RUNAWAY.tokens; } };
+setInterval(() => {
+  const now = Date.now();
+  for (const s of S.listSessions()) {
+    if (!s.alive || s.mode === "shell" || !s.usage) { spend.delete(s.id); continue; }
+    const r = spend.get(s.id) || { samples: [], head: null, lastCommitAt: 0, lastStopAt: 0, warnedAt: 0 };
+    spend.set(s.id, r);
+    r.samples.push({ at: now, tokens: s.usage.tokens });
+    r.samples = r.samples.filter((x) => x.at >= now - 30 * 60_000);
+    const head = headOf(s.worktree?.path || s.cwd);
+    if (head && r.head && head !== r.head) r.lastCommitAt = now;
+    r.head = head || r.head;
+    if (now - r.warnedAt < 3600_000) continue;
+    const hit = runawayCheck(r.samples, { now, limit: runawayLimit(), lastCommitAt: r.lastCommitAt, lastStopAt: r.lastStopAt, doneAt: r.lastStopAt });
+    if (hit) { r.warnedAt = now; notifier.push({ kind: "runaway", session: s.id, project: s.name, title: `${s.name} may be looping`, body: runawayText(s.name, hit), needsUser: true }); }
+  }
+}, 60_000).unref();
+// GET /api/usage: per session (tokens official, cost estimate), per project per day, the account's limits
+function usageReport() {
+  const ss = S.listSessions().filter((s) => s.usage);
+  const sessions = ss.map((s) => ({ id: s.id, name: s.name, project: s.worktree?.repo || s.cwd, alive: s.alive, model: s.usage.model, tokens: s.usage.tokens, input: s.usage.input, output: s.usage.output, cached: s.usage.cached, cost: s.usage.cost, tokens_label: "official", cost_label: "estimate", budget: s.usage.budget, over_budget: s.usage.over_budget }));
+  const limits = readLimits();
+  return { sessions, projects: byProjectDay(ss), limits, limits_text: limitsText(limits), total_cost: Math.round(sessions.reduce((a, x) => a + (x.cost || 0), 0) * 100) / 100 };
+}
+
 // ---------- http ----------
 const json = (res, code, body) => { res.writeHead(code, { "content-type": "application/json" }); res.end(JSON.stringify(body)); };
 const readBody = (req) => new Promise((ok) => { let b = ""; req.on("data", (c) => (b += c).length > 1e5 && req.destroy()); req.on("end", () => { try { ok(JSON.parse(b || "{}")); } catch { ok({}); } }); });
@@ -350,6 +382,7 @@ const routes = [
     }
     return [200, { text, spoken }];
   }],
+  ["GET", /^\/api\/usage$/, () => [200, usageReport()]],
   ["POST", /^\/api\/whatsup$/, () => {
     // in digest / quiet mode, what was held comes first
     const digest = held.length ? digestNow() : null;
