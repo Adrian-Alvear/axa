@@ -87,7 +87,8 @@ export function createNarrator({ now = Date.now, speak, earcon = () => {}, isCur
     if (prev && prev.text === it.text && t - prev.at < REPEAT_MS) { drop(it, "already said"); return false; }
     for (const p of pending) if (slot(p) === slot(it)) drop(p, "replaced");
     pending = pending.filter((p) => slot(p) !== slot(it)).concat(it);
-    if (it.priority === P0) pump();
+    // a P0, or a solo item (a reply: said at once, alone), doesn't wait for a burst to settle
+    if (it.priority === P0 || it.solo) pump();
     else {
       // a burst: wait until it settles (or BURST_MS after it began), then say it as one line
       if (!burstFrom) burstFrom = t;
@@ -104,8 +105,9 @@ export function createNarrator({ now = Date.now, speak, earcon = () => {}, isCur
     pending = pending.filter((it) => { const w = whyGone(it, t); if (w) drop(it, w); return !w; });
     if (!pending.length) return;
     const top = Math.min(...pending.map((p) => p.priority));
-    if (top > P0 && timer) return; // a burst is still settling: only a P0 goes now
-    const take = top === P0 ? pending.filter((p) => p.priority === P0) : pending;
+    const solo = top > P0 && pending.find((p) => p.solo);
+    if (top > P0 && !solo && timer) return; // a burst is still settling: only a P0 (or a reply) goes now
+    const take = top === P0 ? pending.filter((p) => p.priority === P0) : solo ? [solo] : pending;
     pending = pending.filter((p) => !take.includes(p));
     const words = [], tones = [];
     for (const it of take) {
@@ -145,6 +147,51 @@ export function createNarrator({ now = Date.now, speak, earcon = () => {}, isCur
     // when something about this session was last said (liveness lines, Part B)
     lastSaidAbout(session) { let at = 0; for (const [k, v] of said) if (k.startsWith(`${session}:`)) at = Math.max(at, v.at); return at; },
   };
+}
+
+// ---------- template lines (no model: said the moment it happens) ----------
+const end = (t) => (/[.!?]$/.test(t) ? t : `${t}.`);
+// the first sentence, at most `max` characters (cut at a word)
+export function sentence1(t, max = 160) {
+  const s = String(t || "").replace(/\s+/g, " ").trim();
+  let x = /^.*?[.!?](?=\s|$)/.exec(s)?.[0] || s;
+  if (x.length > max) x = x.slice(0, max).replace(/\s+\S*$/, "").replace(/[,;:]$/, "");
+  return x;
+}
+const VERDICT = { approve: "approved it", warn: "has warnings", block: "blocked it", error: "couldn't finish" };
+// A notification ({ kind, project, title, body }) as one spoken line
+export function lineFor(n) {
+  const who = n.project || n.name || "a session", body = String(n.body || "").trim();
+  switch (n.kind) {
+    case "done": return body && body !== "its turn is done" ? `${who} finished: ${end(sentence1(body))}` : `${who} finished.`;
+    case "waiting": {
+      const ask = /^asks you: (.*)/i.exec(body), appr = /^needs (?:your )?approval · (.*)/i.exec(body), perm = /permission to use (\w+)/i.exec(body);
+      if (ask) return `${who} asks: ${end(sentence1(ask[1], 200))}`;
+      if (appr) return `${who} needs your approval: ${end(sentence1(appr[1]))}`;
+      if (perm) return `${who} needs your permission to use ${perm[1]}.`;
+      return body ? `${who} needs you: ${end(sentence1(body))}` : `${who} needs you.`;
+    }
+    case "needs_trust": return `${who} needs you to trust its folder.`;
+    case "failed": return body ? `${who} failed: ${end(sentence1(body, 100))}` : `${who} failed.`;
+    case "limited": return /resets/.test(body) ? `${who} hit a usage limit; ${end(sentence1(body, 80))}` : `${who} hit a usage limit.`;
+    case "exited": return `Claude exited in ${who}.`;
+    case "stuck": return `${who} looks stuck.`;
+    case "milestone": {
+      const repo = /^review of ([^:]+):/.exec(n.title || "")?.[1] || who, v = /\b(approve|warn|block|error)\b/.exec(n.title || "")?.[1];
+      return `The review of ${repo} ${VERDICT[v] || "ended"}.`;
+    }
+    default: return end(`${n.title || who}${body ? `: ${sentence1(body)}` : ""}`);
+  }
+}
+
+// ---------- liveness ----------
+export const LIVE_AFTER_MS = 3 * 60_000, LIVE_EVERY_MS = 5 * 60_000;
+// A session you gave a goal has been working a while and nothing has been said about it: one short line
+// ("feed is still working: running tests"), at most every ~5 min, at verbosity normal or chatty.
+export function livenessLine({ name, doing, workingFor, sinceSaid, verbosity = "normal" }) {
+  if (verbosity === "quiet" || workingFor < LIVE_AFTER_MS || sinceSaid < LIVE_EVERY_MS) return null;
+  const d = sentence1(String(doing || "").replace(/^(?:Bash|Edit|Write|Read|Grep|Glob|Task|Agent) · /, ""), 80).replace(/[.!?]$/, "");
+  return d ? `${name} is still working: ${d}.` : `${name} is still working.`;
 }
 
 // The console log line for one narrator entry

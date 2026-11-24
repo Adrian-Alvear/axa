@@ -94,6 +94,28 @@ export function shortSpeech(md, question = null) {
 // summarize(text) -> Promise<string|null> (runSummary, or a fake in tests). Returns { text, how }:
 // how = "short" (said as is) | "summary" | "fallback" | "first-paragraph" | "full".
 const cache = new Map(); // hash -> summary
+const inflight = new Map(); // hash -> Promise<summary|null>: started at Stop, before anything asks for it
+const keyOf = (md) => createHash("sha256").update(md).digest("hex");
+const remember = (key, sum) => { if (!sum) return; cache.set(key, sum); if (cache.size > 100) cache.delete(cache.keys().next().value); };
+// Start the summary of a long reply as soon as the turn stops (speculatively: the voice may never ask). The
+// reply's spokenReply() then waits for this one instead of starting another. Returns the promise, or null.
+export function prefetchSummary(md, { summarize = runSummary, mode = summaryMode() } = {}) {
+  if (mode !== "model" || toSpeech(md, { full: true }).length <= SHORT) return null;
+  const key = keyOf(md);
+  if (cache.has(key)) return Promise.resolve(cache.get(key));
+  if (inflight.has(key)) return inflight.get(key);
+  const p = Promise.resolve(summarize(md, {})).catch(() => null).then((sum) => { remember(key, sum); inflight.delete(key); return sum; });
+  inflight.set(key, p);
+  return p;
+}
+// What's said at once for a reply (the summary, if any, follows): a short one whole; a long one's first sentence.
+// question: the reply's question for the user, said in the follow-up (or right here, when there's none to come)
+export function firstLine(md) {
+  const all = toSpeech(md, { full: true });
+  if (!all) return { text: "", long: false, question: null };
+  if (all.length <= SHORT) return { text: all, long: false, question: null };
+  return { text: sentences(all)[0] || all.slice(0, 200), long: true, question: questionOf(md) };
+}
 // signal: an AbortSignal (Esc, mute): the summariser's process is killed at once and nothing is said
 export async function spokenReply(md, { mode = summaryMode(), summarize = runSummary, more = true, signal } = {}) {
   const all = toSpeech(md, { full: true });
@@ -103,12 +125,12 @@ export async function spokenReply(md, { mode = summaryMode(), summarize = runSum
   if (mode === "first-paragraph") return { text: withQuestion(toSpeech(md, { more }), q), how: "first-paragraph" };
   // short enough: said as it is
   if (all.length <= SHORT) return { text: all, how: "short" };
-  const key = createHash("sha256").update(md).digest("hex");
+  const key = keyOf(md);
   let sum = cache.get(key);
   if (!sum) {
-    sum = await Promise.resolve(summarize(md, { signal })).catch(() => null);
+    sum = await (inflight.get(key) || Promise.resolve(summarize(md, { signal }))).catch(() => null);
     if (signal?.aborted) return { text: "", how: "stopped" };
-    if (sum) { cache.set(key, sum); if (cache.size > 100) cache.delete(cache.keys().next().value); }
+    remember(key, sum);
   }
   const said = sum ? toSpeech(sum, { full: true }) : "";
   if (said) return { text: withQuestion(said, q), how: "summary" };

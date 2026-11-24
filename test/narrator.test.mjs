@@ -167,18 +167,18 @@ test("the daemon speaks only through the narrator, and stop/mute clear it", () =
   assert.doesNotMatch(src("src/core/notify.mjs"), /createVoiceQueue|VOICE_GAP/);
 });
 
-test("voice: between() is asked at each sentence boundary and stops there cleanly; onStart fires once at first audio", async () => {
+test("voice: between() is asked at each sentence boundary and stops there cleanly; onStart fires once for the first sound and the first words", async () => {
   const { speakChunks } = await import("../src/core/voice.mjs");
   const played = [], cleaned = [];
-  let asks = 0, starts = 0;
+  let asks = 0; const starts = [];
   const job = { stopped: false, kills: new Set(), kill() { this.stopped = true; } };
   const n = await speakChunks(["One.", "Two.", "Three.", "Four."], {
     synth: async (c) => ({ out: c }), play: async (w) => { played.push(w.out); }, job, cleanup: (w) => cleaned.push(w.out),
-    between: () => ++asks >= 2, onStart: () => starts++,
+    between: () => ++asks >= 2, onStart: (what) => starts.push(what),
   });
   assert.equal(n, 2);
   assert.deepEqual(played, ["One.", "Two."], "stopped after the second sentence, never mid-sentence");
   assert.ok(cleaned.includes("Three."), "the next sentence (already made) is cleaned up");
-  assert.equal(starts, 1);
+  assert.deepEqual(starts, ["sound", "words"], "once each");
   assert.equal(job.yielded, true);
 });

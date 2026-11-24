@@ -267,7 +267,7 @@ export function startTail() {
         const e = JSON.parse(line);
         track(e, true);
         if (e.event === "Stop" && e.role === "commander" && !e.agent_id && e.message && e.terminal) {
-          setTimeout(() => { const s = status.get(e.terminal); if (s?.status === "done" && s.stopAt === e.ts) onReply(e.terminal, e.message); }, GATE_WAIT_MS);
+          setTimeout(() => { const s = status.get(e.terminal); if (s?.status === "done" && s.stopAt === e.ts) onReply(e.terminal, e.message, e.ts); }, GATE_WAIT_MS);
         }
       } catch {}
       for (const fn of listeners) fn(line);

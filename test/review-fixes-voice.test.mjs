@@ -102,7 +102,7 @@ test("Esc/mute: the summary being written is killed at once and nothing is said"
   const s = readFileSync(join(ROOT, "src/core/server.mjs"), "utf8");
   assert.match(s, /function hush\(\) \{ cancelSummaries\(\);/);
   assert.match(s, /cancelSummaries\(\); voiceGen\+\+; voiceNow = null; narrator\.clear\(\);\n\}, 500\)/);
-  assert.match(s, /planned\(\(signal\) => spokenReply\(safe\(message\), \{ more: vs\.moreHint, signal \}\), \{ kind: "reply"/);
+  assert.match(s, /spokenReply\(md, \{ more: false, signal \}\)/);
 });
 
 test("the daily brief: once a day, even after the notifications are cleared", async () => {

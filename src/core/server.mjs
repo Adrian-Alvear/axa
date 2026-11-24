@@ -17,9 +17,10 @@ import { listAgents, listProjects, readRoster } from "./catalog.mjs";
 import { chatMessages, findChat, listChats } from "./claude-data.mjs";
 import { safe } from "./text.mjs";
 import { notifier, notifySettings, voiceHooks } from "./notify.mjs";
-import { createNarrator, logLine } from "./narrator.mjs";
+import { createNarrator, lineFor, livenessLine, logLine } from "./narrator.mjs";
+import { earconFile, earconFor } from "./earcons.mjs";
 import { briefNotification, briefTick, reviewProjects } from "./projects.mjs";
-import { notesNeedSummary, spokenReply, summaryMode } from "./summary.mjs";
+import { MORE_DETAIL, firstLine, notesNeedSummary, prefetchSummary, spokenReply, summaryMode } from "./summary.mjs";
 import { readMilestones } from "./milestone.mjs";
 
 // every project in progress (projects.mjs; cached 60 s, sessions always fresh)
@@ -66,17 +67,27 @@ function stillTrue(it) {
   const s = S.listSessions().find((x) => x.id === it.session);
   return s ? it.expect.includes(s.status) : it.kind === "exited";
 }
+// time to first audio, from the event (t0) to the first sound and the first words: logged for every line
+const ttfa = (items) => {
+  const t0 = Math.min(...items.map((i) => i.t0 ?? i.at)), what = [...new Set(items.map((i) => i.how || i.kind))].join("+");
+  return (k) => console.log(`[${new Date().toISOString()}] voice: first ${k} ${Date.now() - t0} ms after the event (${what})`);
+};
 const narrator = createNarrator({
   speak: async (text, { items, shouldYield }) => {
     voiceNow = items.some((i) => i.how === "summary") ? "speaking summary" : "speaking";
-    try { await V.speak(text, { between: shouldYield }); } finally { if (!V.speaking()) voiceNow = null; }
+    // an earcon first (it plays while the first sentence is made): what kind of news, before the words
+    const tone = V.settings().earcons ? earconFor(items) : null;
+    try { await V.speak(text, { between: shouldYield, onStart: ttfa(items), intro: tone ? earconFile(tone) : null }); } finally { if (!V.speaking()) voiceNow = null; }
   },
+  earcon: (name) => V.playEarcon(name),
   isCurrent: stillTrue,
   log: (e) => console.log(`[${new Date().toISOString()}] ${logLine(e)}`),
 });
 // a notification as a narrator item
-const noteItem = (n) => ({ kind: n.kind, session: n.session || null, name: n.project || "AXA", expect: n.session ? EXPECT[n.kind] : undefined,
-  text: V.toSpeech(safe(`${n.title}${n.body ? `: ${n.body}` : ""}`), { more: false }) });
+// (a template line: said the moment it happens, no model)
+const cap = (t) => (t ? t[0].toUpperCase() + t.slice(1) : t);
+const noteItem = (n) => ({ kind: n.kind, session: n.session || null, name: n.project || "AXA", expect: n.session ? EXPECT[n.kind] : undefined, t0: n.at,
+  text: cap(V.toSpeech(safe(lineFor(n)), { more: false })) });
 Object.assign(voiceHooks, { on: () => V.settings().on, add: (n) => (n.kind === "brief" ? speakBrief(n) : narrator.add(noteItem(n))) });
 // fn(signal) -> { text, how }: Esc and mute abort the signal, which kills a summary still being written (its
 // claude -p child). What it returns goes to the narrator as `item` (superseded by a newer reply or by Esc).
@@ -98,11 +109,46 @@ setInterval(() => {
   if (V.speaking() && !V.silenceIfMuted()) return; // (the settings screen's forced voice test plays on)
   cancelSummaries(); voiceGen++; voiceNow = null; narrator.clear();
 }, 500).unref();
-onCommanderReply((id, message) => {
+// AXA's reply: its first sentence at once (a short reply whole); a long one's summary follows when it's ready
+// (started at Stop, speculatively: prefetchSummary). If the summary fails, the reply's question (if any) and
+// "There's more detail in the chat." follow instead. A question for you is always said.
+onLine((line) => {
+  let e; try { e = JSON.parse(line); } catch { return; }
+  if (e.event === "Stop" && e.role === "commander" && !e.agent_id && e.message && V.settings().on) prefetchSummary(safe(e.message));
+});
+onCommanderReply((id, message, t0) => {
   const vs = V.settings();
   if (S.listSessions().find((s) => s.id === id)?.mode !== "axa" || !vs.on) return;
-  planned((signal) => spokenReply(safe(message), { more: vs.moreHint, signal }), { kind: "reply", key: "reply", session: id, name: "AXA" });
+  const md = safe(message), item = { kind: "reply", key: "reply", session: id, name: "AXA", solo: true, t0 };
+  if (summaryMode() !== "model") return planned((signal) => spokenReply(md, { more: vs.moreHint, signal }), item);
+  const f = firstLine(md), gen = ++voiceGen;
+  narrator.add({ ...item, text: f.text, how: f.long ? "first sentence" : "short", gen });
+  if (!f.long) return;
+  const signal = voiceAbort.signal;
+  summarizing++;
+  spokenReply(md, { more: false, signal }).catch(() => ({ how: "failed" })).then((r) => {
+    if (gen !== voiceGen) return;
+    const text = r.how === "summary" ? r.text : [f.question, vs.moreHint ? MORE_DETAIL : ""].filter(Boolean).join(" ");
+    if (text) narrator.add({ ...item, text, how: r.how === "summary" ? "summary" : "rest", gen, t0: Date.now() });
+  }).finally(() => { summarizing--; });
 });
+// Liveness: a session you gave a /goal, working > 3 min with nothing said about it: one short line, at most
+// every ~5 min (narrator.livenessLine), at verbosity normal or chatty
+const goals = new Set(), workingSince = new Map();
+onLine((line) => { try { const e = JSON.parse(line); if (e.event === "UserPromptSubmit" && e.terminal && /^\s*\/goal\b/.test(e.prompt || "")) goals.add(e.terminal); } catch {} });
+setInterval(() => {
+  const vs = V.settings();
+  if (!vs.on) return;
+  const now = Date.now();
+  for (const s of S.listSessions()) {
+    if (s.status !== "working" || !s.alive) { workingSince.delete(s.id); continue; }
+    if (!workingSince.has(s.id)) workingSince.set(s.id, now);
+    if (!goals.has(s.id)) continue;
+    const last = narrator.lastSaidAbout(s.id);
+    const text = livenessLine({ name: s.name, doing: s.doing, workingFor: now - workingSince.get(s.id), sinceSaid: last ? now - last : Infinity, verbosity: vs.verbosity });
+    if (text) narrator.add({ kind: "liveness", key: "liveness", session: s.id, name: s.name, text: V.toSpeech(safe(text), { more: false }), expect: ["working"] });
+  }
+}, 20_000).unref();
 // the daily brief: one long notification, always summarised (when summaries are on)
 function speakBrief(n) {
   const text = `${n.title}${n.body ? `: ${n.body}` : ""}`;
