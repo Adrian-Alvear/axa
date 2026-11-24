@@ -26,6 +26,7 @@ const USAGE = `AXA: one place for all your Claude Code sessions, chats and agent
   axa restart          restart the daemon (sessions keep running)
   axa notify [live|digest|quiet]   interruptions: as they happen, only one-way doors + failures (a digest
                        for the rest), or none
+  axa queue [--json]   finished work waiting for review: commits, diff size, checks, reviewer verdict, ready to land
   axa usage [--json]   tokens (official) and cost (estimate) per session and per project per day, the 5-hour /
                        weekly limits
   axa whatsup          what every session is doing now, in a few sentences (spoken when the voice is on)
@@ -179,6 +180,15 @@ switch (cmd) {
     if (arg === undefined) { const st = notifySettings(); console.log(`Interruptions: ${st.mode}${st.mode === "digest" ? ` (a digest every ${st.digestMin} min)` : ""}. Set with: axa notify live | digest | quiet`); break; }
     try { writeNotifyMode(files.ui, arg); } catch (e) { console.error(`axa notify: ${e.message}`); process.exit(1); }
     console.log(`Interruptions: ${arg}.${arg === "digest" ? " Only one-way doors and failures interrupt; the rest is said as a digest (w says it now)." : arg === "quiet" ? " Nothing interrupts; w says what's up." : ""}`);
+    break;
+  }
+  case "queue": {
+    // finished work waiting for review: unlanded commits, diff size, checks, reviewer verdict, ready to land
+    await daemon();
+    const q = await api("/api/queue");
+    if (flags.has("--json")) { console.log(JSON.stringify(q, null, 2)); break; }
+    console.log(q.text);
+    if (q.waiting.length) console.log(`Queued behind the worker cap (${q.max_working} at most): ${q.waiting.map((w) => w.id).join(", ")}`);
     break;
   }
   case "usage": {

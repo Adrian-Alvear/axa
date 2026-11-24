@@ -638,6 +638,15 @@ export async function runTui() {
     if (days.length) { lines.push({ text: "" }, { text: "Per project per day (estimate)", role: "head" }); for (const r of days) lines.push({ text: `  ${r.d}  ${pad(r.p, 22)} ${k(r.tokens).padStart(7)} tokens  ${usd(r.cost).padStart(7)}` }); }
     viewer("Usage", lines);
   }
+  // ---------- the review queue (L): finished work waiting for you; Enter opens that session ----------
+  function openQueue() {
+    call("/api/queue").then((q) => {
+      const options = q.rows.length ? q.rows.map((r) => ({ label: `${r.ready ? "✓ READY" : "·"} ${clean(r.name)} · ${r.branch}`, hint: `${r.commits} commit${r.commits === 1 ? "" : "s"}, ${r.files} files +${r.added} -${r.removed} · checks ${r.checks}${r.verdict ? ` · reviewer ${r.verdict}` : ""}${r.ready ? "" : ` · ${r.why}`}`, value: r })) : [{ label: "Nothing waiting for review.", hint: "", value: null, dim: true }];
+      if (q.waiting.length) options.push({ label: `${q.waiting.length} queued behind the worker cap (${q.max_working} working at most)`, hint: "", value: null, dim: true });
+      pick(`Review queue${q.rows.length ? ` · ${q.rows.filter((r) => r.ready).length} ready` : ""}`, options, (o) => { const s = o.value && data.sessions.find((x) => x.id === o.value.id); if (s) openLive(s); }, { hint: "↑/↓ choose · Enter open the session · d in Sessions shows its changes · Esc close" });
+      overlay.size = "wide";
+    }, (e) => flash(`couldn't read the queue: ${e.message}`));
+  }
   function openNotifications() {
     const list = [...notes].reverse();
     cfg.notifySeen = Math.max(cfg.notifySeen || 0, ...notes.map((n) => n.at)); saveCfg();
@@ -858,6 +867,7 @@ export async function runTui() {
       { label: "How much the voice says", hint: VERBOSITY_HINT[cfg.voiceVerbosity] || VERBOSITY_HINT.normal, value: "voiceVerbosity" },
       { label: "Earcons (a tone before the words)", hint: cfg.voiceEarcons === "off" ? "off" : "on", value: "voiceEarcons" },
       { label: "Quiet hours (no voice; needs-you as a toast)", hint: cfg.voiceQuiet || "off", value: "voiceQuiet" },
+      { label: "Working sessions at most (the commander's cap)", hint: String(cfg.sessions?.maxWorking || 5), value: "maxWorking" },
       { label: "Interruptions", hint: MODE_HINT[cfg.notify?.mode] || MODE_HINT.live, value: "notifyMode" },
       { label: "A voice per project (Kokoro)", hint: cfg.voicePerProject === "on" ? "on" : "off", value: "voicePerProject" },
       { label: "Speak notifications", hint: NOTIFY_HINT[cfg.notify?.voice || "needs-you"], value: "notifyVoice" },
@@ -875,6 +885,7 @@ export async function runTui() {
       if (o.value === "voiceSummary") cfg.voiceSummary = cycle(Object.keys(SUMMARY_HINT), SUMMARY_HINT[cfg.voiceSummary] ? cfg.voiceSummary : "model");
       if (o.value === "brief") cfg.notify = nextBrief(cfg.notify);
       if (o.value === "voiceVerbosity") cfg.voiceVerbosity = cycle(Object.keys(VERBOSITY_HINT), VERBOSITY_HINT[cfg.voiceVerbosity] ? cfg.voiceVerbosity : "normal");
+      if (o.value === "maxWorking") cfg.sessions = { ...cfg.sessions, maxWorking: cycle([3, 5, 8, 10], cfg.sessions?.maxWorking || 5) };
       if (o.value === "notifyMode") cfg.notify = { ...cfg.notify, mode: cycle(MODES, MODES.includes(cfg.notify?.mode) ? cfg.notify.mode : "live") };
       if (o.value === "voicePerProject") cfg.voicePerProject = cfg.voicePerProject === "on" ? "off" : "on";
       if (o.value === "voiceEarcons") cfg.voiceEarcons = cfg.voiceEarcons === "off" ? "on" : "off";
@@ -900,6 +911,7 @@ export async function runTui() {
       { text: "  Control: ↑/↓ pick a session (or click it on the map or table) · : talk to the commander" },
       { text: "  ↑/↓ or j/k, PgUp/PgDn    move in a panel        Enter   open the selected thing" },
       { text: "  a   the AXA commander (opens it, or starts it)   N   new session (pick a folder)" },
+      { text: "  L   review queue: finished work waiting for you (commits, diff size, checks, reviewer, ready to land)" },
       { text: "  $   usage: tokens (official) and cost (estimate) per session and project, the 5-hour / weekly limits" },
       { text: "  n   notifications (newest first: Enter goes to the session, c clears; the bell counts the unread)" },
       { text: "  /   filter the panel     y / x   answer the prompt in the yellow bar   !  go to it" },
@@ -1068,6 +1080,7 @@ export async function runTui() {
       case "a": return openCommander();
       case "n": return openNotifications();
       case "$": return openUsage();
+      case "L": return openQueue();
       case "N": return panel === "projects" && it?.kind === "project" ? newSession(it.p) : newSession();
       case "y": return answerAlert("yes");
       case "x": return answerAlert("no");

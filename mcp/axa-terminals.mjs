@@ -104,10 +104,11 @@ const TOOLS = [
         text: { type: "string", description: "What to type" },
         enter: { type: "boolean", description: "Press Enter after typing (default true)" },
         confirmed_by_user: { type: "boolean", description: "Only set true when the user explicitly approved this exact command in the conversation." },
+        queue: { type: "boolean", description: "If the worker cap is reached (too many sessions working), queue it: AXA types it in when a slot frees. Without it, a send over the cap is refused." },
       },
       required: ["id", "text"],
     },
-    run: async ({ id, text, enter, confirmed_by_user }) => api(`/api/terms/${encodeURIComponent(id)}/input`, { method: "POST", body: { text, enter, confirmed_by_user: confirmed_by_user === true } }),
+    run: async ({ id, text, enter, confirmed_by_user, queue }) => api(`/api/terms/${encodeURIComponent(id)}/input`, { method: "POST", body: { text, enter, confirmed_by_user: confirmed_by_user === true, queue: queue === true } }),
   },
   {
     name: "read_changes",
@@ -139,6 +140,12 @@ const TOOLS = [
     },
   },
   {
+    name: "review_queue",
+    description: "Finished work waiting for the user's review, per session/branch: commits not pushed or merged, diff size, the last checks result, the reviewer's verdict, and READY when checks pass and the reviewer approved. Also what's queued behind the worker cap. Use it to tell the user what's ready to land; never push or merge yourself unless they said so.",
+    inputSchema: { type: "object", properties: {} },
+    run: async () => { const q = await api("/api/queue"); return `${q.text}${q.waiting.length ? `\nQueued behind the worker cap (${q.max_working} working at most): ${q.waiting.map((w) => `${w.id}: ${w.text}`).join(" | ")}` : ""}`; },
+  },
+  {
     name: "link_sessions",
     description:
       "Chain two sessions: when session `from` next finishes its turn (verified, settled), AXA sends `instruction` to session `to` (once, when `to` is idle). Use it for handoffs the user asked for, e.g. \"when launches finishes, have feed rebase on it and re-run its tests\". The instruction must be complete and self-contained. Shows in the hub and the web console.",
@@ -155,11 +162,11 @@ const TOOLS = [
     name: "start_goal",
     description:
       `Give a session a long-running goal with Claude Code's /goal: it keeps working on its own until the condition is met. Write the condition as what "done" looks like, self-contained, under ${GOAL_LIMIT} characters; for a long spec, have the session write it to a file first and make the goal point to that file.`,
-    inputSchema: { type: "object", properties: { id: { type: "string" }, goal: { type: "string", description: "The goal condition: what done looks like" } }, required: ["id", "goal"] },
-    run: async ({ id, goal }) => {
+    inputSchema: { type: "object", properties: { id: { type: "string" }, goal: { type: "string", description: "The goal condition: what done looks like" }, queue: { type: "boolean", description: "If the worker cap is reached, queue it (started when a slot frees) instead of failing" } }, required: ["id", "goal"] },
+    run: async ({ id, goal, queue }) => {
       const text = String(goal).replace(/\s*\n\s*/g, " ").trim();
       if (text.length > GOAL_LIMIT) throw new Error(`Goal is ${text.length} characters; /goal allows ${GOAL_LIMIT}. Put the details in a file in that project and point the goal at it.`);
-      return api(`/api/terms/${encodeURIComponent(id)}/input`, { method: "POST", body: { text: `/goal ${text}` } });
+      return api(`/api/terms/${encodeURIComponent(id)}/input`, { method: "POST", body: { text: `/goal ${text}`, queue: queue === true } });
     },
   },
   {

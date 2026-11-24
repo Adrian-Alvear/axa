@@ -26,6 +26,7 @@ import { DEFAULT_VOICE, VOICES } from "./kokoro.mjs";
 import { SHORT } from "./speech.mjs";
 import { RUNAWAY, byProjectDay, limitsText, readLimits, runawayCheck, runawayText } from "./usage.mjs";
 import { headOf } from "./git.mjs";
+import { branchFacts, capRefusal, createCheckTracker, createSendQueue, maxWorking, queueRow, queueText, sortQueue } from "./queue.mjs";
 import { briefNotification, briefTick, reviewProjects } from "./projects.mjs";
 import { MORE_DETAIL, firstLine, notesNeedSummary, prefetchSummary, spokenReply, summaryMode } from "./summary.mjs";
 import { readMilestones } from "./milestone.mjs";
@@ -278,6 +279,21 @@ setInterval(() => {
     if (hit) { r.warnedAt = now; notifier.push({ kind: "runaway", session: s.id, project: s.name, title: `${s.name} may be looping`, body: runawayText(s.name, hit), needsUser: true }); }
   }
 }, 60_000).unref();
+// ---------- review capacity (queue.mjs): the review queue and the worker cap ----------
+const checks = createCheckTracker();
+onLine((line) => { try { checks.event(JSON.parse(line)); } catch {} });
+const uiCfg = () => { try { return JSON.parse(readFileSync(files.ui, "utf8")); } catch { return {}; } };
+const capQueue = createSendQueue({ send: (it) => S.sendText(it.id, it.text, { enter: true, confirmed: false }).then((r) => console.log(`[${new Date().toISOString()}] queue: ${r.ok ? "sent" : `couldn't send (${r.error})`} the queued message to ${it.id}`)) });
+setInterval(() => { capQueue.tick(S.listSessions(), maxWorking(uiCfg())).catch(() => {}); }, 5_000).unref();
+function reviewQueue() {
+  const ms = listMilestoneReviews();
+  const rows = S.listSessions().filter((s) => s.alive && s.mode === "claude").map((s) => {
+    const repo = s.worktree?.repo || s.cwd, mv = ms.filter((r) => r.repo === repo && r.verdict).sort((a, b) => b.started - a.started)[0]?.verdict;
+    return queueRow(s, branchFacts(s.worktree?.path || s.cwd), checks.of(s.id), s.review?.verdict || mv || null);
+  });
+  const list = sortQueue(rows);
+  return { rows: list, text: queueText(list), waiting: capQueue.list(), max_working: maxWorking(uiCfg()) };
+}
 // GET /api/usage: per session (tokens official, cost estimate), per project per day, the account's limits
 function usageReport() {
   const ss = S.listSessions().filter((s) => s.usage);
@@ -349,6 +365,12 @@ const routes = [
   ["POST", /^\/api\/terms\/([\w-]+)\/input$/, async (m, req) => {
     const b = await readBody(req);
     if (typeof b.text !== "string") return [400, { error: "text required" }];
+    // the worker cap: the commander can't start more than sessions.maxWorking at once (you, from the hub, can)
+    if (!fromUser(req)) {
+      const no = capRefusal(S.listSessions(), m[1], maxWorking(uiCfg()));
+      if (no && b.queue === true) { const n = capQueue.add({ id: m[1], text: b.text }); return [202, { ok: true, queued: true, position: n, note: `Queued (#${n}): AXA types it in when a slot frees.` }]; }
+      if (no) return [409, { ok: false, error: no }];
+    }
     const r = await S.sendText(m[1], b.text, { enter: b.enter !== false, confirmed: b.confirmed_by_user === true });
     if (r.ok && fromUser(req)) S.noteInput(m[1]);
     return [r.ok ? 200 : 409, r];
@@ -383,6 +405,7 @@ const routes = [
     return [200, { text, spoken }];
   }],
   ["GET", /^\/api\/usage$/, () => [200, usageReport()]],
+  ["GET", /^\/api\/queue$/, () => [200, reviewQueue()]],
   ["POST", /^\/api\/whatsup$/, () => {
     // in digest / quiet mode, what was held comes first
     const digest = held.length ? digestNow() : null;
