@@ -16,6 +16,7 @@ export class LiveView {
   constructor({ socket, conf, env, session, cols, rows, onUpdate, noColor }) {
     this.socket = socket; this.env = env; this.id = session.id; this.onUpdate = onUpdate; this.noColor = noColor;
     this.cols = cols; this.rows = rows; this.cursorOn = true; this.dead = null;
+    this.gen = 0; this.cache = null; // rowsAnsi() is cached until new output (or a resize) changes the screen
     const has = spawnSync("tmux", ["-L", socket, "has-session", "-t", `=axa-${session.id}`], { stdio: "ignore", env });
     if (!session.alive || has.status !== 0) { this.dead = "This session has ended."; return; }
     this.term = new Headless({ cols, rows, scrollback: 0, allowProposedApi: true });
@@ -29,7 +30,7 @@ export class LiveView {
       // cursor visibility isn't in the public API: follow the last show/hide in the stream
       const i = Math.max(d.lastIndexOf("\x1b[?25h"), d.lastIndexOf("\x1b[?25l"));
       if (i >= 0) this.cursorOn = d[i + 5] === "h";
-      this.term.write(d, onUpdate);
+      this.term.write(d, () => { this.gen++; onUpdate(); });
     });
     this.proc.onExit(() => { if (!this.closed) { this.dead = "This session has ended or was detached."; onUpdate(); } });
   }
@@ -37,7 +38,7 @@ export class LiveView {
   fit() { spawnSync("tmux", ["-L", this.socket, "resize-window", "-t", `=axa-${this.id}:`, "-x", String(this.cols), "-y", String(this.rows)], { stdio: "ignore", env: this.env }); }
   resize(cols, rows) {
     if (this.dead || (cols === this.cols && rows === this.rows)) return;
-    this.cols = cols; this.rows = rows;
+    this.cols = cols; this.rows = rows; this.gen++;
     try { this.proc.resize(cols, rows); this.term.resize(cols, rows); this.fit(); } catch {}
   }
   write(data) { if (!this.dead) this.proc.write(data); }
@@ -53,6 +54,7 @@ export class LiveView {
   }
   // Rows of the session as ANSI strings, exactly `cols` wide
   rowsAnsi() {
+    if (this.cache?.gen === this.gen) return this.cache.rows;
     const rows = [];
     const b = this.term.buffer.active, cell = b.getNullCell();
     for (let y = 0; y < this.rows; y++) {
@@ -69,6 +71,7 @@ export class LiveView {
       }
       rows.push(s + `${ESC}[0m` + " ".repeat(Math.max(0, this.cols - n)));
     }
+    this.cache = { gen: this.gen, rows };
     return rows;
   }
   sgr(c) {
