@@ -291,6 +291,13 @@ export function agentDetail(h, w) {
 }
 
 // ---------- the whole screen ----------
+// a log line's time (formatting a time is slow, and the lanes redraw ~12 times a second: each one once)
+const times = new Map();
+const timeOf = (ts) => {
+  let t = times.get(ts);
+  if (t === undefined) { if (times.size > 500) times.clear(); t = new Date(ts).toLocaleTimeString([], { hour12: false }); times.set(ts, t); }
+  return t;
+};
 // ctx: { motion, sessions, chats, act, selId, zone, chatSel, focusInput, input, nameOf, question, yesOpt, noOpt, waiting, armed, mapHits, chatHits }
 // it fills in what a click can hit: mapHits, chatHits, apHits (the approval buttons), cmdText, inputRow, sendHit
 export function controlRows(ctx, W, B) {
@@ -430,7 +437,7 @@ export function controlRows(ctx, W, B) {
   // repeats in a row are one line ("AXA woke the commander ×4", at the latest time)
   const evs = collapseRepeats((act?.events || []).map((e) => [e, said(e)]).filter(([, d]) => d).map(([e, [text, role]]) => ({ e, text, role, who: names.get(e.terminal) || (e.event === "MilestoneReview" ? "review" : "?") })), (x) => `${x.who}\n${x.text}`).slice(-(botH - 2));
   for (const { e, text, role, who, n } of evs) {
-    const t = new Date(e.ts).toLocaleTimeString([], { hour12: false });
+    const t = timeOf(e.ts);
     lb.push(line([[` ${t} `, "dim"], [`${cut(who, 10)} `, "accent"], [text, role], [n > 1 ? ` ×${n}` : "", "dim"]], lw));
   }
   if (!evs.length) lb.push(line([["  quiet: nothing has happened in the last hour", "dim"]], lw));

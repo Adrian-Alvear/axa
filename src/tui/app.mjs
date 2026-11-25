@@ -463,9 +463,12 @@ export async function runTui() {
   // ---------- the frame ----------
   let timer = null, prevRows = [], hits = [], tabHits = [];
   const schedule = () => { if (!timer && !quitting) timer = setTimeout(() => { timer = null; draw(); }, 16); };
+  // the title's clock (formatting a time is slow: once a minute, not every animation frame)
+  let clockAt = -1, clockStr = "";
+  const clockText = () => { const m = Math.floor(Date.now() / 60_000); if (m !== clockAt) { clockAt = m; clockStr = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false }); } return clockStr; };
   function titleBar() {
     const n = (st) => data.sessions.filter((s) => s.status === st).length, needs = n("waiting") + n("needs_trust") + n("stuck"), work = n("working");
-    const clock = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
+    const clock = clockText();
     const un = unread();
     const right = [[` ${I.bell} ${un || ""} `, un ? "chipWait" : "barDim"], [" ", "bar"], [needs ? ` ${I.wait} ${needs} ` : "", "wait"], [needs && work ? " " : "", "bar"], [work ? ` ${spinner()} ${work} WORKING ` : "", "chipWork"], [!needs && !work ? `${I.done} all quiet` : "", "barDim"], [`   ${clock}`, "barDim"]];
     titleHits = [];
