@@ -54,7 +54,7 @@ test("events: fix rounds, links, the approver's declines; final milestone verdic
 // ---------- the stream ----------
 test("a replay of status changes: the first pass is quiet, a done waits until it holds, repeats are dropped", () => {
   const c = clock(), got = [], saved = [];
-  const n = N.createNotifier({ now: c.now, deliver: (i) => got.push(i), save: (i) => i && saved.push(i) });
+  const n = N.createNotifier({ now: c.now, deliver: (i) => got.push(i), save: (i) => i && saved.push(i), hold: 0 });
   n.tick([sess("working")]);
   assert.equal(got.length, 0, "first pass only learns");
   n.tick([sess("done", { last_report: "All done." })]);

@@ -10,11 +10,15 @@
 // "⚙ notice" lines), the voice (when it's on: the narrator, narrator.mjs) and a desktop notification.
 // Settings in ~/.axa/ui.json "notify": { "voice": "all" | "needs-you" | "off" (default needs-you: what
 // needs you and finished work), "desktop": "all" | "needs-you" | "off" (default needs-you), "brief_at" }.
+// Outward (desktop and voice) is stricter than the hub's list: a test or demo daemon (another AXA home or port)
+// never toasts or speaks; a session waiting on a prompt only goes out if it still waits after HOLD_MS (the
+// approver usually answers it in that time); at most one desktop toast per session per TOAST_MS, with a count.
 import { appendFileSync, existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { basename, join } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
-import { files, home, isWsl } from "../paths.mjs";
+import { homedir } from "node:os";
+import { files, home, isWsl, port } from "../paths.mjs";
 import { clip, safe } from "./text.mjs";
 import { stripSpoken } from "./attention.mjs";
 
@@ -22,6 +26,23 @@ export const KEEP = 200;
 export const DEDUPE_MS = 60_000;
 const DONE_MS = Number(process.env.AXA_DONE_MS) || 6_000; // a "done" must hold this long (verify-gate bounce)
 export const file = () => join(home, "notifications.jsonl");
+export const HOLD_MS = 15_000, TOAST_MS = 2 * 60_000;
+
+// Only the real daemon (the default AXA home, port 4747) may show desktop toasts or speak: a test or demo daemon
+// (temp AXA_HOME, another port) has fake sessions. AXA_NOTIFY_TEST=1 lets one through on purpose.
+export const outwardAllowed = ({ env = process.env, axaHome = home, axaPort = port, userHome = homedir() } = {}) =>
+  env.AXA_NOTIFY_TEST === "1" || (axaHome === join(userHome, ".axa") && Number(axaPort) === 4747);
+
+// Desktop toasts: at most one per session per TOAST_MS; the next one says how many it stands for
+export function createToastGate({ now = () => Date.now(), every = TOAST_MS } = {}) {
+  const last = new Map(); // session -> { at, skipped }
+  return (n) => {
+    const k = n.session || `${n.kind}:${n.project}`, t = now(), l = last.get(k);
+    if (l && t - l.at < every) { l.skipped++; return null; }
+    last.set(k, { at: t, skipped: 0 });
+    return l?.skipped ? { title: `${n.title} (${l.skipped + 1}×)`, body: n.body } : { title: n.title, body: n.body };
+  };
+}
 
 // ---------- settings ----------
 const LEVELS = ["all", "needs-you", "off"];
@@ -101,10 +122,13 @@ export function fromMilestone(line) {
 }
 
 // ---------- the stream (deps injected: tests run it without a daemon) ----------
-export function createNotifier({ now = () => Date.now(), load = () => [], save = () => {}, deliver = () => {} } = {}) {
+// save: the hub's list (at once); deliver: outward (desktop, voice). A "waiting" (a prompt) is held HOLD_MS before
+// it goes out, and dropped if the approver decided it or the session moved on meanwhile.
+export function createNotifier({ now = () => Date.now(), load = () => [], save = () => {}, deliver = () => {}, hold = HOLD_MS } = {}) {
   let items = load().slice(-KEEP);
   const last = new Map(); // dedupe key -> at
   const since = new Map(); // session -> { status, at, told }
+  const held = new Map(); // session -> { item, due, at (when that state began) }
   let primed = false;
   function push(n) {
     if (!n) return null;
@@ -116,8 +140,18 @@ export function createNotifier({ now = () => Date.now(), load = () => [], save =
     items.push(item);
     if (items.length > KEEP) items = items.slice(-KEEP);
     try { save(item, items); } catch {}
-    try { deliver(item); } catch {}
+    if (item.kind === "waiting" && item.session && hold > 0) held.set(item.session, { item, due: at + hold, at: since.get(item.session)?.at });
+    else try { deliver(item); } catch {}
     return item;
+  }
+  // held prompts: out once they've waited long enough, gone if the session isn't waiting on that prompt any more
+  function release(list) {
+    const t = now();
+    for (const [id, h] of held) {
+      const s = list?.find((x) => x.id === id), c = since.get(id);
+      if (list && (!s || s.status !== "waiting" || (h.at !== undefined && c?.at !== h.at))) { held.delete(id); continue; }
+      if (t >= h.due) { held.delete(id); try { deliver(h.item); } catch {} }
+    }
   }
   // the session list, every tick: a state change into one that matters (a "done" once it has held)
   function tick(list) {
@@ -134,8 +168,14 @@ export function createNotifier({ now = () => Date.now(), load = () => [], save =
     }
     for (const id of since.keys()) if (!list.some((s) => s.id === id)) since.delete(id);
     primed = true;
+    release(list);
   }
-  return { push, tick, event: (e) => push(fromEvent(e)), list: () => [...items], clear: () => { items = []; try { save(null, items); } catch {} } };
+  // the approver answered (allowed or declined) a session's prompt: what was held for it never goes out
+  function event(e) {
+    if (e?.event === "AxaDecision" && e.terminal && e.by !== "breaker") held.delete(e.terminal);
+    return push(fromEvent(e));
+  }
+  return { push, tick, event, held: () => [...held.keys()], list: () => [...items], clear: () => { items = []; try { save(null, items); } catch {} } };
 }
 
 // ---------- desktop notifications: the command for each OS (pure: unit-tested, never run in tests) ----------
@@ -174,6 +214,7 @@ const has = (c) => spawnSync("which", [c], { stdio: "ignore" }).status === 0;
 const failed = new Set(); // what's been logged once
 const logOnce = (k, m) => { if (failed.has(k)) return; failed.add(k); console.log(`[${new Date().toISOString()}] notify: ${m}`); };
 export function showDesktop(title, body, os = { platform: process.platform, wsl: process.platform === "linux" && isWsl(), has }) {
+  if (!outwardAllowed()) return;
   let c;
   try { c = desktopCommand(os, title, body); } catch (e) { return logOnce("cmd", e.message); }
   if (!c) return logOnce("none", "no way to show desktop notifications here (install notify-send)");
@@ -202,13 +243,15 @@ function saveFile(item, all) {
 // voice: set by the daemon (server.mjs) to { on(), add(item) }: the narrator (narrator.mjs) decides what is
 // said and when (priorities, coalescing, stale items dropped, bursts merged into one line)
 export const voiceHooks = { on: () => false, add: () => {} };
+const toastGate = createToastGate();
 export const notifier = createNotifier({
   load: () => { const l = loadFile(); lines = l.length; return l; },
   save: saveFile,
   deliver: (n) => {
+    if (!outwardAllowed()) return;
     const st = notifySettings();
     if (voiceHooks.on() && voiceWants(st.voice, n)) voiceHooks.add(n);
     // (never from a test run: `node --test` sets NODE_TEST_CONTEXT in every test process)
-    if (desktopWants(st.desktop, n) && !process.env.NODE_TEST_CONTEXT) showDesktop(n.title, n.body);
+    if (desktopWants(st.desktop, n) && !process.env.NODE_TEST_CONTEXT) { const t = toastGate(n); if (t) showDesktop(t.title, t.body); }
   },
 });

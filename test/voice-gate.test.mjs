@@ -22,6 +22,9 @@ const N = await import("../src/core/notify.mjs");
 const src = (f) => readFileSync(join(ROOT, f), "utf8");
 
 test("the gate: nothing is said while the voice is off, unless it's the forced voice test", async () => {
+  // (this test daemon's AXA home is a temp one: it never speaks, not even forced, unless AXA_NOTIFY_TEST=1)
+  assert.equal(V.maySpeak(true, true), false, "a test or demo daemon never speaks");
+  process.env.AXA_NOTIFY_TEST = "1";
   assert.deepEqual([V.maySpeak(true, false), V.maySpeak(false, false), V.maySpeak(false, true), V.maySpeak(undefined, undefined)], [true, false, true, false]);
   // off by default (no ui.json): speak() returns at once, nothing starts
   assert.equal(await V.speak("This must not be heard."), null);

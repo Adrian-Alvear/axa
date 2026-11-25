@@ -17,6 +17,7 @@ import { files, isWsl } from "../paths.mjs";
 import * as K from "./kokoro.mjs";
 import { pronounce } from "./speech.mjs";
 import { earconFile } from "./earcons.mjs";
+import { outwardAllowed } from "./notify.mjs";
 import * as P from "./phonemes.mjs";
 
 const has = (c) => spawnSync("which", [c], { stdio: "ignore" }).status === 0;
@@ -107,7 +108,8 @@ const log = (m) => console.log(`[${new Date().toISOString()}] voice: ${m}`);
 // THE gate: every voice path (commander replies, notifications, the daily brief, summaries, any demo or helper)
 // speaks through speak(), which says nothing while the voice is off. Only the settings screen's explicit voice
 // test passes { force: true } to speak while off.
-export const maySpeak = (on, force) => on === true || force === true;
+// (a test or demo daemon never speaks: notify.mjs outwardAllowed)
+export const maySpeak = (on, force) => (on === true || force === true) && outwardAllowed();
 // Muted while something speaks (the toggle, or ui.json edited): stops it, unless it's that forced voice test
 export function silenceIfMuted() {
   if (current && !current.forced && !settings().on) { stop(); return true; }
