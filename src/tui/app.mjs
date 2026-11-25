@@ -22,6 +22,7 @@ import { commentable } from "../core/diffcomments.mjs";
 import { LiveView } from "./live.mjs";
 import { agentDetail, agentName, axaStatusLine, controlRows, msgText, selectedText } from "./control.mjs";
 import { laneSessions } from "./lanes.mjs";
+import { FRAME_MS, createAlive, feedEvents, glyphSet } from "./alive.mjs";
 import { copyToClipboard, pasteFile, readClipboard } from "./clipboard.mjs";
 import { hintKey, hitAt, makeArm, overlayHit, segSpans } from "./mouse.mjs";
 
@@ -143,6 +144,8 @@ export async function runTui() {
   let focus = 0; // which hub panel
   const sel = { control: 0, sessions: 0, chats: 0, agents: 0, projects: 0 }, scroll = { control: 0, sessions: 0, chats: 0, agents: 0, projects: 0 };
   const filter = { control: "", sessions: "", chats: "", agents: "", projects: "" };
+  // what the live lanes have seen (alive.mjs): new events fly as packets, agents grow and fold, lanes slide
+  const alive = createAlive(), glyphs = glyphSet();
   let act = null, ctlSel = null, focusInput = false, cmdInput = ""; // Control: activity, selected session, the commander box
   let cmdMsgs = [], cmdChat = null, cmdScroll = 0; // the commander's conversation, and how far you've scrolled it back
   // a drag over the commander's text: { startRow, startCol, endRow, endCol, scroll, dragged, done } (screen rows/cols)
@@ -536,7 +539,7 @@ export async function runTui() {
     if (panel === "control") {
       if (W < 100 || h < 20) return [...listRows("sessions", 1, y0, W, h - 1), line([[" widen the window (100×26 or more) for the full control view", "dim"]], W)];
       const w = waitingOthers();
-      ctl = { motion: motionNow(), sessions: data.sessions, act, selId: ctlSelected()?.id, focusInput, input: cmdInput, nameOf, question, yesOpt, noOpt, waiting: w[0], waitingCount: w.length, armed: !!w[0] && approveArm.armed(armKey(w[0])), apHits: [], order: ctlOrder(), chats: data.chats, zone, chatSel, agentSel: ctlAgent, cmdStatus: commanderStatus(), mapHits: [], chatHits: [], y0, L: Math.round(W * 0.62), cmdMsgs: withNotices(cmdMsgs), cmdScroll, cmdSel: cmdSel?.dragged && cmdSel.scroll === cmdScroll ? cmdSel : null };
+      ctl = { motion: motionNow(), alive, glyphs, sessions: data.sessions, act, selId: ctlSelected()?.id, focusInput, input: cmdInput, nameOf, question, yesOpt, noOpt, waiting: w[0], waitingCount: w.length, armed: !!w[0] && approveArm.armed(armKey(w[0])), apHits: [], order: ctlOrder(), chats: data.chats, zone, chatSel, agentSel: ctlAgent, cmdStatus: commanderStatus(), mapHits: [], chatHits: [], y0, L: Math.round(W * 0.62), cmdMsgs: withNotices(cmdMsgs), cmdScroll, cmdSel: cmdSel?.dragged && cmdSel.scroll === cmdScroll ? cmdSel : null };
       const rowsOut = controlRows(ctl, W, h - 1);
       cmdScroll = ctl.cmdScroll;
       if (cmdSel && cmdSel.scroll !== cmdScroll) cmdSel = null; // the conversation scrolled: the selection goes
@@ -1554,22 +1557,23 @@ export async function runTui() {
     } catch {}
   };
   setInterval(() => { if (screen === "hub" && PANELS[focus] === "control") pollCommander(); }, 1500);
-  const pollActivity = () => call("/api/activity?minutes=60&limit=80").then((a) => { act = a; schedule(); }, () => {});
+  const pollActivity = () => call("/api/activity?minutes=60&limit=80").then((a) => { act = a; feedEvents(alive, a?.events, Date.now()); schedule(); }, () => {});
   pollActivity();
   setInterval(() => { if (screen === "hub" && PANELS[focus] === "control") pollActivity(); }, 2000);
-  // Control's redraw: fast while a lane moves (ctl.anim: a spinning or pulsing glyph, set by the last draw), slow
-  // when all is idle (the strips' newest bucket, times), slower still with reduced motion; unchanged rows aren't
-  // rewritten, so an idle screen doesn't change at all
+  // Control's one animation clock: ~12 fps while something on the lanes moves (ctl.next, from the last draw: a
+  // packet in flight, a breathing glyph, a pulse), else when the next thing is due (a flicker, a queued packet),
+  // at most a second (the strips' newest bucket, the times); unchanged rows aren't rewritten, so an idle screen
+  // doesn't change at all
   const ctlTick = () => {
-    const on = screen === "hub" && !overlay && PANELS[focus] === "control", m = motionNow();
+    const on = screen === "hub" && !overlay && PANELS[focus] === "control";
     if (on) schedule();
-    setTimeout(ctlTick, !on ? 400 : m !== "full" ? 1000 : ctl.anim ? 80 : 400);
+    setTimeout(ctlTick, !on ? 400 : motionNow() === "off" ? 1000 : Math.min(1000, Math.max(FRAME_MS, ctl.next ?? 1000)));
   };
   ctlTick();
   setInterval(() => { if (screen === "hub" && !overlay) pollHub(); }, 5000);
   setInterval(schedule, 15000); // the clock
-  // spinners turn while something works
-  setInterval(() => { if (data.sessions.some((s) => s.status === "working" || s.status === "starting") || data.sessions.some((s) => (s.helpers || []).some((h) => h.status === "running"))) schedule(); }, 120);
+  // spinners turn while something works (on Control, its own clock does it)
+  setInterval(() => { if (!(screen === "hub" && !overlay && PANELS[focus] === "control") && (data.sessions.some((s) => s.status === "working" || s.status === "starting") || data.sessions.some((s) => (s.helpers || []).some((h) => h.status === "running")))) schedule(); }, 120);
   // a selected session's preview follows its screen
   setInterval(() => { if (screen === "hub" && !overlay && PANELS[focus] === "sessions") schedule(); }, 500);
 }
