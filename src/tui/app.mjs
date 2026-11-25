@@ -21,7 +21,8 @@ import { usd } from "../core/usage.mjs";
 import { commentable } from "../core/diffcomments.mjs";
 import { LiveView } from "./live.mjs";
 import { agentDetail, agentName, axaStatusLine, controlRows, msgText, selectedText } from "./control.mjs";
-import { laneSessions } from "./lanes.mjs";
+import { laneRows, laneSessions } from "./lanes.mjs";
+import { SIDE_W, compose, cycleFocus, inner, messageBody, moveSel, neighbor, normWorkspace, paneAt, paneBox, paneRects, paneTitle, placeRef, pruneTabs, removePane, saveWorkspace, selectable, sidebarLines, sidebarRows, tabsBar, toggleZoom, addTab, closeTab } from "./workspace.mjs";
 import { FRAME_MS, createAlive, feedEvents, glyphSet } from "./alive.mjs";
 import { copyToClipboard, pasteFile, readClipboard } from "./clipboard.mjs";
 import { hintKey, hitAt, makeArm, overlayHit, segSpans } from "./mouse.mjs";
@@ -71,7 +72,8 @@ export const KEYMAP = {
   chats: [["⏎", "resume"], ["/", "search"]],
   agents: [["⏎", "give a task"], ["/", "search"]],
   projects: [["⏎", "open"], ["g", "goal"], ["r", "review"], ["h", "handoff"], ["N", "new"], ["w", "worktree"], ["s", "shell"], ["/", "filter"]],
-  global: [["Ctrl+P", "commands: sessions, projects, actions, settings"], ["Space", "the next session that needs you"], ["Tab / 1-5", "switch panel"], ["n", "notifications"], ["L", "review queue"], ["$", "usage"], ["N", "new session"], ["a", "the AXA commander"], [",", "settings"], ["o", "web console"], ["R", "refresh"], ["?", "all keys"], ["q", "quit (sessions keep running)"]],
+  workspace: [["⏎", "put in a pane"], ["→", "type in the panes"], ["|", "side by side"], ["-", "stacked"], ["z", "zoom"], ["+", "new layout"], ["⌫", "remove the pane"], ["[", "previous layout"], ["]", "next layout"], ["Esc", "back to Control"]],
+  global: [["Ctrl+P", "commands: sessions, projects, actions, settings"], ["Space", "the next session that needs you"], ["Tab / 1-6", "switch panel"], ["n", "notifications"], ["L", "review queue"], ["$", "usage"], ["N", "new session"], ["a", "the AXA commander"], [",", "settings"], ["o", "web console"], ["R", "refresh"], ["?", "all keys"], ["q", "quit (sessions keep running)"]],
 };
 export const FOOTER_KEYS = 6;
 // The key a keymap entry stands for, as the hub's key handler receives it ("⏎" -> Enter, "→" -> the arrow), or
@@ -101,7 +103,7 @@ export function fuzzyScore(q, text) {
   return score - t.length * 0.01;
 }
 export const rankPalette = (entries, q) => entries.map((e) => ({ e, s: fuzzyScore(q, `${e.label} ${e.kind} ${e.key || ""}`) })).filter((x) => x.s !== null).sort((a, b) => b.s - a.s).map((x) => x.e);
-export const PANEL_NAMES = { control: "Control", sessions: "Sessions", chats: "Chats", agents: "Agents", projects: "Projects" };
+export const PANEL_NAMES = { control: "Control", sessions: "Sessions", chats: "Chats", agents: "Agents", projects: "Projects", workspace: "Workspace" };
 // the help's key sections, from KEYMAP
 export const keymapHelp = () => [
   { text: "Everywhere in the hub", role: "head" }, ...KEYMAP.global.map(([k, t]) => ({ text: `  ${k.padEnd(11)} ${t}` })),
@@ -114,8 +116,8 @@ const VERBOSITY_HINT = { normal: "normal: what needs you, finished work, heads-u
 const MODE_HINT = { live: "live: as it happens", digest: "digest: only one-way doors and failures interrupt", quiet: "quiet: nothing interrupts (w asks)" };
 export const QUIET_HOURS = ["off", "22:00-07:00", "23:00-08:00", "21:00-07:00"];
 const NOTIFY_HINT = { "needs-you": "what needs you (and finished work, spoken)", all: "everything", off: "off" };
-const PANELS = ["control", "sessions", "chats", "agents", "projects"];
-const TITLES = { control: "Control", sessions: "Sessions", chats: "Chats", agents: "Agents", projects: "Projects" };
+const PANELS = ["control", "sessions", "chats", "agents", "projects", "workspace"];
+const TITLES = { control: "Control", sessions: "Sessions", chats: "Chats", agents: "Agents", projects: "Projects", workspace: "Workspace" };
 
 export async function runTui() {
   // ---------- settings: ~/.axa/ui.json ----------
@@ -142,8 +144,8 @@ export async function runTui() {
   let data = { sessions: [], chats: [], projects: [], agents: [], links: [] };
   let err = "", screen = "hub", live = null, overlay = null, prefix = false, toast = null, quitting = false;
   let focus = 0; // which hub panel
-  const sel = { control: 0, sessions: 0, chats: 0, agents: 0, projects: 0 }, scroll = { control: 0, sessions: 0, chats: 0, agents: 0, projects: 0 };
-  const filter = { control: "", sessions: "", chats: "", agents: "", projects: "" };
+  const sel = { control: 0, sessions: 0, chats: 0, agents: 0, projects: 0, workspace: 0 }, scroll = { control: 0, sessions: 0, chats: 0, agents: 0, projects: 0, workspace: 0 };
+  const filter = { control: "", sessions: "", chats: "", agents: "", projects: "", workspace: "" };
   // what the live lanes have seen (alive.mjs): new events fly as packets, agents grow and fold, lanes slide
   const alive = createAlive(), glyphs = glyphSet();
   let act = null, ctlSel = null, focusInput = false, cmdInput = ""; // Control: activity, selected session, the commander box
@@ -172,7 +174,8 @@ export async function runTui() {
   const nameOf = (s) => (s.mode === "axa" ? "AXA commander" : clean(s.name));
   const where = (cwd) => (cwd === homedir() ? "~" : tilde(cwd));
   // sessions waiting on a prompt, other than the one you're looking at
-  const waitingOthers = () => data.sessions.filter((s) => ["waiting", "needs_trust"].includes(s.status) && s.choices && !(screen === "live" && s.id === live?.id));
+  // (and, on the Workspace, other than the ones in its panes: those show it in their own amber title bar)
+  const waitingOthers = () => { const shown = wsShownIds(); return data.sessions.filter((s) => ["waiting", "needs_trust"].includes(s.status) && s.choices && !(screen === "live" && s.id === live?.id) && !shown.has(s.id)); };
   const question = (c) => { const ls = c.question.split("\n").map(clean).filter(Boolean); return [...ls].reverse().find((l) => l.includes("?")) || ls.at(-1) || "a prompt"; };
   const yesOpt = (c) => c.options.find((o) => /^yes\b/i.test(o.label)) || c.options[0];
   const noOpt = (c) => c.options.find((o) => /^no\b/i.test(o.label)) || c.options.at(-1);
@@ -225,7 +228,7 @@ export async function runTui() {
     if (panel === "agents") return data.agents.filter((a) => match(`${a.name} ${a.source} ${a.description}`, q)).map((a) => ({ kind: "agent", a }));
     return [...data.projects.filter((p) => match(`${p.name} ${p.path}`, q)).map((p) => ({ kind: "project", p })), ...(q ? [] : [{ kind: "home" }])];
   }
-  const counts = () => ({ control: data.sessions.filter((s) => ["waiting", "needs_trust", "stuck"].includes(s.status)).length || "", sessions: data.sessions.filter((s) => s.alive).length, chats: data.chats.length, agents: data.agents.length, projects: data.projects.length });
+  const counts = () => ({ control: data.sessions.filter((s) => ["waiting", "needs_trust", "stuck"].includes(s.status)).length || "", sessions: data.sessions.filter((s) => s.alive).length, chats: data.chats.length, agents: data.agents.length, projects: data.projects.length, workspace: wsTab().panes.length || "" });
 
   // a list entry: two lines, [left segments, right segments] each
   function entry(it) {
@@ -491,7 +494,7 @@ export async function runTui() {
     let o = "", used = 0;
     tabHits = [];
     for (const [i, p] of PANELS.entries()) {
-      const icon = { control: I.axa, sessions: I.session, chats: I.chat, agents: I.agent, projects: I.project }[p];
+      const icon = { control: I.axa, sessions: I.session, chats: I.chat, agents: I.agent, projects: I.project, workspace: I.workspace }[p];
       const t = ` ${i + 1} ${icon} ${TITLES[p]} ${c[p]} `;
       tabHits.push({ x0: used + 1, x1: used + width(t), i });
       o += paint(i === focus ? "tabOn" : "tabOff", t) + paint("bar", " ");
@@ -514,7 +517,7 @@ export async function runTui() {
     if (screen === "live") return null; // a session keeps every row; notices show in its header
     if (toast && Date.now() < toast.until) return line([[` ${toast.text}`, "text"]], W, [], "bar");
     // (one keymap per screen: KEYMAP; typing to the commander and its chats list have their own few keys)
-    const per = PANELS[focus] === "control" && focusInput ? [["⏎", "send to the commander"], ["Esc", "stop typing"]] : PANELS[focus] === "control" && zone === "chats" ? [["⏎", "resume chat"], ["↑↓", "pick"], ["←", "back to the map"]] : KEYMAP[PANELS[focus]].slice(0, FOOTER_KEYS);
+    const per = PANELS[focus] === "workspace" && wsPaneFocus() ? wsPaneHints() : PANELS[focus] === "control" && focusInput ? [["⏎", "send to the commander"], ["Esc", "stop typing"]] : PANELS[focus] === "control" && zone === "chats" ? [["⏎", "resume chat"], ["↑↓", "pick"], ["←", "back to the map"]] : KEYMAP[PANELS[focus]].slice(0, FOOTER_KEYS);
     const all = [["^P", "commands"], ["?", "all keys"]];
     const right = all.flatMap(([k, t], j) => [[` ${k} `, "keycap"], [j === all.length - 1 ? ` ${t}` : ` ${t}  `, "barDim"]]);
     // the panel's own hints, whole ones only, in the room the right side leaves (see line(): right + 1 gap)
@@ -548,6 +551,7 @@ export async function runTui() {
       rowsOut.push(c ? axaStatusLine(c, data.sessions, W, 1, { mode: ctl.cmdStatus.mode, on: "bar", voice: voiceOn() && (voiceState || true), notifyMode: cfg.notify?.mode, usage: usageInfo && { cost: usageInfo.total_cost, limits: usageInfo.limits_text } })[0] : line([[" AXA is offline · press a to start it", "barDim"]], W, [], "bar"));
       return rowsOut;
     }
+    if (panel === "workspace") return workspaceBody(y0, h);
     if (W < 90) { listArea = { x0: 1, x1: W, y0, y1: y0 + h - 1, panel }; return listRows(panel, 1, y0, W, h); }
     const lw = Math.max(32, Math.min(56, Math.round(W * 0.36))), pw = W - lw - 1;
     listArea = { x0: 1, x1: lw, y0, y1: y0 + h - 1, panel };
@@ -555,7 +559,222 @@ export async function runTui() {
     const R = previewRows(items(panel)[sel[panel]], pw, h);
     return L.map((l, i) => l + paint("frame", "│") + R[i]);
   }
+  // ---------- the Workspace tab (workspace.mjs): live sessions side by side, the sidebar of spaces and agents ----------
+  let ws = normWorkspace(cfg.workspace), wsSide = true, wsSel = 1, wsGeo = null, wsMapSel = null, wsMapCtx = { mapHits: [] }, wsLastClick = { at: 0, k: null };
+  const wsViews = new Map(); // session id -> LiveView: only the panes on screen (a hidden tab, or another screen, has none)
+  const wsTab = () => ws.tabs[ws.active];
+  const saveWs = () => { cfg.workspace = saveWorkspace(ws); saveCfg(); };
+  const setTab = (t) => { ws = { ...ws, tabs: ws.tabs.map((x, i) => (i === ws.active ? t : x)) }; saveWs(); };
+  const onWorkspace = () => screen === "hub" && PANELS[focus] === "workspace";
+  const wsVisible = () => { if (!onWorkspace()) return []; const t = wsTab(); return t.panes.filter((_, i) => t.zoom === null || t.zoom === i); };
+  function wsShownIds() { return new Set(wsVisible().filter((p) => p.kind === "session").map((p) => p.id)); }
+  const wsHasMap = () => wsVisible().some((p) => p.kind === "map");
+  // the focused pane (null while the sidebar has the focus), its session and its live view
+  const wsPaneFocus = () => onWorkspace() && !wsSide && !!wsTab().panes[wsTab().focus];
+  const wsFocusedPane = () => (wsPaneFocus() ? wsTab().panes[wsTab().focus] : null);
+  const wsFocusedSession = () => { const p = wsFocusedPane(); return p?.kind === "session" ? data.sessions.find((s) => s.id === p.id && s.alive) || null : null; };
+  const wsFocusedView = () => { const p = wsFocusedPane(); return p?.kind === "session" ? wsViews.get(p.id) || null : null; };
+  // what you type goes to the focused pane's session
+  function wsTyping() { if (overlay || !wsPaneFocus()) return false; const v = wsFocusedView(); return !!v && !v.dead; }
+  function wsCloseViews(keep = new Set()) { for (const [id, v] of wsViews) if (!keep.has(id)) { v.close(); wsViews.delete(id); } }
+  function wsView(s, cols, rows) {
+    let v = wsViews.get(s.id);
+    if (!v) { v = new LiveView({ socket: SOCKET, conf: TMUX_CONF, env: tmuxEnv(), session: s, cols, rows, onUpdate: schedule, noColor }); wsViews.set(s.id, v); }
+    else v.resize(cols, rows);
+    return v;
+  }
+  const wsPaneHints = () => { const k = keyName(); return [[`${k} ←→↑↓`, "move"], [`${k} o`, "next pane"], [`${k} z`, "zoom"], [`${k} x`, "remove"], [`${k} h`, "Control"], [`${k} ?`, "keys"]]; };
+  function wsEmpty(w, h) {
+    const msg = [["Nothing here yet.", "head"], ["", ""], ["Pick a space on the left (↑/↓, Enter or a click) to put its live session in a pane:", "dim"], ["up to 4 side by side; ◫ live map puts the lanes in one.", "dim"], ["", ""], [`→ or a click types in a pane · ${keyName()} then ←↑↓→ / o moves · z zooms · x removes`, "dim"], ["Esc goes back to Control (the sessions keep running).", "dim"]];
+    const top = Math.max(0, Math.floor((h - msg.length) / 2)), out = [];
+    for (let i = 0; i < h; i++) { const m = msg[i - top]; out.push(m ? line([[" ".repeat(Math.max(2, Math.floor((w - width(m[0])) / 2))) + m[0], m[1]]], w) : " ".repeat(w)); }
+    return out;
+  }
+  function workspaceBody(y0, h) {
+    const t = wsTab(), side = sidebarRows(data.sessions);
+    if (!selectable(side[wsSel])) wsSel = moveSel(side, Math.min(wsSel, side.length - 1), -1);
+    if (!selectable(side[wsSel])) wsSel = moveSel(side, 0, 1);
+    const n = t.panes.length;
+    const right = prefix ? [[" waiting for a key… ", "chipWait"]] : [[n === 2 || n === 3 ? `${t.split === "h" ? "stacked" : "side by side"}  ` : "", "barDim"], [t.zoom !== null ? "zoomed  " : "", "accent"], [` ${keyName()} `, "keycap"], [" then ←↑↓→ o z x h ? ", "barDim"]];
+    const bar = tabsBar(ws, W, right);
+    const bh = Math.max(1, h - 1), aw = W - SIDE_W;
+    const shown = new Map();
+    t.panes.forEach((p, i) => { if (p.kind === "session") shown.set(p.id, i + 1); });
+    const sb = sidebarLines(side, SIDE_W, bh, { sel: wsSel, focused: wsSide, shown, mapShown: t.panes.findIndex((p) => p.kind === "map") + 1, nameOf, spin: spinner });
+    const rects = paneRects(n, aw, bh, { split: t.split, zoom: t.zoom });
+    const blocks = [{ x: 0, y: 0, w: SIDE_W, h: bh, rows: sb.lines }], keep = new Set(), panes = [];
+    t.panes.forEach((p, i) => {
+      const r = rects[i];
+      if (!r) return;
+      const focused = !wsSide && i === t.focus, iw = Math.max(1, r.w - 2), ih = Math.max(1, r.h - 2), zoomed = t.zoom === i;
+      let s = null, body, title;
+      if (p.kind === "map") {
+        wsMapCtx = { motion: motionNow(), alive, glyphs, sessions: data.sessions, act, selId: wsMapSel, question, mapHits: [] };
+        body = laneRows(wsMapCtx, iw, ih);
+        const ls = laneSessions(data.sessions, wsMapSel);
+        title = paneTitle({ kind: "map", w: r.w, focused, zoomed, n: i + 1, label: `${ls.sessions} session${ls.sessions === 1 ? "" : "s"}` });
+      } else {
+        s = data.sessions.find((x) => x.id === p.id && x.alive) || null;
+        if (s) { const v = wsView(s, iw, ih); keep.add(s.id); body = v.dead ? messageBody(v.dead, iw, ih) : v.rowsAnsi(); }
+        else body = messageBody(`this session has ended · ${keyName()} x takes the pane away`, iw, ih);
+        title = paneTitle({ s, w: r.w, focused, zoomed, armed: !!s?.choices && approveArm.armed(armKey(s)), n: i + 1, nameOf });
+      }
+      panes.push({ i, r, s, kind: p.kind, title });
+      blocks.push({ x: SIDE_W + r.x, y: r.y, w: r.w, h: r.h, rows: paneBox(title, body, r.w, r.h, title.role) });
+    });
+    if (!n) blocks.push({ x: SIDE_W, y: 0, w: aw, h: bh, rows: wsEmpty(aw, bh) });
+    wsCloseViews(keep);
+    wsGeo = { y0, top: y0 + 1, side: sb.at, rects, panes, tabHits: bar.hits };
+    return [bar.text, ...compose(W, bh, blocks)];
+  }
+  // the sidebar's selected row: a space goes on screen (a new pane while there are fewer than 4, else in the
+  // focused one), the map too; an agent opens its detail
+  function wsPlace(row = sidebarRows(data.sessions)[wsSel]) {
+    if (!row) return;
+    if (row.kind === "agent") return openAgent(row.s.id, row.h.id);
+    const ref = row.kind === "map" ? { kind: "map" } : row.kind === "space" ? { kind: "session", id: row.s.id } : null;
+    if (ref) setTab(placeRef(wsTab(), ref));
+  }
+  const wsFocus = (i) => { const t = wsTab(); if (!t.panes[i]) return; wsSide = false; if (t.focus !== i) setTab({ ...t, focus: i, zoom: t.zoom === null ? null : i }); };
+  const wsSwitchTab = (i) => { if (i < 0 || i >= ws.tabs.length || i === ws.active) return; ws = { ...ws, active: i }; saveWs(); prevRows = []; };
+  function wsNewTab() { const before = ws.tabs.length; ws = addTab(ws); saveWs(); wsSide = true; prevRows = []; if (ws.tabs.length === before) flash("9 layouts at most"); }
+  function wsCloseTab() { ws = closeTab(ws); saveWs(); wsSide = true; prevRows = []; flash("layout closed (its sessions keep running)"); }
+  function wsRemove() {
+    const t = wsTab();
+    if (t.focus < 0) return;
+    setTab(removePane(t, t.focus));
+    if (!wsTab().panes.length) wsSide = true;
+  }
+  // approve takes two clicks (the first arms it), decline one: the yellow bar's checks
+  function wsAnswer(s, which) {
+    if (!s?.choices) return flash("nothing is waiting on you there");
+    if (which === "no") { approveArm.disarm(); return answerAlert("no", s); }
+    if (approveArm.press(armKey(s)) === "fire") return answerAlert("yes", s);
+    setTimeout(schedule, 4050);
+  }
+  // keys while the sidebar has the focus (the hub's other keys still work: Tab, 1-6, Ctrl+P, q...)
+  function wsKey(k) {
+    const side = sidebarRows(data.sessions), t = wsTab();
+    if (k === prefixByte()) { prefix = true; return true; }
+    switch (k) {
+      case "\x1b[A": case "k": wsSel = moveSel(side, wsSel, -1); return true;
+      case "\x1b[B": case "j": wsSel = moveSel(side, wsSel, 1); return true;
+      case "\r": wsPlace(side[wsSel]); return true;
+      case "\x1b[C": case "l": if (t.panes.length) wsFocus(Math.max(0, t.focus)); else flash("no panes yet: Enter puts the selected space in one"); return true;
+      case "|": setTab({ ...t, split: "v" }); return true;
+      case "-": setTab({ ...t, split: "h" }); return true;
+      case "z": if (t.focus >= 0) setTab(toggleZoom(t)); return true;
+      case "\x7f": case "\b": case "\x1b[3~": wsRemove(); return true;
+      case "+": wsNewTab(); return true;
+      case "[": wsSwitchTab(ws.active - 1); return true;
+      case "]": wsSwitchTab(ws.active + 1); return true;
+      case "W": wsCloseTab(); return true;
+      case ESC: focus = 0; return true;
+    }
+    return false;
+  }
+  // a key for a map pane (it has no session to type into): ↑/↓ pick a lane, Enter puts it in a pane
+  function wsMapKey(k) {
+    const o = laneSessions(data.sessions, wsMapSel).lanes, i = Math.max(0, o.findIndex((s) => s.id === wsMapSel));
+    if (k === "\x1b[A" || k === "k") wsMapSel = o[Math.max(0, i - 1)]?.id ?? null;
+    else if (k === "\x1b[B" || k === "j") wsMapSel = o[Math.min(o.length - 1, i + (wsMapSel ? 1 : 0))]?.id ?? null;
+    else if (k === "\r") { const s = o.find((x) => x.id === wsMapSel); if (s) setTab(placeRef(wsTab(), { kind: "session", id: s.id })); }
+    else if (k === ESC) wsSide = true;
+  }
+  // the prefix key, then a key, while on the Workspace
+  function wsAction(k) {
+    const t = wsTab();
+    if (k === prefixByte()) { wsFocusedView()?.write(k); return; }
+    const dir = { "\x1b[A": "up", "\x1b[B": "down", "\x1b[C": "right", "\x1b[D": "left" }[k];
+    if (dir) {
+      if (wsSide) { if (dir === "right" && t.panes.length) wsFocus(Math.max(0, t.focus)); return; }
+      const j = neighbor(wsGeo?.rects || [], t.focus, dir);
+      if (j >= 0) wsFocus(j); else if (dir === "left") wsSide = true;
+      return;
+    }
+    if (/^[1-9]$/.test(k)) return wsSwitchTab(Number(k) - 1);
+    switch (k) {
+      case "o": if (t.panes.length) { wsSide = false; setTab(cycleFocus(t, 1)); } return;
+      case "s": wsSide = true; return;
+      case "z": return t.focus >= 0 && setTab(toggleZoom(t));
+      case "x": return wsRemove();
+      case "|": return setTab({ ...t, split: "v" });
+      case "-": return setTab({ ...t, split: "h" });
+      case "c": case "+": return wsNewTab();
+      case "[": return wsSwitchTab(ws.active - 1);
+      case "]": return wsSwitchTab(ws.active + 1);
+      case "W": return wsCloseTab();
+      case "h": case ESC: wsSide = true; focus = 0; return;
+      case "y": case "n": { const s = wsFocusedSession(); return s?.choices ? answerAlert(k === "y" ? "yes" : "no", s) : flash("nothing is waiting on you in this pane"); }
+      case "\r": case "f": { const s = wsFocusedSession(); return s ? openLive(s) : null; }
+      case "a": { const c = commander(); return c ? setTab(placeRef(t, { kind: "session", id: c.id })) : openCommander(); }
+      case "q": return quit();
+      case "?": return help();
+      case ",": return settings();
+      case "\x10": return openPalette();
+    }
+    flash(`${keyName()} ${k === "\r" ? "Enter" : k}: not a workspace key (${keyName()} ? lists them)`);
+  }
+  let wsTypingAt = 0;
+  function wsSend(chunk) {
+    const v = wsFocusedView();
+    if (!v || v.dead) return;
+    v.write(chunk);
+    if (Date.now() - wsTypingAt > 5000) { wsTypingAt = Date.now(); call(`/api/terms/${v.id}/typing`, { method: "POST", body: {} }).catch(() => {}); }
+  }
+  // the mouse on the Workspace (x, y 1-based screen cells); true when it was ours
+  function wsMouse(b, x, y, up) {
+    const g = wsGeo;
+    if (!g || y < g.y0) return false;
+    const press = b === 0 && !up;
+    if (y === g.y0) { const h = press && hitAt(g.tabHits, x); if (h) { if (h.k === "+") wsNewTab(); else wsSwitchTab(h.k); } return true; }
+    const by = y - g.top;
+    if (x <= SIDE_W) {
+      const side = sidebarRows(data.sessions);
+      if (b === 64 || b === 65) { wsSel = moveSel(side, wsSel, b === 64 ? -1 : 1); return true; }
+      if (!press) return true;
+      wsSide = true;
+      const i = g.side[by];
+      if (i >= 0) { wsSel = i; wsPlace(side[i]); }
+      return true;
+    }
+    const ax = x - SIDE_W - 1, k = paneAt(g.rects, ax, by), pn = g.panes.find((p) => p.i === k);
+    if (!pn) return true;
+    const r = pn.r, col = ax - r.x;
+    if (by === r.y) {
+      if (!press) return true;
+      const h = hitAt(pn.title.hits, col);
+      wsFocus(k);
+      if (h?.k === "yes" || h?.k === "no") wsAnswer(pn.s, h.k);
+      else if (h?.k === "zoom") setTab(toggleZoom(wsTab()));
+      else if (h?.k === "close") wsRemove();
+      return true;
+    }
+    if (press) wsFocus(k);
+    const ir = inner(r), ix = ax - ir.x, iy = by - ir.y;
+    if (ix < 0 || iy < 0 || ix >= ir.w || iy >= ir.h) return true;
+    if (pn.kind === "session" && pn.s) wsViews.get(pn.s.id)?.mouse(b, ix + 1, iy + 1, up);
+    else if (pn.kind === "map" && press) {
+      const m = wsMapCtx.mapHits.find((h) => iy >= h.row0 && iy <= h.row1 && ix >= h.col0 && ix <= h.col1);
+      if (m?.agent) return openAgent(m.id, m.agent), true;
+      const id = m?.id === "commander" ? commander()?.id : m?.id;
+      if (!id) return true;
+      const again = Date.now() - wsLastClick.at < 450 && wsLastClick.k === id;
+      wsMapSel = id; wsLastClick = { at: again ? 0 : Date.now(), k: id };
+      if (again) setTab(placeRef(wsTab(), { kind: "session", id }));
+    }
+    return true;
+  }
+  // a click on a pane's Approve button (so it doesn't disarm itself)
+  function wsOnApprove(x, y) {
+    const g = wsGeo;
+    if (!onWorkspace() || !g || x <= SIDE_W) return false;
+    const ax = x - SIDE_W - 1, by = y - g.top, pn = g.panes.find((p) => p.i === paneAt(g.rects, ax, by));
+    return !!pn && by === pn.r.y && hitAt(pn.title.hits, ax - pn.r.x)?.k === "yes";
+  }
+
   function frame() {
+    if (!onWorkspace()) { wsGeo = null; if (wsViews.size) wsCloseViews(); } // only the panes on screen are live
     const rows = [titleBar()];
     if (screen === "hub") rows.push(tabBar());
     const alert = waitingOthers()[0];
@@ -587,6 +806,10 @@ export async function runTui() {
     // the cursor: in a text box, or where the live session has it
     if (overlay?.cursorAt) o += `${ESC}[${overlay.cursorAt.y + 1};${overlay.cursorAt.x + 1}H${ESC}[?25h`;
     else if (screen === "live" && live && !live.dead && !overlay) { const c = live.cursor(); if (c) o += `${ESC}[${c.y + 1 + live.top};${c.x + 1}H${ESC}[?25h`; }
+    else if (wsTyping() && wsGeo) {
+      const v = wsFocusedView(), pn = wsGeo.panes.find((p) => p.i === wsTab().focus), c = v.cursor();
+      if (c && pn) { const ir = inner(pn.r); if (c.y < ir.h && c.x < ir.w) o += `${ESC}[${wsGeo.top + ir.y + c.y};${SIDE_W + ir.x + c.x + 1}H${ESC}[?25h`; }
+    }
     out.write(syncFrame(o, syncOutput));
   }
 
@@ -698,6 +921,7 @@ export async function runTui() {
     const actions = [...KEYMAP.global, ...KEYMAP[PANELS[focus]]].map(([k, t]) => ({ kind: "action", label: t, key: k, k: paletteKey(k) })).filter((e) => e.k);
     return [
       ...orderedSessions().filter((s) => s.alive).map((s) => ({ kind: "session", label: nameOf(s), hint: look(s)[1], run: () => openLive(s) })),
+      { kind: "tab", label: "Workspace", hint: "live sessions side by side (6)", run: () => { focus = PANELS.indexOf("workspace"); } },
       ...data.projects.map((p) => ({ kind: "project", label: p.name, hint: where(p.path), run: () => { focus = PANELS.indexOf("projects"); sel.projects = Math.max(0, items("projects").findIndex((it) => it.p?.path === p.path)); } })),
       ...actions.map((e) => ({ ...e, run: () => hubKey(e.k) })),
       ...settingsOpts().map((o, i) => ({ kind: "setting", label: o.label, hint: o.hint, run: () => settings(i) })),
@@ -1085,6 +1309,16 @@ export async function runTui() {
       { text: "  On Control: press : then Alt+V (or Ctrl+V) to attach a clipboard image for the commander" },
       { text: "  Mouse: scroll goes to the session; drag selects and copies (Shift+drag: your terminal's own)" },
       { text: "" },
+      { text: "Workspace (6): live sessions side by side", role: "head" },
+      { text: "  Sidebar: ↑/↓ pick a space · Enter (or a click) puts it in a pane (a new one up to 4, else the focused one)" },
+      { text: "           ◫ live map puts the lanes in a pane · an agent row opens its detail · → or a click on a pane types in it" },
+      { text: "           | side by side · - stacked · z zoom · ⌫ remove the pane · + new layout · [ ] switch layouts · W close it · Esc Control" },
+      { text: `  In a pane everything you type goes to its session; ${k} then:` },
+      { text: `    ←↑↓→ move between panes (← from the leftmost: the sidebar) · o next pane · s the sidebar · z zoom · x remove the pane` },
+      { text: `    | / - split · c new layout · 1-9 or [ ] switch layouts · y / n answer its prompt · Enter full screen · a the commander · h Control` },
+      { text: "  A pane that waits on you turns amber: click y twice to approve, x once to decline (as in the yellow bar)" },
+      { text: "  Removing a pane never closes its session. The layouts are saved with your settings." },
+      { text: "" },
       { text: "Voice", role: "head" },
       { text: "  AXA speaks the commander's finished replies (the short version) with your computer's own voices." },
       { text: "  m on Control or , settings turns it on; pick the voice and speed there; AXA_VOICE=1/0 forces it." },
@@ -1188,6 +1422,7 @@ export async function runTui() {
   function hubKey(k) {
     const panel = PANELS[focus], list = items(panel);
     if (panel === "control" && controlKey(k)) return;
+    if (panel === "workspace" && !filtering && wsKey(k)) return;
     if (filtering) {
       if (k === "\r" || k === "\x1b[B") { filtering = false; return; }
       if (k === ESC) { filtering = false; filter[panel] = ""; return; }
@@ -1202,7 +1437,7 @@ export async function runTui() {
     switch (k) {
       case "\t": focus = (focus + 1) % PANELS.length; return;
       case "\x1b[Z": focus = (focus + PANELS.length - 1) % PANELS.length; return;
-      case "1": case "2": case "3": case "4": case "5": focus = Number(k) - 1; return;
+      case "1": case "2": case "3": case "4": case "5": case "6": focus = Number(k) - 1; return;
       case "\x1b[A": case "k": return move(-1);
       case "\x1b[B": case "j": return move(1);
       case "\x1b[5~": return move(-10);
@@ -1330,6 +1565,7 @@ export async function runTui() {
     if (alertY && y === alertY) return hitAt(alertHits, x, y)?.k === "yes";
     if (screen !== "hub") return false;
     if (footY && y === footY) return hitAt(footHits, x, y)?.k === "y";
+    if (wsOnApprove(x, y)) return true;
     return !!onControl() && hitAt(ctl.apHits || [], x, y - ctl.y0)?.which === "yes";
   }
   // answer the prompt shown in the yellow bar by mouse: decline at once; approve on the second click, and
@@ -1385,6 +1621,7 @@ export async function runTui() {
       return schedule();
     }
     if (y === 2) { const t = tabHits.find((h) => x >= h.x0 && x <= h.x1); if (t && press) focus = t.i; return schedule(); }
+    if (onWorkspace()) { wsMouse(b, x, y, up); return schedule(); }
     if (PANELS[focus] === "control" && ctl.y0) {
       const by = y - ctl.y0; // body row (0-based)
       if ((b === 64 || b === 65) && inCommander(x, by)) { cmdScroll = Math.max(0, cmdScroll + (b === 64 ? 3 : -3)); cmdSel = null; return schedule(); }
@@ -1475,6 +1712,9 @@ export async function runTui() {
     if (screen === "live" && !overlay) {
       // tmux forwards real pastes; only the empty one and Alt+V are ours
       if (d.includes(PS + PE) || d === "\x1bv") { d = d.split(PS + PE).join(""); if (d === "\x1bv") d = ""; livePasteImage(); }
+    } else if (wsTyping()) {
+      // a Workspace pane: pastes go to its session as they are (an empty one has nothing to paste)
+      d = d.split(PS + PE).join("");
     } else {
       d = d.replace(/\x1b\[200~([\s\S]*?)\x1b\[201~/g, (_, t) => { hubPaste(t); return ""; });
       if (d === "\x1bv" || (d === "\x16" && screen === "hub" && !overlay && PANELS[focus] === "control")) { d = ""; pasteForCommander(); }
@@ -1486,17 +1726,32 @@ export async function runTui() {
     // each key goes where the UI is at that moment: a dialog, the hub, or the live session
     const P = prefixByte();
     while (d) {
-      if (overlay || screen === "hub") {
+      if (prefix && !overlay) {
+        prefix = false;
+        const [k] = keysOf(d);
+        d = d.slice(k.length);
+        if (screen === "live") liveAction(k); else if (onWorkspace()) wsAction(k);
+        continue;
+      }
+      if (overlay || (screen === "hub" && !wsPaneFocus())) {
         const [k] = keysOf(d);
         d = d.slice(k.length);
         if (overlay) overlayKey(k); else hubKey(k);
         continue;
       }
-      if (prefix) {
-        prefix = false;
-        const [k] = keysOf(d);
-        d = d.slice(k.length);
-        liveAction(k);
+      if (screen === "hub") {
+        // a Workspace pane has the focus: everything goes to its session, up to the prefix key (a map pane,
+        // or a session that has ended, takes keys one by one)
+        if (!wsTyping()) {
+          const [k] = keysOf(d);
+          d = d.slice(k.length);
+          if (k === P) prefix = true; else if (wsFocusedPane()?.kind === "map") wsMapKey(k); else if (k === ESC) wsSide = true;
+          continue;
+        }
+        const i = d.indexOf(P);
+        if (i < 0) { wsSend(d); break; }
+        if (i) wsSend(d.slice(0, i));
+        prefix = true; d = d.slice(i + 1);
         continue;
       }
       // live: everything goes to the session, up to the prefix key
@@ -1520,6 +1775,7 @@ export async function runTui() {
   function quit() {
     quitting = true;
     live?.close();
+    wsCloseViews();
     leave();
     const n = data.sessions.filter((s) => s.alive).length;
     console.log(n ? `AXA: ${n} session${n > 1 ? "s keep" : " keeps"} running. \`axa\` brings you back.` : "AXA: bye. `axa` brings you back.");
@@ -1532,6 +1788,8 @@ export async function runTui() {
   await pollHub();
   if (err) throw new Error(`The AXA daemon isn't answering: ${err}`);
   if (!data.tmux) throw new Error("AXA needs tmux to run sessions: install it (sudo apt install tmux, or brew install tmux) and run axa again.");
+  // saved layouts: sessions that have gone since leave them
+  { const before = ws; ws = pruneTabs(ws, new Set(data.sessions.filter((s) => s.alive).map((s) => s.id))); if (ws !== before) saveWs(); }
   // start where you're needed: the panel with something waiting, else sessions if any, else chats
   if (!data.sessions.length && data.chats.length) focus = 1;
   enter();
@@ -1559,21 +1817,21 @@ export async function runTui() {
   setInterval(() => { if (screen === "hub" && PANELS[focus] === "control") pollCommander(); }, 1500);
   const pollActivity = () => call("/api/activity?minutes=60&limit=80").then((a) => { act = a; feedEvents(alive, a?.events, Date.now()); schedule(); }, () => {});
   pollActivity();
-  setInterval(() => { if (screen === "hub" && PANELS[focus] === "control") pollActivity(); }, 2000);
+  setInterval(() => { if (screen === "hub" && (PANELS[focus] === "control" || wsHasMap())) pollActivity(); }, 2000);
   // Control's one animation clock: ~12 fps while something on the lanes moves (ctl.next, from the last draw: a
   // packet in flight, a breathing glyph, a pulse), else when the next thing is due (a flicker, a queued packet),
   // at most a second (the strips' newest bucket, the times); unchanged rows aren't rewritten, so an idle screen
   // doesn't change at all
   const ctlTick = () => {
-    const on = screen === "hub" && !overlay && PANELS[focus] === "control";
+    const map = !overlay && wsHasMap(), on = (screen === "hub" && !overlay && PANELS[focus] === "control") || map;
     if (on) schedule();
-    setTimeout(ctlTick, !on ? 400 : motionNow() === "off" ? 1000 : Math.min(1000, Math.max(FRAME_MS, ctl.next ?? 1000)));
+    setTimeout(ctlTick, !on ? 400 : motionNow() === "off" ? 1000 : Math.min(1000, Math.max(FRAME_MS, (map ? wsMapCtx.next : ctl.next) ?? 1000)));
   };
   ctlTick();
   setInterval(() => { if (screen === "hub" && !overlay) pollHub(); }, 5000);
   setInterval(schedule, 15000); // the clock
-  // spinners turn while something works (on Control, its own clock does it)
-  setInterval(() => { if (!(screen === "hub" && !overlay && PANELS[focus] === "control") && (data.sessions.some((s) => s.status === "working" || s.status === "starting") || data.sessions.some((s) => (s.helpers || []).some((h) => h.status === "running")))) schedule(); }, 120);
+  // spinners turn while something works (on Control, and on a Workspace with the map, its own clock does it)
+  setInterval(() => { if (!(screen === "hub" && !overlay && (PANELS[focus] === "control" || wsHasMap())) && (data.sessions.some((s) => s.status === "working" || s.status === "starting") || data.sessions.some((s) => (s.helpers || []).some((h) => h.status === "running")))) schedule(); }, 120);
   // a selected session's preview follows its screen
   setInterval(() => { if (screen === "hub" && !overlay && PANELS[focus] === "sessions") schedule(); }, 500);
 }

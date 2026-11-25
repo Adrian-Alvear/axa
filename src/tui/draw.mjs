@@ -45,8 +45,8 @@ export function mix(a, b, t) {
 }
 
 // ---------- icons: Nerd Font glyphs, or plain Unicode that every font has ----------
-const NERD = { axa: "\uf0e7", session: "\uf120", shell: "\uf489", chat: "\uf086", agent: "\uf0c0", project: "\uf07b", home: "\uf015", branch: "\ue725", wait: "\uf071", stuck: "\uf017", done: "\uf00c", ready: "\uf10c", off: "\uf068", open: "\uf111", you: "\uf007", claude: "\uf0e7", tokens: "\uf080", bell: "\uf0f3", worktree: "\uf126", plus: "\uf067", search: "\uf002" };
-const PLAIN = { axa: "◆", session: "▸", shell: "$", chat: "≡", agent: "◇", project: "▣", home: "~", branch: "⎇", wait: "▲", stuck: "◷", done: "✓", ready: "○", off: "–", open: "●", you: "›", claude: "◆", tokens: "Σ", bell: "◎", worktree: "⑂", plus: "+", search: "/" };
+const NERD = { axa: "\uf0e7", session: "\uf120", shell: "\uf489", chat: "\uf086", agent: "\uf0c0", project: "\uf07b", home: "\uf015", branch: "\ue725", wait: "\uf071", stuck: "\uf017", done: "\uf00c", ready: "\uf10c", off: "\uf068", open: "\uf111", you: "\uf007", claude: "\uf0e7", tokens: "\uf080", bell: "\uf0f3", worktree: "\uf126", plus: "\uf067", search: "\uf002", workspace: "\uf009" };
+const PLAIN = { axa: "◆", session: "▸", shell: "$", chat: "≡", agent: "◇", project: "▣", home: "~", branch: "⎇", wait: "▲", stuck: "◷", done: "✓", ready: "○", off: "–", open: "●", you: "›", claude: "◆", tokens: "Σ", bell: "◎", worktree: "⑂", plus: "+", search: "/", workspace: "▦" };
 export let I = PLAIN;
 // Is a Nerd Font installed? (Windows fonts on WSL, fc-list elsewhere.) Used only to pick the default.
 export function nerdFontInstalled() {
