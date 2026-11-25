@@ -161,3 +161,24 @@ test("compose and the tab bar", () => {
   const p = plain(bar.text);
   for (const h of bar.hits) assert.match(p.slice(h.x0 - 1, h.x1), h.k === "+" ? /\+/ : new RegExp(String(h.k + 1)));
 });
+
+test("wsHit: what a click hits (tab bar, sidebar, a pane's title buttons, inside a pane, its border)", async () => {
+  const { wsHit, SIDE_W } = await import("../src/tui/workspace.mjs");
+  const rects = paneRects(2, 100, 20);
+  const w = S("b", { status: "waiting", choices: { question: "Go?", options: [{ n: 1, label: "Yes" }, { n: 2, label: "No" }] } });
+  const panes = [{ i: 0, title: paneTitle({ s: S("a"), w: rects[0].w }) }, { i: 1, title: paneTitle({ s: w, w: rects[1].w }) }];
+  const geo = { y0: 4, top: 5, side: [-1, 1, 2], rects, panes, tabHits: [{ k: 0, x0: 15, x1: 19 }, { k: "+", x0: 21, x1: 23 }] };
+  assert.equal(wsHit(geo, 10, 3), null, "above the Workspace");
+  assert.deepEqual(wsHit(geo, 16, 4), { kind: "tab", k: 0 });
+  assert.deepEqual(wsHit(geo, 22, 4), { kind: "tab", k: "+" });
+  assert.deepEqual(wsHit(geo, 60, 4), { kind: "bar" });
+  assert.deepEqual(wsHit(geo, 3, 6), { kind: "side", i: 1 });
+  assert.deepEqual(wsHit(geo, SIDE_W, 5), { kind: "side", i: -1 });
+  // pane 2's title: its y / x / zoom / close buttons, each at the column it's drawn
+  const t = panes[1].title, x0 = SIDE_W + 1 + rects[1].x;
+  for (const h of t.hits) assert.deepEqual(wsHit(geo, x0 + h.x0, 5), { kind: "title", pane: 1, k: h.k });
+  assert.deepEqual(wsHit(geo, x0 + 3, 5), { kind: "title", pane: 1, k: null });
+  assert.deepEqual(wsHit(geo, SIDE_W + 1 + 5, 5 + 3), { kind: "body", pane: 0, ix: 4, iy: 2, inside: true });
+  assert.equal(wsHit(geo, SIDE_W + 1, 5 + 3).inside, false, "the left border");
+  assert.equal(wsHit(geo, 500, 8), null);
+});

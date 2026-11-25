@@ -241,3 +241,27 @@ export function tabsBar(ws, W, right = []) {
   const hits = sp.left.filter((s) => s.i >= 2 && s.i % 2 === 0).map((s) => ({ k: s.i === 2 + ws.tabs.length * 2 ? "+" : (s.i - 2) / 2, x0: s.x0, x1: s.x1 }));
   return { text: line(segs, W, right, "bar"), hits };
 }
+
+// ---------- the mouse ----------
+// What a click at screen cell x, y (1-based) hits on the Workspace, from the last frame's geometry
+// geo { y0 (the tab bar's row), top (the first body row), side (sidebar row index per body line, -1 for none),
+// rects (the panes, area-relative), panes [{ i, title: { hits } }] }:
+//   { kind: "tab", k } (k a tab index or "+") | { kind: "bar" } | { kind: "side", i } (i -1: no row there)
+//   | { kind: "title", pane, k } (k "yes" | "no" | "zoom" | "close" | null) | { kind: "body", pane, ix, iy, inside }
+//   (ix, iy 0-based inside the border; inside false on the border itself) | null (not the Workspace)
+export function wsHit(geo, x, y) {
+  if (!geo || y < geo.y0) return null;
+  if (y === geo.y0) { const h = geo.tabHits?.find((t) => x >= t.x0 && x <= t.x1); return h ? { kind: "tab", k: h.k } : { kind: "bar" }; }
+  const by = y - geo.top;
+  if (by < 0) return null;
+  if (x <= SIDE_W) return { kind: "side", i: geo.side?.[by] ?? -1 };
+  const ax = x - SIDE_W - 1, pane = paneAt(geo.rects || [], ax, by);
+  if (pane < 0) return null;
+  const r = geo.rects[pane];
+  if (by === r.y) {
+    const col = ax - r.x, hits = geo.panes?.find((p) => p.i === pane)?.title?.hits || [];
+    return { kind: "title", pane, k: hits.find((h) => col >= h.x0 && col <= h.x1)?.k ?? null };
+  }
+  const ir = inner(r), ix = ax - ir.x, iy = by - ir.y;
+  return { kind: "body", pane, ix, iy, inside: ix >= 0 && iy >= 0 && ix < ir.w && iy < ir.h };
+}

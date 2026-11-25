@@ -22,7 +22,7 @@ import { commentable } from "../core/diffcomments.mjs";
 import { LiveView } from "./live.mjs";
 import { agentDetail, agentName, axaStatusLine, controlRows, msgText, selectedText } from "./control.mjs";
 import { laneRows, laneSessions } from "./lanes.mjs";
-import { SIDE_W, compose, cycleFocus, inner, messageBody, moveSel, neighbor, normWorkspace, paneAt, paneBox, paneRects, paneTitle, placeRef, pruneTabs, removePane, saveWorkspace, selectable, sidebarLines, sidebarRows, tabsBar, toggleZoom, addTab, closeTab } from "./workspace.mjs";
+import { SIDE_W, wsHit, compose, cycleFocus, inner, messageBody, moveSel, neighbor, normWorkspace, paneAt, paneBox, paneRects, paneTitle, placeRef, pruneTabs, removePane, saveWorkspace, selectable, sidebarLines, sidebarRows, tabsBar, toggleZoom, addTab, closeTab } from "./workspace.mjs";
 import { FRAME_MS, createAlive, feedEvents, glyphSet } from "./alive.mjs";
 import { copyToClipboard, pasteFile, readClipboard } from "./clipboard.mjs";
 import { hintKey, hitAt, makeArm, overlayHit, segSpans } from "./mouse.mjs";
@@ -716,6 +716,18 @@ export async function runTui() {
     flash(`${keyName()} ${k === "\r" ? "Enter" : k}: not a workspace key (${keyName()} ? lists them)`);
   }
   let wsTypingAt = 0;
+  // keys typed into a session pane before its view is up (just placed, or back from full screen) are held and
+  // sent as soon as the next frame has made it (dropped if it never comes within 3 s)
+  let wsHeld = null;
+  const wsWaitingView = () => { const p = wsFocusedPane(); return p?.kind === "session" && !wsViews.has(p.id) && data.sessions.some((s) => s.id === p.id && s.alive); };
+  function wsFlushHeld() {
+    if (!wsHeld) return;
+    if (Date.now() - wsHeld.at > 3000 || !wsPaneFocus()) { wsHeld = null; return; }
+    if (!wsTyping()) return;
+    const d = wsHeld.d;
+    wsHeld = null;
+    routeInput(d);
+  }
   function wsSend(chunk) {
     const v = wsFocusedView();
     if (!v || v.dead) return;
@@ -724,38 +736,36 @@ export async function runTui() {
   }
   // the mouse on the Workspace (x, y 1-based screen cells); true when it was ours
   function wsMouse(b, x, y, up) {
-    const g = wsGeo;
-    if (!g || y < g.y0) return false;
+    const g = wsGeo, h = wsHit(g, x, y);
+    if (!h) return false;
     const press = b === 0 && !up;
-    if (y === g.y0) { const h = press && hitAt(g.tabHits, x); if (h) { if (h.k === "+") wsNewTab(); else wsSwitchTab(h.k); } return true; }
-    const by = y - g.top;
-    if (x <= SIDE_W) {
+    if (h.kind === "tab") { if (press) { if (h.k === "+") wsNewTab(); else wsSwitchTab(h.k); } return true; }
+    if (h.kind === "bar") return true;
+    if (h.kind === "side") {
       const side = sidebarRows(data.sessions);
       if (b === 64 || b === 65) { wsSel = moveSel(side, wsSel, b === 64 ? -1 : 1); return true; }
       if (!press) return true;
       wsSide = true;
-      const i = g.side[by];
-      if (i >= 0) { wsSel = i; wsPlace(side[i]); }
+      if (h.i >= 0) { wsSel = h.i; wsPlace(side[h.i]); }
       return true;
     }
-    const ax = x - SIDE_W - 1, k = paneAt(g.rects, ax, by), pn = g.panes.find((p) => p.i === k);
+    const pn = g.panes.find((p) => p.i === h.pane);
     if (!pn) return true;
-    const r = pn.r, col = ax - r.x;
-    if (by === r.y) {
+    if (h.kind === "title") {
       if (!press) return true;
-      const h = hitAt(pn.title.hits, col);
-      wsFocus(k);
-      if (h?.k === "yes" || h?.k === "no") wsAnswer(pn.s, h.k);
-      else if (h?.k === "zoom") setTab(toggleZoom(wsTab()));
-      else if (h?.k === "close") wsRemove();
+      wsFocus(h.pane);
+      if (h.k === "yes" || h.k === "no") wsAnswer(pn.s, h.k);
+      else if (h.k === "zoom") setTab(toggleZoom(wsTab()));
+      else if (h.k === "close") wsRemove();
       return true;
     }
-    if (press) wsFocus(k);
-    const ir = inner(r), ix = ax - ir.x, iy = by - ir.y;
-    if (ix < 0 || iy < 0 || ix >= ir.w || iy >= ir.h) return true;
+    // the body: a press focuses the pane; the session gets the event when it asked for the mouse (never as typed text)
+    if (press) wsFocus(h.pane);
+    if (!h.inside) return true;
+    const { ix, iy } = h;
     if (pn.kind === "session" && pn.s) wsViews.get(pn.s.id)?.mouse(b, ix + 1, iy + 1, up);
     else if (pn.kind === "map" && press) {
-      const m = wsMapCtx.mapHits.find((h) => iy >= h.row0 && iy <= h.row1 && ix >= h.col0 && ix <= h.col1);
+      const m = wsMapCtx.mapHits.find((t) => iy >= t.row0 && iy <= t.row1 && ix >= t.col0 && ix <= t.col1);
       if (m?.agent) return openAgent(m.id, m.agent), true;
       const id = m?.id === "commander" ? commander()?.id : m?.id;
       if (!id) return true;
@@ -767,10 +777,9 @@ export async function runTui() {
   }
   // a click on a pane's Approve button (so it doesn't disarm itself)
   function wsOnApprove(x, y) {
-    const g = wsGeo;
-    if (!onWorkspace() || !g || x <= SIDE_W) return false;
-    const ax = x - SIDE_W - 1, by = y - g.top, pn = g.panes.find((p) => p.i === paneAt(g.rects, ax, by));
-    return !!pn && by === pn.r.y && hitAt(pn.title.hits, ax - pn.r.x)?.k === "yes";
+    if (!onWorkspace()) return false;
+    const h = wsHit(wsGeo, x, y);
+    return h?.kind === "title" && h.k === "yes";
   }
 
   function frame() {
@@ -811,6 +820,7 @@ export async function runTui() {
       if (c && pn) { const ir = inner(pn.r); if (c.y < ir.h && c.x < ir.w) o += `${ESC}[${wsGeo.top + ir.y + c.y};${SIDE_W + ir.x + c.x + 1}H${ESC}[?25h`; }
     }
     out.write(syncFrame(o, syncOutput));
+    if (wsHeld) setImmediate(wsFlushHeld); // keys held for a pane whose view this frame made
   }
 
   // ---------- dialogs: floating over whatever is underneath ----------
@@ -1723,7 +1733,10 @@ export async function runTui() {
     if (!d) return;
     cmdSel = null; // a key clears the commander selection
     approveArm.disarm(); // and an armed Approve
-    // each key goes where the UI is at that moment: a dialog, the hub, or the live session
+    routeInput(d);
+  });
+  // each key goes where the UI is at that moment: a dialog, the hub, a Workspace pane, or the live session
+  function routeInput(d) {
     const P = prefixByte();
     while (d) {
       if (prefix && !overlay) {
@@ -1742,6 +1755,7 @@ export async function runTui() {
       if (screen === "hub") {
         // a Workspace pane has the focus: everything goes to its session, up to the prefix key (a map pane,
         // or a session that has ended, takes keys one by one)
+        if (!wsTyping() && wsWaitingView()) { wsHeld = { at: wsHeld?.at ?? Date.now(), d: (wsHeld?.d || "") + d }; break; }
         if (!wsTyping()) {
           const [k] = keysOf(d);
           d = d.slice(k.length);
@@ -1761,7 +1775,7 @@ export async function runTui() {
       prefix = true; d = d.slice(i + 1);
     }
     schedule();
-  });
+  }
 
   // ---------- an open window notices when AXA itself was updated ----------
   const self = fileURLToPath(import.meta.url), selfAt = (() => { try { return statSync(self).mtimeMs; } catch { return 0; } })();
