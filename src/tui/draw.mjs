@@ -86,6 +86,10 @@ export const clean = (s) => sanitize(s).replace(/[\u0000-\u001f\u007f-\u009f]+/g
 // display width, by grapheme (width.mjs: the one width function ansi.mjs uses too)
 export const width = (s) => strWidth(s);
 export const cut = (s, n) => { if (n <= 0) return ""; if (width(s) <= n) return s; let o = "", w = 0; for (const g of graphemes(s)) { const x = gw(g); if (w + x > n - 1) break; o += g; w += x; } return o + "…"; };
+// "1 step", "2 steps" (and "0 steps")
+export const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+// the first of the texts (longest first) that fits in n columns whole, else "": a hint never cut mid-word
+export const fitFirst = (texts, n) => texts.find((t) => width(t) <= n) ?? "";
 export const pad = (s, n) => { const c = cut(s, n); return c + " ".repeat(Math.max(0, n - width(c))); };
 export const center = (s, n) => { const c = cut(s, n), l = Math.floor((n - width(c)) / 2); return " ".repeat(Math.max(0, l)) + c + " ".repeat(Math.max(0, n - l - width(c))); };
 

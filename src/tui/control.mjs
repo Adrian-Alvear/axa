@@ -2,22 +2,31 @@
 // see lanes.mjs), metrics and activity on top, what needs your approval and the
 // commander on the right, the sessions table and the log underneath.
 import { areaChart } from "./canvas.mjs";
-import { laneRows, laneSessions } from "./lanes.mjs";
+import { laneRows, laneSessions, needTally, needText } from "./lanes.mjs";
 import { sliceAnsi } from "./ansi.mjs";
-import { I, ago, chipOf, clean, cut, fmtTok, line, paint, setMotion, sgrOf, spinner, width } from "./draw.mjs";
+import { I, ago, chipOf, clean, cut, fitFirst, fmtTok, line, paint, plural, setMotion, sgrOf, spinner, width } from "./draw.mjs";
 import { segSpans } from "./mouse.mjs";
 
 // ---------- pieces ----------
 // A framed panel: thin border, a small uppercase title, an optional tag at the right of the top edge
 export function panel(title, w, h, body, { tag = "", on = false } = {}) {
   const fr = on ? "frameOn" : "frame";
-  const t = ` ${title.toUpperCase()} `, tg = tag ? ` ${tag} ` : "";
+  const t = ` ${title.toUpperCase()} `, tg = fitTag(tag, w - 4 - width(t));
   const top = paint(fr, "┌─") + paint(on ? "accent" : "dim", cut(t, w - 4)) + paint(fr, "─".repeat(Math.max(0, w - 4 - width(cut(t, w - 4)) - width(tg)))) + paint("dim", tg) + paint(fr, "─┐");
   const rows = [top];
   for (let i = 0; i < h - 2; i++) rows.push(paint(fr, "│") + (body[i] ?? " ".repeat(w - 2)) + paint(fr, "│"));
   rows.push(paint(fr, "└" + "─".repeat(Math.max(0, w - 2)) + "┘"));
   return rows;
 }
+// A panel's tag in the room its top edge leaves: whole " · " parts from the start, never cut mid-word
+export function fitTag(tag, room) {
+  const parts = String(tag || "").split(" · ").filter(Boolean);
+  while (parts.length && width(` ${parts.join(" · ")} `) > room) parts.pop();
+  return parts.length ? ` ${parts.join(" · ")} ` : "";
+}
+// The commander's hints, longest first: the widest that fits whole is shown
+export const INPUT_HINTS = ["Click here or press : to talk to AXA…", "Press : to talk to AXA…", "Press : to talk to AXA", ": talk to AXA", ""];
+export const APPROVE_HINTS = ["answer in the yellow bar: y yes · x no · ! go there", "in the yellow bar: y yes · x no · ! go there", "y yes · x no · ! go there", "y yes · x no", ""];
 // Columns of panels side by side: each [rows, width]
 const beside = (...cols) => cols[0][0].map((_, i) => cols.map(([rows, w]) => rows[i] ?? " ".repeat(w)).join(""));
 
@@ -253,8 +262,8 @@ export function axaStatusLine(cmd, sessions, w, maxRows = 2, { mode = "", on = n
   if (cmd.created) segs.push([`up ${dur(Date.now() - cmd.created)}`, "dim"]);
   const hs = cmd.helpers || [], run = hs.filter((h) => h.status === "running").length;
   if (hs.length) segs.push([run ? `${spinner()} ${run} agent${run > 1 ? "s" : ""} running` : `✓ ${hs.length} agent${hs.length > 1 ? "s" : ""} done`, run ? "violet" : "dim"]);
-  const ws = sessions.filter((s) => s.alive && s.mode !== "axa"), wait = ws.filter((s) => ["waiting", "needs_trust", "stuck"].includes(s.status)).length, busy = ws.filter((s) => s.status === "working").length;
-  segs.push([`${ws.length} session${ws.length === 1 ? "" : "s"}${busy ? ` · ${busy} working` : ""}${wait ? ` · ${wait} need you` : ""}`, wait ? "wait" : "dim"]);
+  const ws = sessions.filter((s) => s.alive && s.mode !== "axa"), tally = needTally(sessions), busy = ws.filter((s) => s.status === "working").length;
+  segs.push([[plural(ws.length, "session"), busy ? `${busy} working` : "", needText(tally)].filter(Boolean).join(" · "), tally.total ? "wait" : "dim"]);
   if (cmd.git?.branch) segs.push([`${I.branch} ${cmd.git.branch}`, "dim"]);
   // fit: whole pieces separated by " · ", wrapping onto up to `maxRows` rows
   const rows = [[[" ", ""]]]; let used = 1;
@@ -278,7 +287,7 @@ export const agentName = (h) => clean(h.desc) || String(h.type || "agent").split
 export function agentDetail(h, w) {
   const out = [], add = (text, role = "text") => out.push({ text, role });
   const running = h.status === "running";
-  add(`${running ? `${spinner()} RUNNING` : "✓ DONE"} · ${String(h.type || "agent").split(":").pop()} · started ${ago(h.start) === "now" ? "just now" : `${ago(h.start)} ago`} · ${h.calls || 0} steps`, running ? "violet" : "done");
+  add(`${running ? `${spinner()} RUNNING` : "✓ DONE"} · ${String(h.type || "agent").split(":").pop()} · started ${ago(h.start) === "now" ? "just now" : `${ago(h.start)} ago`} · ${plural(h.calls || 0, "step")}`, running ? "violet" : "done");
   add("");
   if (running) { add("NOW", "dim"); for (const l of wrapMsg(h.doing || "thinking…", w - 2)) add(l, "head"); add(""); }
   const recent = [...(h.recent || [])].reverse();
@@ -311,8 +320,8 @@ export function controlRows(ctx, W, B) {
 
   // top: metrics and activity
   if (topH) {
-    const nActive = alive.filter((s) => s.mode !== "axa").length, nNeeds = cnt("waiting") + cnt("needs_trust") + cnt("stuck");
-    const tiles = [["Active", nActive, "accent", "sessions open"], ["Working", cnt("working"), "work", "busy right now"], ["Needs you", nNeeds, nNeeds ? "wait" : "dim", "waiting on you"], ["Done today", act?.runs?.done ?? 0, "done", `of ${act?.runs?.today ?? 0} runs`]];
+    const nActive = alive.filter((s) => s.mode !== "axa").length, nNeeds = needTally(sessions).total;
+    const tiles = [["Active", nActive, "accent", "sessions open"], ["Working", cnt("working"), "work", "busy right now"], ["Needs you", nNeeds, nNeeds ? "wait" : "dim", "waiting on you"], ["Done today", act?.runs?.done ?? 0, "done", `of ${plural(act?.runs?.today ?? 0, "run")}`]];
     const tw = Math.floor((L - 2) / 4), max = Math.max(1, nActive);
     const cellW = (k) => (k === 3 ? L - 2 - tw * 3 : tw);
     const body = [
@@ -322,8 +331,8 @@ export function controlRows(ctx, W, B) {
     ];
     const pm = act?.perMinute || Array(60).fill(0), peak = Math.max(...pm), total = pm.reduce((a, b) => a + b, 0);
     const chart = areaChart(R - 4, 2, pm, { line: sgrOf("accent"), fill: sgrOf("frame") }).render();
-    const abody = [...chart.map((r) => " " + r + " "), line([["60m ago", "frame"]], R - 2, [[`peak ${peak}/min · ${total} events · now`, "dim"]])];
-    out.push(...beside([panel("Global status", L, topH, body, { tag: `${act?.runs?.today ?? 0} runs today` }), L], [panel("Activity", R, topH, abody, { tag: "events / min" }), R]));
+    const abody = [...chart.map((r) => " " + r + " "), line([["60m ago", "frame"]], R - 2, [[`peak ${peak}/min · ${plural(total, "event")} · now`, "dim"]])];
+    out.push(...beside([panel("Global status", L, topH, body, { tag: `${plural(act?.runs?.today ?? 0, "run")} today` }), L], [panel("Activity", R, topH, abody, { tag: "events / min" }), R]));
   }
 
   // middle: the live lanes, and approvals + the commander
@@ -332,9 +341,8 @@ export function controlRows(ctx, W, B) {
   const midL = !ls.sessions && !commanderAgents(cmd).length ? Math.round(W * 0.38) : L, mR = W - midL;
   ctx.midL = midL;
   const map = laneRows(ctx, midL - 2, midH - 2);
-  const nNeed = ls.lanes.filter((s) => s.mode !== "axa" && ["waiting", "needs_trust"].includes(s.status)).length;
   const nAgents = alive.reduce((n, s) => n + (s.helpers || []).filter((h) => h.status === "running").length, 0);
-  const mapPanel = panel("Live", midL, midH, map, { tag: [`${ls.sessions} session${ls.sessions === 1 ? "" : "s"}`, nNeed ? `${nNeed} need${nNeed === 1 ? "s" : ""} you` : "", ls.hidden ? `${ls.hidden} idle` : "", nAgents ? `${nAgents} agent${nAgents === 1 ? "" : "s"}` : ""].filter(Boolean).join(" · ") });
+  const mapPanel = panel("Live", midL, midH, map, { tag: [plural(ls.sessions, "session"), needText(needTally(sessions)), ls.hidden ? `${ls.hidden} idle` : "", nAgents ? plural(nAgents, "agent") : ""].filter(Boolean).join(" · ") });
   const w = ctx.waiting;
   const apH = Math.min(midH - 6, w ? 13 : 3); // nothing waiting: a 3-row strip, the commander gets the rest
   const ab = [];
@@ -349,7 +357,7 @@ export function controlRows(ctx, W, B) {
     for (const o of opts.slice(0, 4)) ab.push(line([[`   ${o.n}. ${clean(o.label)}`, "dim"]], iw));
     while (ab.length < apH - 3) ab.push(" ".repeat(iw));
     ab.length = apH - 3;
-    ab.push(line([["  answer in the yellow bar: y yes · x no · ! go there", "dim"]], iw));
+    ab.push(line([["  " + fitFirst(APPROVE_HINTS, iw - 2), "dim"]], iw));
   } else {
     ab.push(line([["  ✓ Nothing needs your approval", "done"], [` · ${act?.runs?.approvals ?? 0} handled by AXA today`, "dim"]], iw));
   }
@@ -393,10 +401,10 @@ export function controlRows(ctx, W, B) {
   }
   while (cb.length < chH - 4 - actRow.length - statRows.length) cb.push(" ".repeat(iw));
   cb.push(...actRow);
-  const prompt = ctx.focusInput ? ctx.input + "▏" : ctx.input || "Click here or press : to talk to AXA…";
+  const prompt = ctx.focusInput ? ctx.input + "▏" : ctx.input || fitFirst(INPUT_HINTS, iw - 14);
   cb.push(paint("frame", " " + "─".repeat(iw - 2) + " "));
   // the input line, with a send button at its right end (clickable; dim while there's nothing to send)
-  const inSegs = [[" › ", "accent"], [cut(prompt.slice(-(iw - 16)), iw - 14), ctx.focusInput || ctx.input ? "head" : "dim"]], send = [[" ⏎ send ", (ctx.input || "").trim() ? "keycap" : "dim"]];
+  const inSegs = [[" › ", "accent"], [ctx.focusInput || ctx.input ? cut(prompt.slice(-(iw - 16)), iw - 14) : prompt, ctx.focusInput || ctx.input ? "head" : "dim"]], send = [[" ⏎ send ", (ctx.input || "").trim() ? "keycap" : "dim"]];
   ctx.inputRow = cmdTop + 1 + cb.length;
   ctx.sendHit = segSpans(inSegs, iw, send, midL + 2).right[0] || null;
   cb.push(line(inSegs, iw, send));
@@ -418,13 +426,13 @@ export function controlRows(ctx, W, B) {
     cb2.push(line([[` ${c.open_in ? "●" : I.chat} `, c.open_in ? "work" : "dim"], [clean(c.title), sel ? "head" : "text"]], ciw, [[`${c.cwd === process.env.HOME ? "~" : c.project} · ${ago(c.updated)}`, "dim"]], sel ? "sel" : null));
     ctx.chatHits.push({ row: k, i: k });
   });
-  if (!chats.length) cb2.push(line([["  No chats yet · N starts a session", "dim"]], ciw));
+  if (!chats.length) cb2.push(line([["  " + fitFirst(["No chats yet · N starts a session", "No chats yet"], ciw - 2), "dim"]], ciw));
   const chatPanel = panel("Recent chats", chW, botH, cb2, { tag: ctx.zone === "chats" ? "⏎ resume · ← map" : "→ to pick", on: ctx.zone === "chats" });
   const ab2 = [], aiw = agW - 2;
   const running = sessions.flatMap((s) => (s.helpers || []).map((h) => ({ s, h }))).filter(({ h }) => h.status === "running" || Date.now() - h.at < 10 * 60_000).sort((a, b) => (a.h.status === "running" ? 0 : 1) - (b.h.status === "running" ? 0 : 1) || b.h.at - a.h.at);
   for (const { s, h } of running.slice(0, Math.floor((botH - 2) / 2))) {
     const on = h.status === "running", mins = Math.max(0, Math.round(((h.end || Date.now()) - h.start) / 60_000));
-    ab2.push(line([[` ${on ? spinner() : I.done} `, on ? "violet" : "done"], [h.type.split(":").pop(), on ? "head" : "dim"], [`  in ${s.mode === "axa" ? "AXA" : clean(s.name)}`, "dim"]], aiw, [[`${h.calls || 0} steps · ${mins}m`, "dim"]]));
+    ab2.push(line([[` ${on ? spinner() : I.done} `, on ? "violet" : "done"], [h.type.split(":").pop(), on ? "head" : "dim"], [`  in ${s.mode === "axa" ? "AXA" : clean(s.name)}`, "dim"]], aiw, [[`${plural(h.calls || 0, "step")} · ${mins}m`, "dim"]]));
     ab2.push(line([[`   ${clean(on ? h.doing || h.desc : h.report || h.desc) || "…"}`, on ? "text" : "dim"]], aiw));
   }
   if (!running.length) ab2.push(line([["  No agents running (sessions start them)", "dim"]], aiw));

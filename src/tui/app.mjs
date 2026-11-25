@@ -13,7 +13,7 @@ import { fileURLToPath } from "node:url";
 import { files, inHome, openUrl, pluginRoot, port, tilde, webUrl } from "../paths.mjs";
 import { api } from "../daemon.mjs";
 import { SOCKET, TMUX_CONF, tmuxEnv } from "../core/tmux-client.mjs";
-import { ESC, I, THEME_NAMES, nerdFontInstalled, URGENCY, ago, chipOf, clean, cut, fmtTok, gitText, line, look, pad, paint, reviewBadge, selLine, setIcons, setMotion, setTheme, spinner, truecolor, width } from "./draw.mjs";
+import { ESC, I, THEME_NAMES, nerdFontInstalled, URGENCY, ago, chipOf, clean, cut, fmtTok, gitText, line, look, pad, paint, plural, reviewBadge, selLine, setIcons, setMotion, setTheme, spinner, truecolor, width } from "./draw.mjs";
 import { sliceAnsi } from "./ansi.mjs";
 import { BRIEF_TIMES, IDLE_DAYS, ageText, gitLine, handoffPath } from "../core/projects.mjs";
 import { MODES, RECAP_IDLE_MS } from "../core/attention.mjs";
@@ -21,7 +21,7 @@ import { usd } from "../core/usage.mjs";
 import { commentable } from "../core/diffcomments.mjs";
 import { LiveView } from "./live.mjs";
 import { agentDetail, agentName, axaStatusLine, controlRows, msgText, selectedText } from "./control.mjs";
-import { laneSessions } from "./lanes.mjs";
+import { laneSessions, needTally } from "./lanes.mjs";
 import { FRAME_MS, createAlive, feedEvents, glyphSet } from "./alive.mjs";
 import { copyToClipboard, pasteFile, readClipboard } from "./clipboard.mjs";
 import { hintKey, hitAt, makeArm, overlayHit, segSpans } from "./mouse.mjs";
@@ -225,7 +225,7 @@ export async function runTui() {
     if (panel === "agents") return data.agents.filter((a) => match(`${a.name} ${a.source} ${a.description}`, q)).map((a) => ({ kind: "agent", a }));
     return [...data.projects.filter((p) => match(`${p.name} ${p.path}`, q)).map((p) => ({ kind: "project", p })), ...(q ? [] : [{ kind: "home" }])];
   }
-  const counts = () => ({ control: data.sessions.filter((s) => ["waiting", "needs_trust", "stuck"].includes(s.status)).length || "", sessions: data.sessions.filter((s) => s.alive).length, chats: data.chats.length, agents: data.agents.length, projects: data.projects.length });
+  const counts = () => ({ control: needTally(data.sessions).total || "", sessions: data.sessions.filter((s) => s.alive).length, chats: data.chats.length, agents: data.agents.length, projects: data.projects.length });
 
   // a list entry: two lines, [left segments, right segments] each
   function entry(it) {
@@ -376,7 +376,7 @@ export async function runTui() {
       const hs = (s.helpers || []).filter((x) => x.status === "running" || Date.now() - x.at < 10 * 60_000);
       if (hs.length) {
         label("Agents");
-        for (const x of hs.slice(-4)) P.push([[[` ${x.status === "running" ? spinner() : I.done} `, x.status === "running" ? "work" : "done"], [x.type, "head"], [`  ${clean(x.doing || x.desc || "")}`, "dim"]], [[x.calls ? `${x.calls} steps` : "", "dim"]], "pv"]);
+        for (const x of hs.slice(-4)) P.push([[[` ${x.status === "running" ? spinner() : I.done} `, x.status === "running" ? "work" : "done"], [x.type, "head"], [`  ${clean(x.doing || x.desc || "")}`, "dim"]], [[x.calls ? plural(x.calls, "step") : "", "dim"]], "pv"]);
         gap();
       }
       rule("screen");
@@ -470,7 +470,7 @@ export async function runTui() {
   let clockAt = -1, clockStr = "";
   const clockText = () => { const m = Math.floor(Date.now() / 60_000); if (m !== clockAt) { clockAt = m; clockStr = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false }); } return clockStr; };
   function titleBar() {
-    const n = (st) => data.sessions.filter((s) => s.status === st).length, needs = n("waiting") + n("needs_trust") + n("stuck"), work = n("working");
+    const needs = needTally(data.sessions).total, work = data.sessions.filter((s) => s.status === "working").length;
     const clock = clockText();
     const un = unread();
     const right = [[` ${I.bell} ${un || ""} `, un ? "chipWait" : "barDim"], [" ", "bar"], [needs ? ` ${I.wait} ${needs} ` : "", "wait"], [needs && work ? " " : "", "bar"], [work ? ` ${spinner()} ${work} WORKING ` : "", "chipWork"], [!needs && !work ? `${I.done} all quiet` : "", "barDim"], [`   ${clock}`, "barDim"]];

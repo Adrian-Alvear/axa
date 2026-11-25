@@ -69,7 +69,7 @@ test("a project card's chip: the most urgent session in the session list's words
 
 test("the status bar counts what needs you like the title bar does (a stuck session too)", () => {
   const ss = [{ alive: true, status: "waiting" }, { alive: true, status: "stuck" }, { alive: true, status: "working" }];
-  assert.match(plain(axaStatusLine({}, ss, 160, 1)[0]), /3 sessions · 1 working · 2 need you/);
+  assert.match(plain(axaStatusLine({}, ss, 160, 1)[0]), /3 sessions · 1 working · 1 needs you · 1 stuck/);
 });
 
 test("the status bar's voice states keep everything after them in place, at every width", () => {

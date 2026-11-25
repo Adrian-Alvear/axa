@@ -40,6 +40,15 @@ export function laneSessions(sessions, selId) {
   return { lanes, hidden: alive.length - lanes.length, sessions: lanes.filter((s) => s.mode !== "axa").length };
 }
 
+// What waits on you, counted one way everywhere (the title's chip, the lanes' header, the status line, the tab):
+// need = a prompt or trust question, stuck = a step that hangs. The chip shows the sum; the texts show both parts.
+export function needTally(sessions) {
+  const alive = sessions.filter((s) => s.alive);
+  const need = alive.filter((s) => NEEDS.includes(s.status)).length, stuck = alive.filter((s) => s.status === "stuck").length;
+  return { need, stuck, total: need + stuck };
+}
+export const needText = ({ need, stuck }) => [need ? `${need} need${need === 1 ? "s" : ""} you` : "", stuck ? `${stuck} stuck` : ""].filter(Boolean).join(" · ");
+
 // ---------- the activity strip ----------
 // Event times -> counts per bucket, oldest first, the newest bucket (the one `now` falls in) last. Buckets sit on
 // a fixed time grid (not sliding with `now`), so a strip only shifts when a new bucket starts, and the newest fills

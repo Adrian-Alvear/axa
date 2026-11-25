@@ -953,7 +953,7 @@ function renderDock(g) {
     el.querySelector(".task").textContent = j.desc || "working…";
     el.querySelector(".task").title = j.desc || "";
     el.querySelector(".now span").innerHTML = j.status === "done" ? (j.message ? esc(j.message.replace(/\s+/g, " ").slice(0, 140)) : `<b>${j.steps || 0}</b> steps`) : j.perm ? `needs ok: <b>${esc(j.perm === true ? "tool" : j.perm)}</b>` : `<b>${esc(j.now || "starting")}</b>`;
-    el.querySelector(".st").textContent = { done: "✓ done", perm: "⚠ needs you", fail: "retrying", run: `● ${j.steps || 0} steps` }[state];
+    el.querySelector(".st").textContent = { done: "✓ done", perm: "⚠ needs you", fail: "retrying", run: `● ${j.steps || 0} step${j.steps === 1 ? "" : "s"}` }[state];
     el.title = j.status === "done" ? "Click to read its full report" : "";
   }
 }
