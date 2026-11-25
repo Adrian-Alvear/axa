@@ -129,5 +129,17 @@ export function createTracker({ store, now = Date.now, nameOf = (t) => t, projec
     for (const r of inflight.values()) if (r.terminal === terminal && known(r.st)) ms.push(r.st.median);
     return ms.length ? Math.max(...ms) : null;
   }
-  return { event, tick, eta, expected, running: (id) => inflight.has(id) };
+  // what's left of the work in this session, for the Control lanes: { left_ms } (the turn's median, or a running
+  // command's, minus the time it has run), { over: true } past LONGER x p90, or null when nothing's known
+  function left(terminal, t = now()) {
+    const runs = [];
+    const turn = turns.get(terminal), st = turn && store.stats(turn.key);
+    if (known(st)) runs.push({ st, el: t - turn.start });
+    for (const r of inflight.values()) if (r.terminal === terminal && known(r.st)) runs.push({ st: r.st, el: t - r.start });
+    if (!runs.length) return null;
+    if (runs.some(({ st, el }) => el > LONGER * st.p90)) return { over: true };
+    const ms = Math.max(...runs.map(({ st, el }) => st.median - el));
+    return ms > 0 ? { left_ms: Math.round(ms) } : null;
+  }
+  return { event, tick, eta, expected, left, running: (id) => inflight.has(id) };
 }

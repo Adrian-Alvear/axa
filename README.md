@@ -51,10 +51,15 @@ plugin (for the `axa` skill, agents and tracing hooks in your own sessions):
 
 Mission control for everything AXA runs, in one screen:
 
-- **Live map** in the middle: the AXA core (the commander) in a ring with a turning sweep and a ripple while it works, every session as a card
-  on its orbit, framed in its status color. Links light up while a session works (with pulses running
-  along them) or waits on you; a session's running agents are tagged under its card. `↑`/`↓` or a click
-  picks a session, Enter (or a second click) opens it.
+- **Live lanes** in the middle: one row per session, the commander (◆ AXA) first, then what needs you, what
+  failed or is stuck, what's working, and the rest (the order inside a group never changes, so rows don't jump).
+  Each lane: status glyph and name, an activity strip (events over the last 15 minutes, newest at the right),
+  the status word, what it's doing now or the question it waits on, its running agents (`+2 agents`, listed on a
+  dim second line when there's room; click one to see what it's doing) and time: `waiting 2m`, `~1 min left`
+  (from how long that work usually takes), `5m ago`. Narrow panels drop the agents, then the time, then the
+  "doing" column; many sessions scroll with a `+N more` line. `↑`/`↓` or a click picks a lane, Enter (or a second
+  click) opens it; on a selected needs-you lane `y`/`x` answer it. Only meaningful things move: a working glyph
+  spins, a needs-you glyph pulses, the newest bucket fills; nothing moves when all is idle (Motion setting).
 - **Global status**: active, working, needs you, done today, each with a small bar. **Activity**: events per
   minute over the last hour.
 - **Requires approval**: the prompt a session is waiting on, with `x` decline / `y` approve.
