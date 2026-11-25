@@ -78,8 +78,25 @@ export function activity(minutes = 60, limit = 60) {
   return {
     events: recent.filter((e) => !["PostToolUse", "Notification", "SessionStart", "PermissionRequest"].includes(e.event)).slice(-limit),
     perMinute,
+    lanes: laneTimes(now),
     runs: { today: today.length, done: today.filter((r) => r.status === "done").length, failed_steps: today.reduce((n, r) => n + r.failures, 0), running: today.filter((r) => r.status === "running").length, approvals: today.reduce((n, r) => n + r.approvals, 0), helpers: today.reduce((n, r) => n + r.helpers, 0) },
   };
+}
+
+// Each session's event times over the last 15 minutes (newest last, at most LANE_MAX each): the Control lanes'
+// activity strips. Helpers' steps count for the session that started them.
+const LANE_MS = 15 * 60_000, LANE_MAX = 600;
+export function laneTimes(now = Date.now(), list = recent) {
+  const out = {};
+  for (let i = list.length - 1; i >= 0; i--) {
+    const e = list[i];
+    if (now - e.ts > LANE_MS) break;
+    if (!e.terminal) continue;
+    const a = (out[e.terminal] ||= []);
+    if (a.length < LANE_MAX) a.push(e.ts);
+  }
+  for (const a of Object.values(out)) a.reverse();
+  return out;
 }
 
 // "list sessions (axa terminals)" rather than "mcp__plugin_axa_terminals__list_sessions · {}"

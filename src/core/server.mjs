@@ -319,7 +319,7 @@ const VENDOR = {
 const routes = [
   ["GET", /^\/api\/health$/, () => [200, { ok: true, pid: process.pid, tmux: S.hasTmux }]],
   ["GET", /^\/api\/hub$/, async (m, req, u) => [200, await hub(Number(u.searchParams.get("chats")) || 40)]],
-  ["GET", /^\/api\/terms$/, () => [200, S.listSessions()]],
+  ["GET", /^\/api\/terms$/, () => [200, withEta(S.listSessions())]],
   ["GET", /^\/api\/activity$/, (m, req, u) => [200, activity(Math.min(240, Number(u.searchParams.get("minutes")) || 60), Math.min(300, Number(u.searchParams.get("limit")) || 60))]],
   ["POST", /^\/api\/terms$/, async (m, req) => {
     const b = await readBody(req);
@@ -442,12 +442,14 @@ const routes = [
   ["POST", /^\/api\/terms\/([\w-]+)\/typing$/, (m) => { S.noteInput(m[1]); return [200, {}]; }],
 ];
 
+// each working session's time left (the duration store), for the Control lanes
+const withEta = (ss) => ss.map((s) => { const eta = s.status === "working" ? tracker.left(s.id) : null; return eta ? { ...s, eta } : s; });
 // Everything the hub shows, in one call
 async function hub(chatLimit) {
   // the projects' review (cached 60 s): the hub's Projects tab shows it; a slow first look isn't waited for
   const review = await Promise.race([projectReview().catch(() => null), new Promise((r) => setTimeout(r, 1500, null))]);
   const byPath = new Map((review || []).map((r) => [r.path, r]));
-  const sessions = S.listSessions();
+  const sessions = withEta(S.listSessions());
   const open = new Map(sessions.filter((s) => s.chat && s.alive).map((s) => [s.chat, s.id]));
   return {
     sessions,

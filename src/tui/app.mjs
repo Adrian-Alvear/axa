@@ -21,6 +21,7 @@ import { usd } from "../core/usage.mjs";
 import { commentable } from "../core/diffcomments.mjs";
 import { LiveView } from "./live.mjs";
 import { agentDetail, agentName, axaStatusLine, controlRows, msgText, selectedText } from "./control.mjs";
+import { laneSessions } from "./lanes.mjs";
 import { copyToClipboard, pasteFile, readClipboard } from "./clipboard.mjs";
 import { hintKey, hitAt, makeArm, overlayHit, segSpans } from "./mouse.mjs";
 
@@ -523,7 +524,8 @@ export async function runTui() {
     return line(segs, W, right, "bar");
   }
   // Control: sessions in table order (the commander first), and the one selected
-  const ctlOrder = () => orderedSessions().filter((s) => s.alive);
+  // Control's lanes, in the order they're drawn (↑/↓ walk them)
+  const ctlOrder = () => laneSessions(data.sessions, ctlSel).lanes;
   const ctlSelected = () => { const o = ctlOrder(); return o.find((s) => s.id === ctlSel) || o.find((s) => s.mode !== "axa") || o[0] || null; };
   function hubBody(y0, h) {
     hits = []; listArea = null;
@@ -1172,6 +1174,8 @@ export async function runTui() {
     if (zone === "chats" && k === ESC) { zone = "map"; return true; }
     if (k === "m") { toggleVoice(); return true; }
     if (k === "w") { whatsUpNow(); return true; }
+    // the selected lane waits on a prompt: y / x answer that one (the hint shows on its lane)
+    if ((k === "y" || k === "x") && cur?.status === "waiting" && cur.choices) { answerAlert(k === "y" ? "yes" : "no", cur); return true; }
     if (cur && { d: 1, g: 1, v: 1, r: 1, X: 1 }[k]) { ({ d: showDiff, g: giveGoal, v: runVerify, r: rename, X: closeSession })[k](cur); return true; }
     return false;
   }
@@ -1550,9 +1554,9 @@ export async function runTui() {
   const pollActivity = () => call("/api/activity?minutes=60&limit=80").then((a) => { act = a; schedule(); }, () => {});
   pollActivity();
   setInterval(() => { if (screen === "hub" && PANELS[focus] === "control") pollActivity(); }, 2000);
-  // the map moves (pulses along links, agents circling)
-  // Control's redraw: fast while something on the map moves (ctl.anim, set by the last draw), slow when
-  // it's idle (breathing and the sweep), slower still with reduced motion; unchanged rows aren't rewritten
+  // Control's redraw: fast while a lane moves (ctl.anim: a spinning or pulsing glyph, set by the last draw), slow
+  // when all is idle (the strips' newest bucket, times), slower still with reduced motion; unchanged rows aren't
+  // rewritten, so an idle screen doesn't change at all
   const ctlTick = () => {
     const on = screen === "hub" && !overlay && PANELS[focus] === "control", m = motionNow();
     if (on) schedule();

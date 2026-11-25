@@ -1,20 +1,11 @@
-// The Control screen: AXA's mission control. A live map in the middle (the AXA core, every session on
-// its orbit, helper agents circling them), metrics and activity on top, what needs your approval and the
+// The Control screen: AXA's mission control. Live lanes in the middle (one per session, the commander first:
+// see lanes.mjs), metrics and activity on top, what needs your approval and the
 // commander on the right, the sessions table and the log underneath.
-import { Canvas, areaChart } from "./canvas.mjs";
+import { areaChart } from "./canvas.mjs";
+import { laneRows, laneSessions } from "./lanes.mjs";
 import { sliceAnsi } from "./ansi.mjs";
-import { I, ago, chipOf, clean, cut, fmtTok, line, look, paint, reviewBadge, setMotion, sgrOf, spinner, width } from "./draw.mjs";
+import { I, ago, chipOf, clean, cut, fmtTok, line, paint, setMotion, sgrOf, spinner, width } from "./draw.mjs";
 import { segSpans } from "./mouse.mjs";
-
-// a finished session leaves the map after this long idle (it stays open and in the Sessions tab)
-const MAP_IDLE_MS = 20 * 60_000;
-// the sessions the map draws, and how many idle ones it leaves off
-export function mapSessions(sessions, selId) {
-  const all = sessions.filter((s) => s.mode !== "axa" && s.alive);
-  const idle = (s) => s.id !== selId && ["done", "ready", "exited"].includes(s.status) && (s.idle_seconds || 0) * 1000 > MAP_IDLE_MS;
-  const shown = all.filter((s) => !idle(s));
-  return { shown, hidden: all.length - shown.length };
-}
 
 // ---------- pieces ----------
 // A framed panel: thin border, a small uppercase title, an optional tag at the right of the top edge
@@ -223,211 +214,12 @@ function said(e) {
   return null;
 }
 
-// ---------- the map ----------
-// Animation is time-based (Date.now()). The only state kept between frames: when each card/chip was first
-// seen (it slides out of the core) and when a session turned done (one green flash).
-const ENTER_MS = 600, FLASH_MS = 4000, AGENT_TTL = 10 * 60_000, FADE_MS = 20_000;
-const firstSeen = new Map(), doneAt = new Map();
-let seeded = false; // the first frame after start shows everything in place
-const bold = (role) => (sgrOf(role) ? `1;${sgrOf(role)}` : "1");
-// a comet from (x0,y0) to (x1,y1): its head at fraction t, a trail of dimmer dots behind it (drawn first)
-function comet(cv, x0, y0, x1, y1, t, linkRole) {
-  const len = Math.hypot(x1 - x0, y1 - y0) || 1, at = (f) => [x0 + (x1 - x0) * f, y0 + (y1 - y0) * f];
-  const trail = [["frame", 0], ["frame", 0], [linkRole, 0], [linkRole, 1]]; // farthest first: [role, radius]
-  trail.forEach(([role, r], k) => {
-    const f = t - ((trail.length - k) * 3) / len;
-    if (f <= 0) return;
-    const [x, y] = at(f);
-    if (r) cv.disc(x, y, r, sgrOf(role)); else cv.set(x, y, sgrOf(role));
-  });
-  const [x, y] = at(t);
-  cv.disc(x, y, 1.5, sgrOf("head"));
-}
-// ---------- the map as dense rows: one line per session (state, name, what it's doing); clickable ----------
-export const DENSE_FEW = 2, DENSE_MANY = 6;
-function denseRows(ctx, shown, cols, rows) {
-  const out = [], list = shown.slice(0, Math.max(0, rows - 1));
-  if (!shown.length) out.push(line([["  No sessions yet · N starts one, a opens the commander", "dim"]], cols));
-  for (const [i, s] of list.entries()) {
-    const [g, , role] = look(s), on = s.id === ctx.selId ? "selDim" : null;
-    out.push(line([["  ", ""], [`${g} `, role], [cut(clean(s.name), 18).padEnd(19), "head"], [clean(s.doing || "").slice(0, 200), "dim"]], cols, [chipOf(s)], on));
-    ctx.mapHits.push({ col0: 0, col1: cols, row0: i, row1: i, id: s.id });
-  }
-  if (shown.length > list.length) out.push(line([[`  … ${shown.length - list.length} more in Sessions`, "dim"]], cols));
-  while (out.length < rows) out.push(" ".repeat(cols));
-  return out.slice(0, rows);
-}
 // consecutive entries with the same key become one, counted (n), keeping the latest
 export function collapseRepeats(list, key) {
   const out = [];
   for (const x of list) { const last = out.at(-1); if (last && key(last) === key(x)) out[out.length - 1] = { ...x, n: last.n + 1 }; else out.push({ ...x, n: 1 }); }
   return out;
 }
-function mapRows(ctx, cols, rows) {
-  const cv = new Canvas(cols, rows);
-  const S = (role) => sgrOf(role);
-  const { sessions, selId } = ctx;
-  const motion = ctx.mapMotion || ctx.motion || "full", full = motion === "full";
-  const now = Date.now(), t = now / 1000;
-  let anim = false; // something moves this frame (Control redraws faster)
-  const present = new Set();
-  // how far out of the core a card/chip is: eased 0..1 over ENTER_MS (instant unless motion is full)
-  const enter = (key) => {
-    present.add(key);
-    if (!firstSeen.has(key)) firstSeen.set(key, seeded ? now : -Infinity);
-    const p = Math.min(1, (now - firstSeen.get(key)) / ENTER_MS);
-    if (p >= 1 || !full) return 1;
-    anim = true;
-    return 1 - (1 - p) ** 3;
-  };
-  for (const s of sessions) { if (s.status === "done") { if (!doneAt.has(s.id)) doneAt.set(s.id, seeded ? now : -Infinity); } else doneAt.delete(s.id); }
-  const ids = new Set(sessions.map((s) => s.id));
-  for (const id of doneAt.keys()) if (!ids.has(id)) doneAt.delete(id);
-  const flashing = (s) => now - (doneAt.get(s.id) ?? -Infinity) < FLASH_MS;
-  const ccol = cols / 2, crow = rows / 2; // the core, in cells
-  const X = ccol * 2, Y = crow * 4;
-  // a faint orbit behind everything
-  const RC = Math.max(14, cols * 0.34), RR = Math.max(3, rows / 2 - 3);
-  cv.ring(X, Y, RC * 2, RR * 4, S("frame"), 3);
-  const cmd = sessions.find((s) => s.mode === "axa" && s.alive);
-  const coreRole = !cmd ? "dim" : cmd.status === "waiting" ? "wait" : cmd.status === "working" ? "work" : "accent";
-  const { shown: ss, hidden } = mapSessions(sessions, selId);
-  // where each session sits: evenly around the orbit, starting at the top (col/row final, cc/rc now)
-  const nodes = ss.map((s, i) => {
-    const a = -Math.PI / 2 + (2 * Math.PI * i) / Math.max(ss.length, 1) + (ss.length === 2 ? Math.PI / 2 : 0);
-    const col = ccol + RC * Math.cos(a), row = crow + RR * Math.sin(a), e = enter("s:" + s.id);
-    return { s, col, row, cc: ccol + (col - ccol) * e, rc: crow + (row - crow) * e };
-  });
-  // links: solid and lit while working or waiting, dotted when idle; comets run along working ones
-  nodes.forEach(({ s, col, row, cc, rc }, i) => {
-    const role = look(s)[2], lit = s.status === "working" || s.status === "waiting" || s.id === selId;
-    const dx = col * 2 - X, dy = row * 4 - Y, d = Math.hypot(dx, dy) || 1;
-    const x0 = X + (dx / d) * 25, y0 = Y + (dy / d) * 21, x1 = cc * 2, y1 = rc * 4;
-    if (Math.hypot(x1 - X, y1 - Y) <= 26) return; // still inside the core, sliding out
-    cv.line(x0, y0, x1, y1, S(lit ? (s.id === selId && !["working", "waiting"].includes(s.status) ? "head" : role) : "frame"), lit ? {} : { on: 1, off: 2 });
-    if (!lit) return;
-    const working = s.status === "working";
-    cv.line(x0 + 1, y0, x1 + 1, y1, working && !full ? bold(role) : S(role)); // a second strand; brighter instead of comets
-    if (working && full) for (const off of [0, 0.5]) comet(cv, x0, y0, x1, y1, (now / 1600 + i * 0.29 + off) % 1, role);
-  });
-  // the commander's own agents: chips on an inner orbit, each linked to the core (placed in the gaps
-  // between session cards, nudged until they don't overlap anything)
-  const cards = nodes.map(({ s, col, row }) => {
-    const name = `${look(s)[0]} ${clean(s.name)}`, sub = `${chipOf(s)[0].trim()}${s.usage?.tokens ? ` · ${fmtTok(s.usage.tokens)}` : ""}${reviewBadge(s) ? ` · ${reviewBadge(s)}` : ""}`;
-    const w = Math.min(28, Math.max(width(name), width(sub)) + 4);
-    return { c0: Math.max(0, Math.min(cols - w, col - w / 2)), r0: Math.max(0, Math.min(rows - 4, row - 2)), w, h: 5 };
-  });
-  const agents = commanderAgents(cmd);
-  const taken = [{ c0: ccol - 13, r0: crow - 5, w: 26, h: 11 }, ...cards];
-  const overlaps = (a) => taken.some((b) => a.c0 < b.c0 + b.w + 1 && b.c0 < a.c0 + a.w + 1 && a.r0 < b.r0 + b.h && b.r0 < a.r0 + a.h);
-  const chips = [];
-  agents.forEach((h, j) => {
-    const label = `${h.status === "running" ? spinner() : "✓"} ${cut(agentName(h).replace(/ (research|for AXA)\b.*$/i, (m) => (/research/i.test(m) ? " research" : "")), 22)}`;
-    const w = width(label) + 2, base = -Math.PI / 2 + (ss.length ? Math.PI / ss.length : 0) + (2 * Math.PI * j) / agents.length;
-    // closest free spot to its own angle: nearby angles first, then further round the orbit
-    const tries = [];
-    for (let k = 0; k <= 20; k++) for (const sgn of k ? [1, -1] : [1]) for (const f of [0.62, 0.8, 0.95, 1.1, 0.5]) tries.push([sgn * k * 0.16, f]);
-    for (const [da, f] of tries) {
-      const a = base + da, cc = ccol + RC * f * Math.cos(a), rr = crow + RR * f * Math.sin(a) * 1.15;
-      const box = { c0: Math.round(Math.max(0, Math.min(cols - w, cc - w / 2))), r0: Math.round(Math.max(0, Math.min(rows - 1, rr))), w, h: 1 };
-      if (overlaps(box)) continue;
-      taken.push(box); chips.push({ h, label, box, col: cc, row: rr });
-      return;
-    }
-    // no room on the orbit (a small window or a crowded map): dock it along the left or right edge
-    for (const c0 of [0, cols - w]) for (let r0 = 0; r0 < rows; r0++) {
-      const box = { c0, r0, w, h: 1 };
-      if (overlaps(box)) continue;
-      taken.push(box); chips.push({ h, label, box });
-      return;
-    }
-  });
-  for (const c of chips) {
-    const { h, box } = c, e = enter("a:" + h.id);
-    // where it is now (sliding out of the core), and whether it's in its last seconds (fading out)
-    c.c0 = Math.round(Math.max(0, Math.min(cols - box.w, ccol + (box.c0 + box.w / 2 - ccol) * e - box.w / 2)));
-    c.r0 = Math.round(Math.max(0, Math.min(rows - 1, crow + (box.r0 - crow) * e)));
-    const on = h.status === "running";
-    c.fade = !on && now - h.at > AGENT_TTL - FADE_MS;
-    if (c.fade && full) anim = true;
-    const tx = (c.c0 + box.w / 2) * 2, ty = c.r0 * 4 + 2, dx = (box.c0 + box.w / 2) * 2 - X, dy = box.r0 * 4 + 2 - Y, d = Math.hypot(dx, dy) || 1;
-    if (Math.hypot(tx - X, ty - Y) <= 26) continue;
-    const x0 = X + (dx / d) * 25, y0 = Y + (dy / d) * 21;
-    cv.line(x0, y0, tx, ty, S(on ? "violet" : "frame"), on ? {} : { on: 1, off: c.fade ? 4 : 2 });
-    if (on && full) comet(cv, x0, y0, tx, ty, (now / 1300 + h.start / 997) % 1, "violet");
-    else if (on) cv.line(x0 + 1, y0, tx + 1, ty, bold("violet"));
-  }
-  // the core: AXA inside a clean ring, a faint orbit with a turning sweep (and its fading tail), dial
-  // ticks, two staggered ripples while the commander works, a slow breath while it stands by
-  const coreSub = !cmd ? "OFFLINE" : cmd.status === "working" ? "WORKING" : cmd.status === "waiting" ? "NEEDS YOU" : "STANDING BY";
-  if (cmd?.status === "working" || cmd?.status === "waiting") {
-    if (full) {
-      const rs = [11 + ((t * 7) % 9), 11 + ((t * 7 + 4.5) % 9)].sort((a, b) => b - a); // outer first, in frame
-      rs.forEach((r, k) => cv.ring(X, Y, r * 1.15, r, S(k === 0 ? "frame" : coreRole), 3));
-    } else cv.ring(X, Y, 14 * 1.15, 14, S(coreRole), 3);
-  }
-  cv.ring(X, Y, 17, 14.5, S("frame"), 2);
-  if (cmd) {
-    const a0 = full ? t * 1.4 : -Math.PI / 2;
-    if (full) [["frame", 3], ["dim", 2], [coreRole, 2]].forEach(([role, step], k) => { const b = a0 - (3 - k) * 0.35; cv.arc(X, Y, 17, b, b + 0.35, S(role), step); });
-    cv.arc(X, Y, 17, a0, a0 + 1.0, S(coreRole));
-  }
-  for (let k = 0; k < 16; k++) { const a = (k / 16) * 2 * Math.PI, big = k % 4 === 0; cv.line(X + 20.5 * Math.cos(a), Y + 17.5 * Math.sin(a), X + (big ? 23 : 21.5) * Math.cos(a), Y + (big ? 19.5 : 18.3) * Math.sin(a), S(big ? coreRole : "frame")); }
-  const breath = full && (cmd?.status === "ready" || cmd?.status === "done") ? Math.sin((2 * Math.PI * t) / 4) : 0;
-  cv.ring(X, Y, 10.5 + breath, 8.5 + breath, S(coreRole));
-  const t1 = `${I.axa} AXA`;
-  cv.clear(Math.round(ccol - width(t1) / 2) - 1, Math.round(crow), width(t1) + 2);
-  cv.put(Math.round(ccol - width(t1) / 2), Math.round(crow), t1, S("title"));
-  const sr = Math.round(crow) + 2;
-  cv.clear(Math.round(ccol - width(coreSub) / 2) - 1, sr, width(coreSub) + 2);
-  cv.put(Math.round(ccol - width(coreSub) / 2), sr, coreSub, S(coreRole));
-  ctx.mapHits.push({ col0: ccol - 10, col1: ccol + 10, row0: crow - 4, row1: crow + 4, id: cmd?.id || "commander" });
-  // session cards: a pulse ring while one waits, a flicker while stuck, one green flash when it finishes
-  for (const { s, col, row, cc, rc } of nodes) {
-    const [g, , role] = look(s), sel = s.id === selId;
-    const name = `${g} ${clean(s.name)}`, sub = `${chipOf(s)[0].trim()}${s.usage?.tokens ? ` · ${fmtTok(s.usage.tokens)}` : ""}${reviewBadge(s) ? ` · ${reviewBadge(s)}` : ""}`;
-    const w = Math.min(28, Math.max(width(name), width(sub)) + 4);
-    const c0 = Math.max(0, Math.min(cols - w, cc - w / 2)), r0 = Math.max(0, Math.min(rows - 4, rc - 2));
-    const cx = (c0 + w / 2) * 2, cy = (r0 + 2) * 4;
-    if (full && ["working", "waiting", "stuck"].includes(s.status)) anim = true;
-    if (s.status === "waiting") { const p = full ? (now % 1600) / 1600 : 0.35; cv.ring(cx, cy, (w / 2 + 1 + p * 3) * 2, (2.5 + p * 1.5) * 4, S(p < 0.6 ? "wait" : "frame"), p < 0.5 ? 1 : 2); }
-    const fl = flashing(s);
-    if (fl) {
-      const p = (now - doneAt.get(s.id)) / 900;
-      if (full) { anim = true; if (p < 1) cv.ring(cx, cy, (w / 2 + 1 + p * 5) * 2, (2.5 + p * 2.5) * 4, bold("done"), 2); }
-      else cv.ring(cx, cy, (w / 2 + 2) * 2, 3.5 * 4, S("done"), 2);
-    }
-    const border = fl ? bold("done") : sel ? S("head") : s.status === "stuck" ? S(!full || now % 500 < 350 ? "stuck" : "frame") : S(role);
-    cv.box(c0, r0, w, 4, border, [[cut(name, w - 4), S(sel ? "head" : "text")], [cut(sub, w - 4), S(role)]], sel ? "heavy" : "round");
-    const hc0 = Math.max(0, Math.min(cols - w, col - w / 2)), hr0 = Math.max(0, Math.min(rows - 4, row - 2)); // hits: the final spot
-    ctx.mapHits.push({ col0: hc0, col1: hc0 + w, row0: hr0, row1: hr0 + 3, id: s.id });
-    // its agents, tagged under the card
-    const hs = (s.helpers || []).filter((h) => h.status === "running");
-    if (hs.length) {
-      const tag = `${spinner()} ${hs.map((h) => h.type.split(":").pop()).slice(0, 3).join(" · ")}${hs.length > 3 ? ` +${hs.length - 3}` : ""}`;
-      const tr = r0 + 4 < rows ? r0 + 4 : r0 - 1;
-      cv.clear(c0, tr, width(tag) + 2);
-      cv.put(c0 + 1, tr, tag, S("violet"));
-    }
-  }
-  // the agent chips go on last, over the lines; clicking one opens what it's doing
-  for (const { h, label, box, c0, r0, fade } of chips) {
-    const sel = ctx.agentSel === h.id;
-    if (full && h.status === "running") anim = true;
-    cv.clear(c0, r0, box.w);
-    cv.put(c0 + 1, r0, label, S(sel ? "head" : h.status === "running" ? "violet" : fade ? "frame" : "dim"));
-    ctx.mapHits.unshift({ col0: box.c0, col1: box.c0 + box.w - 1, row0: box.r0, row1: box.r0, id: cmd.id, agent: h.id });
-  }
-  if (full && (cmd?.status === "working" || cmd?.status === "waiting")) anim = true;
-  if (chips.length < agents.length) { const m = `+${agents.length - chips.length} more agents (widen the window)`; cv.put(1, 0, m, S("dim")); }
-  if (hidden) { const m = cut(`${hidden} idle session${hidden > 1 ? "s" : ""} hidden · Sessions tab`, cols - 2); cv.clear(0, rows - 1, width(m) + 2); cv.put(1, rows - 1, m, S("dim")); }
-  else if (!ss.length) { const m = ["no sessions yet · n starts one in a project", "no sessions · n starts one", "n: new session"].find((t) => width(t) <= cols) || ""; cv.put(Math.floor((cols - width(m)) / 2), rows - 1, m, S("dim")); }
-  for (const k of firstSeen.keys()) if (!present.has(k)) firstSeen.delete(k);
-  seeded = true;
-  ctx.anim = anim;
-  return cv.render();
-}
-
 // "claude-opus-5-5-20261001" -> "Opus 5.5"; anything else as it came
 export const modelName = (m) => {
   const x = /^claude-([a-z]+)-(\d+)(?:-(\d{1,2}))?(?:-\d{8})?(\[1m\])?$/i.exec(String(m || ""));
@@ -527,16 +319,15 @@ export function controlRows(ctx, W, B) {
     out.push(...beside([panel("Global status", L, topH, body, { tag: `${act?.runs?.today ?? 0} runs today` }), L], [panel("Activity", R, topH, abody, { tag: "events / min" }), R]));
   }
 
-  // middle: the map, and approvals + the commander
-  // an empty map (no sessions on it, no commander agents) gives the commander the extra room
-  const ms = mapSessions(sessions, ctx.selId), cmd = sessions.find((s) => s.mode === "axa" && s.alive);
-  const midL = !ms.shown.length && !commanderAgents(cmd).length ? Math.round(W * 0.38) : L, mR = W - midL;
+  // middle: the live lanes, and approvals + the commander
+  // no sessions and no commander agents: the commander gets the extra room
+  const ls = laneSessions(sessions, ctx.selId), cmd = sessions.find((s) => s.mode === "axa" && s.alive);
+  const midL = !ls.sessions && !commanderAgents(cmd).length ? Math.round(W * 0.38) : L, mR = W - midL;
   ctx.midL = midL;
-  // motion only for meaning: nothing working, nothing moves. A map that's mostly empty (<= 2 sessions) or crowded
-  // (> 6) is shown as dense rows instead.
-  ctx.mapMotion = sessions.some((s) => s.alive && ["working", "starting"].includes(s.status)) ? ctx.motion : "off";
-  const map = ms.shown.length <= DENSE_FEW || ms.shown.length > DENSE_MANY ? denseRows(ctx, ms.shown, midL - 2, midH - 2) : mapRows(ctx, midL - 2, midH - 2);
-  const mapPanel = panel("Live map", midL, midH, map, { tag: `${ms.shown.length} session${ms.shown.length === 1 ? "" : "s"}${ms.hidden ? ` · ${ms.hidden} idle` : ""} · ${alive.reduce((n, s) => n + (s.helpers || []).filter((h) => h.status === "running").length, 0)} agents` });
+  const map = laneRows(ctx, midL - 2, midH - 2);
+  const nNeed = ls.lanes.filter((s) => s.mode !== "axa" && ["waiting", "needs_trust"].includes(s.status)).length;
+  const nAgents = alive.reduce((n, s) => n + (s.helpers || []).filter((h) => h.status === "running").length, 0);
+  const mapPanel = panel("Live", midL, midH, map, { tag: [`${ls.sessions} session${ls.sessions === 1 ? "" : "s"}`, nNeed ? `${nNeed} need${nNeed === 1 ? "s" : ""} you` : "", ls.hidden ? `${ls.hidden} idle` : "", nAgents ? `${nAgents} agent${nAgents === 1 ? "" : "s"}` : ""].filter(Boolean).join(" · ") });
   const w = ctx.waiting;
   const apH = Math.min(midH - 6, w ? 13 : 3); // nothing waiting: a 3-row strip, the commander gets the rest
   const ab = [];

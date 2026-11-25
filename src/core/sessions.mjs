@@ -160,6 +160,7 @@ function summary(t) {
     stuck_minutes: tr?.stuck_minutes,
     doing: safe(tr?.doing), tool: tr?.tool, skill: tr?.skill,
     last_report: safe(tr?.report), error: safe(tr?.error), last_event_at: tr?.at,
+    wait_since: waiting ? tr?.waitSince || undefined : undefined, turn_start: status === "working" ? tr?.promptAt : undefined,
     idle_seconds: Math.round((Date.now() - t.lastOutput) / 1000),
     awaiting_permission: waiting,
     git: t.alive && t.mode !== "axa" ? gitInfo(t.cwd) : null,

@@ -9,7 +9,7 @@ import * as W from "../src/tui/width.mjs";
 import * as D from "../src/tui/draw.mjs";
 import { sliceAnsi } from "../src/tui/ansi.mjs";
 import { FOOTER_KEYS, KEYMAP, PANEL_NAMES, fuzzyScore, keymapHelp, rankPalette, syncFrame, syncReply, SYNC_PROBE } from "../src/tui/app.mjs";
-import { collapseRepeats, controlRows, DENSE_FEW, DENSE_MANY } from "../src/tui/control.mjs";
+import { collapseRepeats, controlRows } from "../src/tui/control.mjs";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const src = (f) => readFileSync(join(ROOT, f), "utf8");
@@ -82,23 +82,25 @@ test("the log collapses repeats; empty panels are one line with the action; toas
   assert.match(src("src/tui/app.mjs"), /const flash = \(text, ms = 3000\)/);
 });
 
-test("the map: dense rows when mostly empty or crowded; nothing moves when nothing works", () => {
+test("the live lanes: one row (and hit) per session; nothing moves when nothing works", () => {
   const now = Date.now();
   const cmd = { id: "c", mode: "axa", alive: true, status: "ready", name: "axa", cwd: "/tmp", created: now };
   const ss = (n, status = "ready") => Array.from({ length: n }, (_, i) => ({ id: `s${i}`, mode: "claude", alive: true, status, name: `proj${i}`, cwd: `/tmp/p${i}`, created: now, doing: "editing" }));
   const ctx = (sessions) => ({ motion: "full", sessions: [cmd, ...sessions], act: null, selId: null, focusInput: false, input: "", nameOf: (s) => s.name, question: () => "", yesOpt: () => ({}), noOpt: () => ({}), waiting: null, waitingCount: 0, armed: false, order: [], chats: [], zone: "map", chatSel: 0, cmdStatus: null, mapHits: [], chatHits: [], apHits: [], cmdMsgs: [], cmdScroll: 0 });
   const few = ctx(ss(2, "working")), rows = controlRows(few, 160, 45).map(plain).join("\n");
-  assert.match(rows, /proj0\s+editing/); assert.equal(few.mapHits.length, 2);
-  const many = ctx(ss(DENSE_MANY + 1, "working"));
+  assert.match(rows, /proj0 .*WORKING\s+editing/); assert.equal(few.mapHits.length, 3, "the commander and two sessions");
+  const many = ctx(ss(7, "working"));
   controlRows(many, 160, 45);
-  assert.equal(many.mapHits.length, DENSE_MANY + 1, "one row (and hit) each");
+  assert.equal(many.mapHits.filter((h) => !h.agent).length, 8);
   const idle = ctx(ss(3));
   controlRows(idle, 160, 45);
-  assert.equal(idle.mapMotion, "off", "nothing working: nothing moves");
+  assert.equal(idle.anim, false, "nothing working: nothing moves");
   const busy = ctx(ss(3, "working"));
   controlRows(busy, 160, 45);
-  assert.equal(busy.mapMotion, "full");
-  assert.equal(DENSE_FEW, 2);
+  assert.equal(busy.anim, true);
+  const still = { ...ctx(ss(3, "working")), motion: "off" };
+  controlRows(still, 160, 45);
+  assert.equal(still.anim, false, "Motion off: nothing moves");
 });
 
 test("synchronized output: probed once, frames wrapped only when the terminal said yes", () => {
