@@ -112,7 +112,8 @@ test("lanes: selection hints, agents line, scrolling with +N more, idle note, em
   const rows = laneRows(ctx, 120, 10, T0).map(plain);
   assert.match(rows[0], /^ ◆ AXA\s/); assert.match(rows[1], /charlie .*NEEDS YOU\s+deploy:preview\?  y yes · x no\s+waiting 2m/);
   assert.match(rows[2], /alpha .*WORKING\s+npm test\s+\+2 agents/);
-  assert.match(rows[3], /└ .*builder: Edit x · .*reviewer/, "its agents, on a dim second line");
+  assert.match(rows[3], /^ ├─+ \S builder  Edit x/, "its agents, as branches under it");
+  assert.match(rows[4], /^ └─+ \S reviewer/);
   assert.ok(ctx.mapHits.some((h) => h.agent === "h2" && h.id === "alpha"), "each agent is clickable");
   assert.equal(ctx.anim, true, "a working spinner, a pulsing needs-you glyph");
   // not selected: no hint

@@ -17,9 +17,11 @@ export const THEMES = {
     tabOn: `1;${bg(...C.cyan)};${rgb(...C.ink)}`, tabOff: `${bg(...C.bar)};${rgb(...C.dim)}`, keycap: `1;${bg(...C.faint)};${rgb(...C.text)}`,
     chipWait: chip(C.amber), chipWork: chip(C.cyan), chipDone: chip(C.green), chipStuck: chip(C.red), chipIdle: `1;${bg(...C.faint)};${rgb(...C.text)}`, chipOff: `${bg(...C.bar)};${rgb(...C.dim)}`,
     you: `1;${rgb(...C.amber)}`, claude: `1;${rgb(...C.cyan)}`,
+    // the live lanes' motion (alive.mjs): flashes, the bright needs-you pulse, step packets by tool kind
+    hi: `1;${rgb(255, 255, 255)}`, waitHi: `1;${rgb(255, 228, 168)}`, pRead: `1;${rgb(110, 168, 255)}`, pEdit: `1;${rgb(...C.green)}`, pBash: `1;${rgb(...C.amber)}`, pWeb: `1;${rgb(...C.violet)}`, pAgent: `1;${rgb(255, 255, 255)}`,
   },
-  terminal: { title: "1;36", accent: "36", head: "1", text: "0", wait: "1;33", waitSoft: "33", stuck: "31", work: "36", done: "32", idle: "0", off: "90", dim: "90", violet: "35", sel: "7", selDim: "2;7", frame: "90", frameOn: "36", key: "1;36", add: "32", del: "31", hunk: "36", bar: "0", barDim: "90", barTitle: "1;36", pv: "0", pvDim: "90", pvHead: "1", tabOn: "1;7;36", tabOff: "90", keycap: "7", chipWait: "1;30;43", chipWork: "30;46", chipDone: "30;42", chipStuck: "30;41", chipIdle: "7", chipOff: "2;7", you: "1;33", claude: "1;36" },
-  mono: { title: "1", accent: "1", head: "1", text: "0", wait: "1;4", waitSoft: "1", stuck: "1", work: "0", done: "0", idle: "0", off: "2", dim: "2", violet: "0", sel: "7", selDim: "7", frame: "2", frameOn: "1", key: "1", add: "1", del: "2", hunk: "1", bar: "0", barDim: "2", barTitle: "1", pv: "0", pvDim: "2", pvHead: "1", tabOn: "7", tabOff: "2", keycap: "7", chipWait: "7", chipWork: "7", chipDone: "7", chipStuck: "7", chipIdle: "7", chipOff: "2", you: "1", claude: "1" },
+  terminal: { title: "1;36", accent: "36", head: "1", text: "0", wait: "1;33", waitSoft: "33", stuck: "31", work: "36", done: "32", idle: "0", off: "90", dim: "90", violet: "35", sel: "7", selDim: "2;7", frame: "90", frameOn: "36", key: "1;36", add: "32", del: "31", hunk: "36", bar: "0", barDim: "90", barTitle: "1;36", pv: "0", pvDim: "90", pvHead: "1", tabOn: "1;7;36", tabOff: "90", keycap: "7", chipWait: "1;30;43", chipWork: "30;46", chipDone: "30;42", chipStuck: "30;41", chipIdle: "7", chipOff: "2;7", you: "1;33", claude: "1;36", hi: "1;97", waitHi: "1;93", pRead: "1;94", pEdit: "1;32", pBash: "1;33", pWeb: "1;35", pAgent: "1;97" },
+  mono: { title: "1", accent: "1", head: "1", text: "0", wait: "1;4", waitSoft: "1", stuck: "1", work: "0", done: "0", idle: "0", off: "2", dim: "2", violet: "0", sel: "7", selDim: "7", frame: "2", frameOn: "1", key: "1", add: "1", del: "2", hunk: "1", bar: "0", barDim: "2", barTitle: "1", pv: "0", pvDim: "2", pvHead: "1", tabOn: "7", tabOff: "2", keycap: "7", chipWait: "7", chipWork: "7", chipDone: "7", chipStuck: "7", chipIdle: "7", chipOff: "2", you: "1", claude: "1", hi: "1", waitHi: "1", pRead: "1", pEdit: "1", pBash: "1", pWeb: "1", pAgent: "1" },
 };
 export const THEME_NAMES = Object.keys(THEMES);
 export const truecolor = () => /truecolor|24bit/i.test(process.env.COLORTERM || "") || !!process.env.WT_SESSION || /iTerm|WezTerm|vscode/i.test(process.env.TERM_PROGRAM || "");
@@ -28,6 +30,19 @@ export const setTheme = (name) => { theme = process.env.NO_COLOR || process.env.
 export const paint = (role, s) => { const c = theme[role] ?? role; return c && c !== "0" ? `${ESC}[${c}m${s}${ESC}[0m` : s; };
 // a role's raw SGR (to color a background run that contains other colors)
 export const sgrOf = (role) => theme[role] ?? "";
+// A colour between two roles (t 0..1): an RGB blend when both are 24-bit colours (the axa theme), else the nearer
+// of the two roles (the terminal's 16 colours, mono). A role is a theme key or a raw SGR string; bold follows the
+// nearer one. (Quantized to 16 steps, so a fade doesn't make a new frame for every millisecond.)
+const RGB_SGR = /38;2;(\d+);(\d+);(\d+)/;
+export function mix(a, b, t) {
+  t = Math.round(Math.max(0, Math.min(1, t)) * 16) / 16;
+  if (t <= 0) return a;
+  if (t >= 1) return b;
+  const sa = theme[a] ?? a, sb = theme[b] ?? b, A = RGB_SGR.exec(sa), B = RGB_SGR.exec(sb);
+  if (!A || !B) return t < 0.5 ? a : b;
+  const c = [1, 2, 3].map((i) => Math.round(+A[i] + (B[i] - A[i]) * t));
+  return `${/^1;/.test(t < 0.5 ? sa : sb) ? "1;" : ""}38;2;${c.join(";")}`;
+}
 
 // ---------- icons: Nerd Font glyphs, or plain Unicode that every font has ----------
 const NERD = { axa: "\uf0e7", session: "\uf120", shell: "\uf489", chat: "\uf086", agent: "\uf0c0", project: "\uf07b", home: "\uf015", branch: "\ue725", wait: "\uf071", stuck: "\uf017", done: "\uf00c", ready: "\uf10c", off: "\uf068", open: "\uf111", you: "\uf007", claude: "\uf0e7", tokens: "\uf080", bell: "\uf0f3", worktree: "\uf126", plus: "\uf067", search: "\uf002" };
