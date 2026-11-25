@@ -22,7 +22,7 @@ import { commentable } from "../core/diffcomments.mjs";
 import { LiveView } from "./live.mjs";
 import { agentDetail, agentName, axaStatusLine, controlRows, msgText, selectedText } from "./control.mjs";
 import { laneRows, laneSessions } from "./lanes.mjs";
-import { NEEDS as WS_NEEDS, wsHit, compose, cycleFocus, messageBody, moveSel, neighbor, normWorkspace, paneBlock, paneHeader, paneParts, paneRects, placeRef, pruneTabs, removePane, saveWorkspace, selectable, sideWidth, sidebarLines, sidebarRows, topLine, toggleZoom, addTab, closeTab } from "./workspace.mjs";
+import { NEEDS as WS_NEEDS, wsHit, compose, cycleFocus, messageBody, moveSel, neighbor, normWorkspace, paneBlock, paneHeader, paneParts, paneRects, placeRef, pruneTabs, removePane, saveWorkspace, selectable, sideWidth, sidebarLines, slimOrder, slimRows, slimWanted, sidebarRows, topLine, toggleZoom, addTab, closeTab } from "./workspace.mjs";
 import { FRAME_MS, createAlive, feedEvents, glyphSet } from "./alive.mjs";
 import { copyToClipboard, pasteFile, readClipboard } from "./clipboard.mjs";
 import { hintKey, hitAt, makeArm, overlayHit, segSpans } from "./mouse.mjs";
@@ -621,8 +621,10 @@ export async function runTui() {
       const { c, b } = paneParts(r), focused = !wsSide && i === t.focus, zoomed = t.zoom === i;
       let s = null, body, header;
       if (p.kind === "map") {
-        wsMapCtx = { motion: motionNow(), alive, glyphs, sessions: data.sessions, act, selId: wsMapSel, question, mapHits: [] };
-        body = laneRows(wsMapCtx, b.w, b.h);
+        // small: one calm row per session; zoomed or big enough: the full lanes
+        const slim = slimWanted(c, zoomed);
+        wsMapCtx = { motion: motionNow(), alive, glyphs, sessions: data.sessions, act, selId: wsMapSel, question, mapHits: [], slim };
+        body = slim ? slimRows(wsMapCtx, b.w, b.h) : laneRows(wsMapCtx, b.w, b.h);
         const ls = laneSessions(data.sessions, wsMapSel);
         header = paneHeader({ kind: "map", w: c.w, focused, zoomed, label: `${ls.sessions} session${ls.sessions === 1 ? "" : "s"}` });
       } else {
@@ -688,7 +690,7 @@ export async function runTui() {
   }
   // a key for a map pane (it has no session to type into): ↑/↓ pick a lane, Enter puts it in a pane
   function wsMapKey(k) {
-    const o = laneSessions(data.sessions, wsMapSel).lanes, i = Math.max(0, o.findIndex((s) => s.id === wsMapSel));
+    const o = wsMapCtx.slim ? slimOrder(data.sessions, wsMapSel) : laneSessions(data.sessions, wsMapSel).lanes, i = Math.max(0, o.findIndex((s) => s.id === wsMapSel));
     if (k === "\x1b[A" || k === "k") wsMapSel = o[Math.max(0, i - 1)]?.id ?? null;
     else if (k === "\x1b[B" || k === "j") wsMapSel = o[Math.min(o.length - 1, i + (wsMapSel ? 1 : 0))]?.id ?? null;
     else if (k === "\r") { const s = o.find((x) => x.id === wsMapSel); if (s) setTab(placeRef(wsTab(), { kind: "session", id: s.id })); }

@@ -4,8 +4,10 @@
 // dividers between them and a one-line header each. Layout tabs (1 2 3 +) remember their panes and are
 // saved in ui.json ("workspace"). Everything here is pure (layout math, focus, tabs, sidebar rows, the frames):
 // app.mjs owns the views, the keys and the mouse.
-import { I, clean, cut, line, look, paint, width } from "./draw.mjs";
+import { I, clean, cut, line, look, mix, paint, width } from "./draw.mjs";
 import { segSpans } from "./mouse.mjs";
+import { FRAME_MS, GLYPHS, breath, spinFrames, wave } from "./alive.mjs";
+import { laneDoing, laneGroup, laneSessions, laneTime } from "./lanes.mjs";
 
 export const SIDE_W = 22; // the full sidebar, its divider included
 export const MAX_PANES = 4;
@@ -320,4 +322,66 @@ export function wsHit(geo, x, y) {
   }
   const ix = ax - b.x, iy = by - b.y;
   return { kind: "body", pane, ix, iy, inside: ix >= 0 && iy >= 0 && ix < b.w && iy < b.h };
+}
+
+// ---------- the mini live map: slim (docs/tasks/workspace-clean.md) ----------
+// A small map pane shows one calm row per session instead of the full lanes squeezed in:
+//   ● billing   deploy:preview?            waiting 2m
+//   ✶ api       Bash npm test                  for 1m
+//   ● notes     README updated                5m ago
+// a status dot in the sidebar's colours (breathing while it works, a slow amber pulse while it needs you), the name,
+// a short dim "doing" and the time on the right; needs-you first, then working, then the rest; "+N more" when they
+// don't fit. No strips, packets or branches. The full lanes come back when the pane is zoomed or big enough.
+export const SLIM_FULL = { w: 120, h: 30 };
+export const slimWanted = ({ w, h }, zoomed = false) => !zoomed && !(w >= SLIM_FULL.w && h >= SLIM_FULL.h);
+const BUSY = ["working", "starting"];
+// 0 needs you, 1 working, 2 the rest (failed / stuck first among them, as in the lanes); stable by start
+const slimGroup = (s) => (NEEDS.includes(s.status) ? 0 : BUSY.includes(s.status) ? 1 : 2);
+export const slimOrder = (sessions, selId) => laneSessions(sessions, selId).lanes
+  .map((s, i) => [s, i])
+  .sort(([a, i], [b, j]) => slimGroup(a) - slimGroup(b) || laneGroup({ ...a, mode: "" }) - laneGroup({ ...b, mode: "" }) || i - j)
+  .map(([s]) => s);
+const pad = (t, n) => t + " ".repeat(Math.max(0, n - width(t)));
+const phase = (id) => { let h = 7; for (const c of String(id)) h = Math.imul(h ^ c.charCodeAt(0), 2654435761); return (h >>> 0) % 4000; };
+// ctx as laneRows' (sessions, selId, motion, glyphs, question, mapHits) -> rows exactly `cols` wide; fills
+// ctx.mapHits (one per row) and ctx.next (ms until the next frame differs, null = still)
+export function slimRows(ctx, cols, rows, now = Date.now()) {
+  const order = slimOrder(ctx.sessions || [], ctx.selId), hidden = laneSessions(ctx.sessions || [], ctx.selId).hidden;
+  const motion = ctx.motion || "full", full = motion === "full", color = motion !== "off";
+  const set = ctx.glyphs || "safe", G = GLYPHS[set] || GLYPHS.safe, frames = spinFrames(set);
+  const hits = ctx.mapHits || (ctx.mapHits = []), out = [];
+  let next = Infinity;
+  const blank = " ".repeat(cols);
+  if (!order.length) {
+    out.push(line([["  No sessions yet", "dim"]], cols));
+  } else {
+    const fits = order.length + (hidden ? 1 : 0) <= rows, per = fits ? order.length : Math.max(1, rows - 1);
+    const sel = Math.max(0, order.findIndex((s) => s.id === ctx.selId));
+    const start = fits ? 0 : Math.max(0, Math.min(order.length - per, sel - per + 1));
+    const shown = order.slice(start, start + per);
+    const nameOf = (s) => (s.mode === "axa" ? "AXA" : clean(s.name));
+    const nameW = Math.min(14, Math.max(4, ...shown.map((s) => width(nameOf(s)))));
+    const times = shown.map((s) => laneTime(s, now));
+    const timeW = cols >= 36 ? Math.min(14, Math.max(0, ...times.map(width))) : 0;
+    const doingW = cols - 3 - nameW - 2 - (timeW ? timeW + 2 : 0) - 1;
+    shown.forEach((s, k) => {
+      const role = statusRole(s);
+      let dot = "●", dRole = role;
+      if (BUSY.includes(s.status) || (s.mode === "axa" && s.status === "working")) { dot = full ? breath(now + phase(s.id), frames) : G.still; if (full) next = Math.min(next, FRAME_MS); }
+      if (NEEDS.includes(s.status) && color) { dRole = mix("wait", "waitHi", wave(now + phase(s.id))); next = Math.min(next, FRAME_MS); }
+      const doing = doingW >= 6 ? laneDoing(s, ctx.question) : "";
+      const segs = [[" ", ""], [dot, dRole], [" ", ""], [pad(cut(nameOf(s), nameW), nameW), role === "wait" ? "waitSoft" : "text"]];
+      if (doingW >= 6) { const d = cut(doing, doingW); segs.push(["  ", ""], [d + " ".repeat(doingW - width(d)), "dim"]); }
+      const right = timeW ? [[cut(times[k], timeW), role === "wait" ? "waitSoft" : "dim"]] : [];
+      out.push(line(segs, cols, right, s.id === ctx.selId ? "selDim" : null));
+      hits.push({ col0: 0, col1: cols, row0: out.length - 1, row1: out.length - 1, id: s.id });
+    });
+    const more = order.length - start - shown.length;
+    const note = [start ? `↑ ${start} above` : "", more > 0 ? `+${more} more` : "", hidden ? `${hidden} idle` : ""].filter(Boolean).join(" · ");
+    if (note) out.push(line([[`   ${note}`, "dim"]], cols));
+  }
+  while (out.length < rows) out.push(blank);
+  ctx.next = next === Infinity ? null : next;
+  ctx.anim = next <= FRAME_MS;
+  return out.slice(0, rows);
 }

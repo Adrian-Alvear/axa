@@ -3,7 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { setTheme, width } from "../src/tui/draw.mjs";
-import { COMPACT_W, MAX_PANES, SIDE_W, addTab, agentShort, closeTab, compose, cornerOf, ctxPct, cycleFocus, inner, moveSel, neighbor, normWorkspace, paneAt, paneBlock, paneHeader, paneParts, paneRects, placeRef, pruneTabs, removePane, saveWorkspace, sideWidth, sidebarLines, sidebarRows, statusRole, toggleZoom, topLine, wsHit } from "../src/tui/workspace.mjs";
+import { COMPACT_W, MAX_PANES, SIDE_W, addTab, agentShort, closeTab, compose, cornerOf, ctxPct, cycleFocus, inner, moveSel, neighbor, normWorkspace, paneAt, paneBlock, paneHeader, paneParts, paneRects, placeRef, pruneTabs, removePane, saveWorkspace, sideWidth, sidebarLines, sidebarRows, slimOrder, slimRows, slimWanted, statusRole, toggleZoom, topLine, wsHit } from "../src/tui/workspace.mjs";
 
 setTheme("mono");
 const plain = (s) => s.replace(/\x1b\[[0-9;]*m/g, "");
@@ -234,4 +234,45 @@ test("wsHit: what a click hits (top line, sidebar, a pane's header buttons, its 
   assert.equal(wsHit(geo, SIDE_W + 1, 5).inside, false, "the padding column");
   assert.deepEqual(wsHit({ ...geo, sideW: 0 }, 3, 2).kind, "title", "no sidebar: the panes start at column 1");
   assert.equal(wsHit(geo, 500, 8), null);
+});
+
+test("slim map: one calm row per session (dot, name, dim doing, time), needs-you, then working, then the rest; +N more", () => {
+  const now = 1_000_000_000;
+  const ss = [
+    S("cmd", { mode: "axa", status: "ready", created: 0 }),
+    S("notes", { created: 1, status: "done", last_report: "README updated", last_event_at: now - 5 * 60_000 }),
+    S("api", { created: 2, status: "working", doing: "Bash npm test", turn_start: now - 60_000, helpers: [H("Explore", "Grep x")] }),
+    S("billing", { created: 3, status: "waiting", choices: { question: "Deploy?", options: [] }, wait_since: now - 120_000 }),
+    S("broken", { created: 4, status: "failed", error: "boom" }),
+  ];
+  assert.deepEqual(slimOrder(ss).map((s) => s.id), ["billing", "api", "broken", "cmd", "notes"]);
+  const ctx = { sessions: ss, selId: "api", motion: "off", mapHits: [] };
+  const rows = slimRows(ctx, 60, 8, now).map(plain);
+  assert.equal(rows.length, 8);
+  for (const r of rows) assert.equal(width(r), 60);
+  assert.match(rows[0], /^ ● billing {2}Deploy\? +waiting 2m $/);
+  assert.match(rows[1], /^ ✻ api {6}Bash npm test +for 1m $/, "still (motion off): the still glyph, no agents or strips");
+  assert.match(rows[2], /^ ● broken {3}boom/);
+  assert.match(rows[3], /^ ● AXA /);
+  assert.match(rows[4], /^ ● notes {4}README updated +5m ago $/);
+  assert.equal(rows[5].trim(), "");
+  assert.doesNotMatch(rows.join(""), /[▁▂▃▄▅▆▇█▏├└]|agent|WORKING/);
+  assert.deepEqual(ctx.mapHits.map((h) => [h.id, h.row0]), [["billing", 0], ["api", 1], ["broken", 2], ["cmd", 3], ["notes", 4]]);
+  assert.equal(ctx.next, null, "nothing moves with motion off");
+  // full motion: the working dot breathes and the needs-you dot pulses, so it asks for frames
+  const live = { sessions: ss, motion: "full", mapHits: [] };
+  slimRows(live, 60, 8, now);
+  assert.ok(live.next > 0 && live.next <= 100);
+  // not enough rows: the selected one stays in view and the rest are counted
+  const small = slimRows({ sessions: ss, selId: "notes", motion: "off" }, 60, 3, now).map(plain);
+  assert.match(small[1], /notes/);
+  assert.match(small[2], /^ {3}↑ 3 above +$/);
+  const top = slimRows({ sessions: ss, motion: "off" }, 60, 3, now).map(plain);
+  assert.match(top[2], /^ {3}\+3 more/);
+  // narrow: the doing text and the time drop before the names
+  const narrow = slimRows({ sessions: ss, motion: "off" }, 16, 6, now).map(plain);
+  for (const r of narrow) assert.equal(width(r), 16);
+  assert.match(narrow[0], /^ ● billing +$/);
+  // the full lanes come back when it's zoomed or has about 120x30
+  assert.deepEqual([slimWanted({ w: 89, h: 26 }), slimWanted({ w: 89, h: 26 }, true), slimWanted({ w: 130, h: 40 }), slimWanted({ w: 130, h: 20 })], [true, false, false, true]);
 });
