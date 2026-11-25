@@ -1,12 +1,13 @@
-// The Workspace tab: several live sessions side by side (herdr-style). A sidebar on the left (SPACES: one row per
-// open session, the commander first; AGENTS: the running helper agents, grouped by session) and 1-4 panes on the
-// right, each a live session (LiveView) or the mini live map. Layout tabs (1 2 3 +) remember their panes and are
+// The Workspace tab: several live sessions side by side (herdr-style), calm: one line of chrome on top, a sidebar of
+// spaces on the left (one row per open session, the commander first; the focused pane's running agents nested under
+// its space) and 1-4 panes on the right, each a live session (LiveView) or the mini live map, with thin dim
+// dividers between them and a one-line header each. Layout tabs (1 2 3 +) remember their panes and are
 // saved in ui.json ("workspace"). Everything here is pure (layout math, focus, tabs, sidebar rows, the frames):
 // app.mjs owns the views, the keys and the mouse.
-import { I, clean, cut, fmtTok, line, look, paint, width } from "./draw.mjs";
+import { I, clean, cut, line, look, paint, width } from "./draw.mjs";
 import { segSpans } from "./mouse.mjs";
 
-export const SIDE_W = 22; // the sidebar, its right border included
+export const SIDE_W = 22; // the full sidebar, its divider included
 export const MAX_PANES = 4;
 export const MAX_TABS = 9;
 export const NEEDS = ["waiting", "needs_trust"];
@@ -116,21 +117,51 @@ export function pruneTabs(ws, aliveIds) {
   return changed ? { ...ws, tabs } : ws;
 }
 
+// ---------- the look: calm (docs/tasks/workspace-clean.md) ----------
+// One accent for focus, amber only for needs-you, red only for failed / stuck, green only for done; everything
+// else normal or dim; no bold but the focused pane's name. No boxes: thin dim dividers between panes.
+const FINISHED = ["done", "ready", "exited"];
+// a status dot's colour role
+export function statusRole(s) {
+  if (!s) return "dim";
+  if (NEEDS.includes(s.status)) return "wait";
+  if (["stuck", "failed"].includes(s.status)) return "stuck";
+  if (s.status === "done") return "done";
+  if (["working", "starting", "limited"].includes(s.status)) return "text";
+  return "dim";
+}
+// how wide the sidebar is (its divider included): full from 120 columns, dots + 3 letters from 90, hidden below
+// (shown: an override, e.g. Ctrl-b s, or the sidebar has the focus)
+export const COMPACT_W = 7;
+export function sideWidth(W, shown = null) {
+  const on = shown ?? W >= 90;
+  return !on ? 0 : W >= 120 ? SIDE_W : COMPACT_W;
+}
+// an agent's short name: researcher, reviewer, builder, explore, helper (general-purpose), plan...
+export function agentShort(type = "") {
+  const t = String(type || "agent").split(":").pop().toLowerCase();
+  return t === "general-purpose" ? "helper" : t;
+}
+const runningOf = (s) => (s.helpers || []).filter((h) => h.status === "running");
+
 // ---------- the sidebar ----------
-// rows: { kind: "head", text } | { kind: "space", s } | { kind: "map" } | { kind: "group", s } | { kind: "agent", s, h } | { kind: "gap" }
-// (spaces: alive sessions, the commander first, then by when they started; agents: running ones, by session)
-export function sidebarRows(sessions = []) {
+// rows: { kind: "head", text } | { kind: "space", s, n (running agents) } | { kind: "agent", s, h } | { kind: "more", n }
+//   | { kind: "gap" } | { kind: "map" }
+// Spaces: alive sessions, the commander first, then by when they started. The focused pane's space (current) shows
+// its running agents nested under it (up to 4, "+N" for the rest); the others only count them.
+export const AGENTS_SHOWN = 4;
+export function sidebarRows(sessions = [], current = null) {
   const alive = sessions.filter((s) => s.alive);
   const spaces = [...alive.filter((s) => s.mode === "axa"), ...alive.filter((s) => s.mode !== "axa").sort((a, b) => (a.created || 0) - (b.created || 0))];
-  const rows = [{ kind: "head", text: "SPACES" }, ...spaces.map((s) => ({ kind: "space", s })), { kind: "map" }, { kind: "gap" }, { kind: "head", text: "AGENTS" }];
-  let any = false;
+  const rows = [{ kind: "head", text: "spaces" }];
   for (const s of spaces) {
-    const hs = (s.helpers || []).filter((h) => h.status === "running");
-    if (!hs.length) continue;
-    any = true;
-    rows.push({ kind: "group", s }, ...hs.map((h) => ({ kind: "agent", s, h })));
+    const hs = runningOf(s);
+    rows.push({ kind: "space", s, n: hs.length });
+    if (s.id !== current || !hs.length) continue;
+    rows.push(...hs.slice(0, AGENTS_SHOWN).map((h) => ({ kind: "agent", s, h })));
+    if (hs.length > AGENTS_SHOWN) rows.push({ kind: "more", n: hs.length - AGENTS_SHOWN });
   }
-  if (!any) rows.push({ kind: "none", text: "none running" });
+  rows.push({ kind: "gap" }, { kind: "map" });
   return rows;
 }
 export const selectable = (r) => r && ["space", "map", "agent"].includes(r.kind);
@@ -139,39 +170,39 @@ export function moveSel(rows, i, d) {
   for (let j = i + d; j >= 0 && j < rows.length; j += d) if (selectable(rows[j])) return j;
   return selectable(rows[i]) ? i : rows.findIndex(selectable);
 }
-const branchOf = (s) => (s.git?.branch ? `${I.branch} ${s.git.branch}` : "");
-// The sidebar's lines (exactly w wide, the last column its border) and which row is drawn where:
-// { lines, at: [row index per line or -1] }. shown: session id -> pane number (1-based) in the active tab.
-export function sidebarLines(rows, w, h, { sel = -1, focused = false, shown = new Map(), mapShown = 0, nameOf = (s) => clean(s.name), spin = () => "*" } = {}) {
-  const iw = w - 1, lines = [], at = [];
-  const nSpaces = rows.filter((r) => r.kind === "space").length;
-  const two = nSpaces * 2 + 8 <= Math.floor(h * 0.7); // two lines a space (name, then branch) while there's room
+// The sidebar's lines (exactly w wide, the last column a dim divider) and which row each line is:
+// { lines, at: [row index or -1] }. current: the focused pane's session id (its row gets the accent bar).
+// w COMPACT_W: a dot and 3 letters a space, no agents.
+export function sidebarLines(rows, w, h, { sel = -1, focused = false, current = null, nameOf = (s) => clean(s.name) } = {}) {
+  const iw = w - 1, compact = w <= COMPACT_W, lines = [], at = [];
   const push = (l, i) => { lines.push(l); at.push(i); };
   rows.forEach((r, i) => {
-    const on = i === sel ? (focused ? "sel" : "selDim") : null;
-    if (r.kind === "head") push(line([[` ${r.text}`, "dim"]], iw), -1);
+    const on = focused && i === sel ? "sel" : null;
+    if (r.kind === "head") { if (!compact) push(line([[` ${r.text}`, "dim"]], iw), -1); }
     else if (r.kind === "gap") push(" ".repeat(iw), -1);
-    else if (r.kind === "none") push(line([[`  ${r.text}`, "frame"]], iw), -1);
-    else if (r.kind === "map") push(line([[` ◫ `, "accent"], ["live map", "text"]], iw, [[mapShown ? `${mapShown}` : "", "accent"]], on), i);
+    else if (r.kind === "map") push(line([[compact ? " ◫" : " ◫ live map", "dim"]], iw, [], on), i);
     else if (r.kind === "space") {
-      const s = r.s, [g, word, role] = look(s), cmd = s.mode === "axa", need = NEEDS.includes(s.status);
-      const nameRole = need ? "wait" : cmd ? "title" : "head", n = shown.get(s.id);
-      push(line([[` ${cmd ? I.axa : g} `, need ? "wait" : cmd ? "title" : role], [cmd ? "AXA" : nameOf(s), nameRole]], iw, [[n ? `${n}` : "", "accent"]], on), i);
-      if (two) push(line([[`   ${need ? word : branchOf(s) || word}`, need ? "waitSoft" : "dim"]], iw, [], on), i);
-    } else if (r.kind === "group") push(line([[` ${look(r.s)[0]} `, look(r.s)[2]], [r.s.mode === "axa" ? "AXA" : nameOf(r.s), "text"]], iw), -1);
+      const s = r.s, role = statusRole(s), need = role === "wait";
+      const nm = s.mode === "axa" ? "axa" : nameOf(s);
+      const nameRole = need ? "waitSoft" : FINISHED.includes(s.status) ? "dim" : "text";
+      const bar = [s.id === current ? "▎" : " ", "accent"];
+      if (compact) push(line([bar, ["● ", role], [[...nm].slice(0, 3).join(""), nameRole]], iw, [], on), i);
+      else push(line([bar, ["● ", role], [nm, nameRole]], iw, [[r.n ? `·${r.n}` : "", "dim"]], on), i);
+    } else if (compact) return;
     else if (r.kind === "agent") {
-      const h = r.h, type = String(h.type || "agent").split(":").pop();
-      push(line([[`   ${spin()} `, "violet"], [type, "text"], [h.doing || h.desc ? ` ${clean(h.doing || h.desc)}` : "", "dim"]], iw, [], on), i);
-    }
+      const h = r.h, step = clean(h.doing || h.desc || "");
+      push(line([[`    ${agentShort(h.type)}`, "text"], [step ? ` ${step}` : "", "dim"]], iw, [], on), i);
+    } else if (r.kind === "more") push(line([[`    +${r.n} more`, "dim"]], iw), -1);
   });
   // keep the selection on screen
   let top = 0;
   const first = at.indexOf(sel), last = at.lastIndexOf(sel);
-  if (last >= h) top = Math.min(first, last - h + 1);
+  // (one row above the last: a "↓ more" line may take that one)
+  if (last >= h - 1 && lines.length > h) top = Math.max(0, Math.min(first, last - h + 2));
   const shownL = lines.slice(top, top + h), shownA = at.slice(top, top + h);
-  if (lines.length - top > h) shownL[h - 1] = line([[`  ↓ ${lines.length - top - h + 1} more`, "dim"]], iw);
+  if (lines.length - top > h) { shownL[h - 1] = line([[compact ? " ↓" : `  ↓ ${lines.length - top - h + 1} more`, "dim"]], iw); shownA[h - 1] = -1; }
   while (shownL.length < h) { shownL.push(" ".repeat(iw)); shownA.push(-1); }
-  return { lines: shownL.map((l) => l + paint(focused ? "frameOn" : "frame", "│")), at: shownA };
+  return { lines: shownL.map((l) => l + paint("frame", "│")), at: shownA };
 }
 
 // ---------- the panes ----------
@@ -181,35 +212,54 @@ export function ctxPct(u) {
   const limit = /\[1m\]/i.test(u.model || "") || u.context > 200_000 ? 1_000_000 : 200_000;
   return Math.min(100, Math.round((u.context / limit) * 100));
 }
-// The border role: amber when it waits on you, bright when focused, faint otherwise
-export const paneRole = (s, focused) => (s && NEEDS.includes(s.status) ? "wait" : focused ? "frameOn" : "frame");
-// A pane's title bar (its top border): name, status, branch, context %, and for a pane that waits on you its
-// question and the y / x buttons. Returns { text, hits: [{ k: "yes" | "no" | "zoom" | "close", x0, x1 }] }
-// with columns relative to the pane's left edge (0-based).
-export function paneTitle({ s = null, kind = "session", w, focused = false, zoomed = false, armed = false, n = 0, nameOf = (x) => clean(x.name), label = "" }) {
-  const role = paneRole(s, focused), need = s && NEEDS.includes(s.status) && s.choices;
-  let segs, right = [];
-  if (kind === "map") segs = [[` ${n} `, focused ? "tabOn" : "tabOff"], [" ◫ ", "accent"], ["live map", "head"], [label ? `  ${label}` : "", "dim"]];
-  else if (!s) segs = [[` ${n} `, focused ? "tabOn" : "tabOff"], ["  this session has ended", "dim"]];
-  else {
-    const [g, word, srole] = look(s), pct = ctxPct(s.usage);
-    segs = [[` ${n} `, need ? "chipWait" : focused ? "tabOn" : "tabOff"], [` ${s.mode === "axa" ? I.axa : g} `, need ? "wait" : srole], [s.mode === "axa" ? "AXA commander" : nameOf(s), need ? "wait" : "head"],
-      [`  ${need ? "NEEDS YOU" : word}`, need ? "wait" : srole], [branchOf(s) ? `  ${branchOf(s)}` : "", "dim"], [pct !== null ? `  ctx ${pct}%` : s.usage?.tokens ? `  ${fmtTok(s.usage.tokens)} tok` : "", pct >= 85 ? "stuck" : pct >= 65 ? "waitSoft" : "dim"]];
-    if (need) right = [[" y ", "keycap"], [armed ? " click again to approve " : " approve ", armed ? "chipWait" : "waitSoft"], [" x ", "keycap"], [" decline ", "waitSoft"]];
-  }
-  right.push([zoomed ? " ▣ " : " □ ", "dim"], [" ✕ ", "dim"]);
-  const iw = Math.max(0, w - 2);
-  const sp = segSpans(segs, iw, right, 1);
-  const kinds = need ? ["yes", "yes", "no", "no", "zoom", "close"] : ["zoom", "close"];
-  const hits = sp.right.map((r) => ({ k: kinds[r.i], x0: r.x0, x1: r.x1 }));
-  return { text: paint(role, "┌") + line(segs, iw, right) + paint(role, "┐"), hits, role };
+// A pane's parts inside its rectangle r (area-relative): a divider column on the left when it isn't at the left
+// edge, a divider row on top when it isn't at the top; then c (the content: a header line, then the body) and b
+// (the body: under the header, one column of padding each side)
+export function paneParts(r) {
+  const dl = r.x > 0 ? 1 : 0, dt = r.y > 0 ? 1 : 0;
+  const c = { x: r.x + dl, y: r.y + dt, w: Math.max(1, r.w - dl), h: Math.max(1, r.h - dt) };
+  const b = { x: c.x + 1, y: c.y + 1, w: Math.max(1, c.w - 2), h: Math.max(1, c.h - 1) };
+  return { c, b, dl, dt };
 }
-// A pane: the title bar, the body (rows exactly w - 2 wide) between side borders, the bottom border
-export function paneBox(title, body, w, h, role) {
-  const rows = [title.text];
-  for (let i = 0; i < h - 2; i++) rows.push(paint(role, "│") + (body[i] ?? " ".repeat(w - 2)) + paint(role, "│"));
-  if (h >= 2) rows.push(paint(role, "└" + "─".repeat(Math.max(0, w - 2)) + "┘"));
-  return rows.slice(0, h);
+// where a pane's top and left dividers meet: ┼ with a divider above and to the left, ├ above only, ┬ left only
+export function cornerOf(r, rects) {
+  const up = rects.some((o) => o && o !== r && o.x === r.x && o.y + o.h === r.y && o.x > 0);
+  const left = rects.some((o) => o && o !== r && o.y === r.y && o.x + o.w === r.x && o.y > 0);
+  return up && left ? "┼" : up ? "├" : left ? "┬" : "┌";
+}
+// A pane's one-line header (c.w wide): the focused pane gets an accent bar (▎) and its name in bold, the others
+// are dim; status as a coloured dot + a dim word, the branch dim. A pane that waits on you turns amber with
+// "needs you · y approve · x decline". Zoom / close only on the focused pane. Returns { text, hits: [{ k:
+// "yes" | "no" | "zoom" | "close", x0, x1 }] } (columns relative to the header's start, 0-based).
+export function paneHeader({ s = null, kind = "session", w, focused = false, zoomed = false, armed = false, nameOf = (x) => clean(x.name), label = "" }) {
+  const need = !!s && NEEDS.includes(s.status) && !!s.choices;
+  const bar = [focused ? "▎" : " ", need ? "wait" : "accent"];
+  let segs, right = [], kinds = [];
+  if (kind === "map") segs = [bar, [" live map", focused ? "head" : "dim"], [label ? ` · ${label}` : "", "dim"]];
+  else if (!s) segs = [bar, [" this session has ended", "dim"]];
+  else {
+    const name = s.mode === "axa" ? "AXA commander" : nameOf(s);
+    if (need) {
+      segs = [bar, [` ${name}`, focused ? "wait" : "waitSoft"], [" · needs you", "waitSoft"]];
+      right = [[" y ", "chipWait"], [armed ? " click again to approve " : " approve ", armed ? "wait" : "waitSoft"], [" x ", "chipWait"], [" decline ", "waitSoft"]];
+      kinds = ["yes", "yes", "no", "no"];
+    } else {
+      const pct = ctxPct(s.usage), role = statusRole(s);
+      segs = [bar, [` ${name}`, focused ? "head" : "dim"], ["  ● ", role], [look(s)[1], "dim"], [s.git?.branch ? `  ${I.branch} ${s.git.branch}` : "", "dim"], [pct >= 65 ? `  ctx ${pct}%` : "", pct >= 85 ? "stuck" : "dim"]];
+    }
+  }
+  if (focused) { right.push([zoomed ? " ▣ " : " □ ", "dim"], [" ✕ ", "dim"]); kinds.push("zoom", "close"); }
+  const sp = segSpans(segs, w, right, 0);
+  return { text: line(segs, w, right), hits: sp.right.map((r) => ({ k: kinds[r.i], x0: r.x0, x1: r.x1 })) };
+}
+// A pane's rows (exactly r.w wide, r.h tall): its dividers, the header, the body rows (b.w wide) padded
+export function paneBlock(r, rects, header, body) {
+  const { c, b, dl, dt } = paneParts(r), rows = [];
+  if (dt) rows.push(paint("frame", (dl ? cornerOf(r, rects) : "") + "─".repeat(c.w)));
+  const left = dl ? paint("frame", "│") : "", padR = " ".repeat(Math.max(0, c.w - b.w - 1));
+  rows.push(left + header.text);
+  for (let i = 0; i < c.h - 1; i++) rows.push(left + " " + (body[i] ?? " ".repeat(b.w)) + padR);
+  return rows.slice(0, r.h);
 }
 // a body of h rows w wide with one message in the middle
 export function messageBody(text, w, h, role = "dim") {
@@ -231,37 +281,43 @@ export function compose(W, H, blocks) {
   }
   return out;
 }
-// The thin layout-tab bar: " WORKSPACE  1  2  +   …right". Returns { text, hits: [{ k: tab index | "+", x0, x1 }] }
-// (1-based screen columns)
-export function tabsBar(ws, W, right = []) {
-  const segs = [[` ▦ WORKSPACE `, "barTitle"], [" ", "bar"]];
-  ws.tabs.forEach((t, i) => { segs.push([` ${i + 1}${t.panes.length ? `·${t.panes.length}` : ""} `, i === ws.active ? "tabOn" : "tabOff"], [" ", "bar"]); });
-  if (ws.tabs.length < MAX_TABS) segs.push([" + ", "keycap"]);
-  const sp = segSpans(segs, W, right, 1);
-  const hits = sp.left.filter((s) => s.i >= 2 && s.i % 2 === 0).map((s) => ({ k: s.i === 2 + ws.tabs.length * 2 ? "+" : (s.i - 2) / 2, x0: s.x0, x1: s.x1 }));
+// The Workspace's one line of chrome: "◆ workspace  1 2 +" on the left; "▲ 2 need you", a note (a toast, the
+// prefix waiting) or a dim "Ctrl-b ? keys", and the clock on the right.
+// Returns { text, hits: [{ k: tab index | "+" | "home" | "needs" | "help", x0, x1 }] } (1-based screen columns)
+export function topLine(ws, W, { needs = 0, clock = "", note = null, prefix = "Ctrl-b" } = {}) {
+  const segs = [[" ◆ ", "dim"], ["workspace", "dim"], ["  ", ""]];
+  ws.tabs.forEach((t, i) => segs.push([` ${i + 1} `, i === ws.active ? "accent" : "dim"]));
+  if (ws.tabs.length < MAX_TABS) segs.push([" + ", "dim"]);
+  const right = [[needs ? ` ▲ ${needs} need${needs === 1 ? "s" : ""} you ` : "", "chipWait"], [needs ? "   " : "", ""], note || [`${prefix} ? keys`, "dim"], [clock ? `   ${clock}` : "", "dim"]];
+  const sp = segSpans(segs, W, right, 1), hits = [];
+  for (const s of sp.left) {
+    if (s.i <= 1) hits.push({ k: "home", x0: s.x0, x1: s.x1 });
+    else if (s.i >= 3) hits.push({ k: s.i - 3 < ws.tabs.length ? s.i - 3 : "+", x0: s.x0, x1: s.x1 });
+  }
+  for (const s of sp.right) if (s.i === 0) hits.push({ k: "needs", x0: s.x0, x1: s.x1 }); else if (s.i === 2 && !note) hits.push({ k: "help", x0: s.x0, x1: s.x1 });
   return { text: line(segs, W, right, "bar"), hits };
 }
 
 // ---------- the mouse ----------
 // What a click at screen cell x, y (1-based) hits on the Workspace, from the last frame's geometry
-// geo { y0 (the tab bar's row), top (the first body row), side (sidebar row index per body line, -1 for none),
-// rects (the panes, area-relative), panes [{ i, title: { hits } }] }:
-//   { kind: "tab", k } (k a tab index or "+") | { kind: "bar" } | { kind: "side", i } (i -1: no row there)
+// geo { y0 (the top line's row), top (the first body row), sideW, side (sidebar row index per body line, -1 none),
+// rects (the panes, area-relative), panes [{ i, header: { hits } }], tabHits (the top line's) }:
+//   { kind: "tab", k } (k a tab index, "+", "home", "needs" or "help") | { kind: "bar" } | { kind: "side", i }
 //   | { kind: "title", pane, k } (k "yes" | "no" | "zoom" | "close" | null) | { kind: "body", pane, ix, iy, inside }
-//   (ix, iy 0-based inside the border; inside false on the border itself) | null (not the Workspace)
+//   (ix, iy 0-based in the body; inside false on a divider or the padding) | null (not the Workspace)
 export function wsHit(geo, x, y) {
   if (!geo || y < geo.y0) return null;
   if (y === geo.y0) { const h = geo.tabHits?.find((t) => x >= t.x0 && x <= t.x1); return h ? { kind: "tab", k: h.k } : { kind: "bar" }; }
-  const by = y - geo.top;
+  const by = y - geo.top, sw = geo.sideW ?? SIDE_W;
   if (by < 0) return null;
-  if (x <= SIDE_W) return { kind: "side", i: geo.side?.[by] ?? -1 };
-  const ax = x - SIDE_W - 1, pane = paneAt(geo.rects || [], ax, by);
+  if (x <= sw) return { kind: "side", i: geo.side?.[by] ?? -1 };
+  const ax = x - sw - 1, pane = paneAt(geo.rects || [], ax, by);
   if (pane < 0) return null;
-  const r = geo.rects[pane];
-  if (by === r.y) {
-    const col = ax - r.x, hits = geo.panes?.find((p) => p.i === pane)?.title?.hits || [];
+  const { c, b } = paneParts(geo.rects[pane]);
+  if (by === c.y && ax >= c.x) {
+    const col = ax - c.x, hits = geo.panes?.find((p) => p.i === pane)?.header?.hits || [];
     return { kind: "title", pane, k: hits.find((h) => col >= h.x0 && col <= h.x1)?.k ?? null };
   }
-  const ir = inner(r), ix = ax - ir.x, iy = by - ir.y;
-  return { kind: "body", pane, ix, iy, inside: ix >= 0 && iy >= 0 && ix < ir.w && iy < ir.h };
+  const ix = ax - b.x, iy = by - b.y;
+  return { kind: "body", pane, ix, iy, inside: ix >= 0 && iy >= 0 && ix < b.w && iy < b.h };
 }

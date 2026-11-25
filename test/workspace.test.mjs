@@ -3,7 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { setTheme, width } from "../src/tui/draw.mjs";
-import { MAX_PANES, addTab, closeTab, compose, ctxPct, cycleFocus, inner, moveSel, neighbor, normWorkspace, paneAt, paneRects, paneTitle, placeRef, pruneTabs, removePane, saveWorkspace, sidebarLines, sidebarRows, tabsBar, toggleZoom } from "../src/tui/workspace.mjs";
+import { COMPACT_W, MAX_PANES, SIDE_W, addTab, agentShort, closeTab, compose, cornerOf, ctxPct, cycleFocus, inner, moveSel, neighbor, normWorkspace, paneAt, paneBlock, paneHeader, paneParts, paneRects, placeRef, pruneTabs, removePane, saveWorkspace, sideWidth, sidebarLines, sidebarRows, statusRole, toggleZoom, topLine, wsHit } from "../src/tui/workspace.mjs";
 
 setTheme("mono");
 const plain = (s) => s.replace(/\x1b\[[0-9;]*m/g, "");
@@ -110,75 +110,128 @@ test("layout tabs: add, close, save and restore (bad data falls back to one empt
 });
 
 const S = (id, extra = {}) => ({ id, name: id, alive: true, mode: "claude", status: "ready", created: 0, ...extra });
-test("sidebar rows: the commander first, then sessions by when they started; the map; running agents by session", () => {
-  const ss = [S("b", { created: 2, helpers: [{ id: "h1", type: "axa:researcher", status: "running", doing: "Grep flaky" }, { id: "h2", type: "x", status: "done" }] }), S("a", { created: 1 }), S("cmd", { mode: "axa", created: 9 }), S("dead", { alive: false })];
-  const rows = sidebarRows(ss);
-  assert.deepEqual(rows.map((r) => r.kind + (r.s ? `:${r.s.id}` : "")), ["head", "space:cmd", "space:a", "space:b", "map", "gap", "head", "group:b", "agent:b"]);
-  assert.deepEqual(sidebarRows([S("a")]).at(-1), { kind: "none", text: "none running" });
+const H = (type, doing = "") => ({ id: `${type}-${doing}`, type, status: "running", doing });
+test("sidebar rows: spaces only (the commander first, then by start); the focused pane's space nests its agents (4, +N)", () => {
+  const ss = [S("b", { created: 2, helpers: [H("axa:researcher", "Grep flaky"), H("general-purpose"), H("Plan"), H("axa:builder"), H("Explore"), { type: "x", status: "done" }] }), S("a", { created: 1, helpers: [H("axa:reviewer")] }), S("cmd", { mode: "axa", created: 9 }), S("dead", { alive: false })];
+  const kinds = (rows) => rows.map((r) => r.kind + (r.s && r.kind === "space" ? `:${r.s.id}` : "") + (r.kind === "more" ? `+${r.n}` : ""));
+  assert.deepEqual(kinds(sidebarRows(ss)), ["head", "space:cmd", "space:a", "space:b", "gap", "map"], "no agents listed when no pane is focused");
+  const rows = sidebarRows(ss, "b");
+  assert.deepEqual(kinds(rows), ["head", "space:cmd", "space:a", "space:b", "agent", "agent", "agent", "agent", "more+1", "gap", "map"]);
+  assert.deepEqual(rows.filter((r) => r.kind === "space").map((r) => r.n), [0, 1, 5]);
   assert.equal(moveSel(rows, 1, -1), 1, "stays on the first selectable row");
-  assert.equal(moveSel(rows, 4, 1), 8, "skips the heads and groups");
-  assert.equal(moveSel(rows, 0, 1), 1);
-  const { lines, at } = sidebarLines(rows, 22, 20, { sel: 2, focused: true, shown: new Map([["a", 2]]) });
-  assert.equal(lines.length, 20);
-  for (const l of lines) assert.equal(width(plain(l)), 22);
-  assert.match(plain(lines[at.indexOf(1)]), /AXA/);
-  assert.match(plain(lines[at.indexOf(2)]), /a +2 │$/, "the pane number it's shown in");
-  assert.match(plain(lines[at.indexOf(8)]), /\* researcher Grep/);
-  // too many to fit: the selection stays on screen
-  const many = sidebarRows(Array.from({ length: 40 }, (_, i) => S(`s${i}`, { created: i })));
-  const r2 = sidebarLines(many, 22, 15, { sel: 35 });
-  assert.ok(r2.at.includes(35));
-  assert.equal(r2.lines.length, 15);
+  assert.equal(moveSel(rows, 7, 1), 10, "skips the +N and the gap");
+  assert.deepEqual(["axa:researcher", "general-purpose", "Explore", "Plan", "axa:reviewer", ""].map(agentShort), ["researcher", "helper", "explore", "plan", "reviewer", "agent"]);
 });
 
-test("pane title: name, status, branch, context %; a waiting pane is amber with y / x buttons", () => {
+test("sidebar lines: a dot, the name, a dim agent count; the focused pane's space has the accent bar; compact below 120", () => {
+  const ss = [S("cmd", { mode: "axa" }), S("api", { created: 1, status: "working", helpers: [H("axa:researcher", "Grep flaky"), H("Explore")] }), S("billing", { created: 2, status: "waiting" })];
+  const rows = sidebarRows(ss, "api");
+  const { lines, at } = sidebarLines(rows, SIDE_W, 20, { sel: 2, focused: true, current: "api" });
+  assert.equal(lines.length, 20);
+  for (const l of lines) assert.equal(width(plain(l)), SIDE_W);
+  const txt = lines.map(plain);
+  assert.match(txt[0], /^ spaces/);
+  assert.match(txt[at.indexOf(1)], /^ ● axa/);
+  assert.match(txt[at.indexOf(2)], /^▎● api +·2 │$/);
+  assert.match(txt[at.indexOf(3)], /^ {4}researcher Grep/);
+  assert.match(txt[at.indexOf(4)], /^ {4}explore/);
+  assert.match(txt.at(at.indexOf(5)), /billing/);
+  for (const l of txt) assert.doesNotMatch(l, /general-purpose|AGENTS|researc…|explo…/);
+  // compact: a dot and 3 letters, no agents, no label
+  const c = sidebarLines(rows, COMPACT_W, 10, { current: "api" });
+  for (const l of c.lines) assert.equal(width(plain(l)), COMPACT_W);
+  assert.deepEqual(c.lines.slice(0, 5).map(plain), [" ● axa│", "▎● api│", " ● bil│", "      │", " ◫    │"]);
+  // too many to fit: the selection stays on screen
+  const many = sidebarRows(Array.from({ length: 40 }, (_, i) => S(`s${i}`, { created: i })));
+  const r2 = sidebarLines(many, SIDE_W, 15, { sel: 35 });
+  assert.ok(r2.at.includes(35));
+  assert.equal(r2.lines.length, 15);
+  assert.deepEqual([sideWidth(200), sideWidth(119), sideWidth(100), sideWidth(89), sideWidth(80, true), sideWidth(200, false)], [SIDE_W, COMPACT_W, COMPACT_W, 0, COMPACT_W, 0]);
+});
+
+test("pane header: one line; focused gets the accent bar, zoom and close; needs-you is amber with y / x", () => {
   const s = S("charlie", { status: "working", git: { branch: "main" }, usage: { context: 100_000, model: "claude-opus-5-5" } });
-  const t = paneTitle({ s, w: 80, focused: true, n: 1 });
-  assert.equal(width(plain(t.text)), 80);
-  assert.match(plain(t.text), /^┌ 1 .*charlie {2}working {2}. main {2}ctx 50%.*✕ ┐$/);
-  assert.equal(t.role, "frameOn");
-  assert.deepEqual(t.hits.map((h) => h.k), ["zoom", "close"]);
-  const w = S("charlie", { status: "waiting", choices: { question: "Deploy?", options: [{ n: 1, label: "Yes" }, { n: 2, label: "No" }] } });
-  const tw = paneTitle({ s: w, w: 90, n: 2 });
-  assert.equal(tw.role, "wait");
-  assert.match(plain(tw.text), /NEEDS YOU.* y  approve  x  decline /);
-  assert.deepEqual(tw.hits.map((h) => h.k), ["yes", "yes", "no", "no", "zoom", "close"]);
-  const yes = tw.hits[0];
-  assert.equal(plain(tw.text).slice(yes.x0, yes.x1 + 1), " y ", "hit columns line up with the text");
-  assert.match(plain(paneTitle({ s: w, w: 90, armed: true }).text), /click again to approve/);
-  assert.match(plain(paneTitle({ kind: "map", w: 40, n: 3 }).text), /live map/);
+  const f = paneHeader({ s, w: 80, focused: true });
+  assert.equal(width(plain(f.text)), 80);
+  assert.match(plain(f.text), /^▎ charlie {2}● working {2}. main +□ {2}✕ $/);
+  assert.deepEqual(f.hits.map((h) => h.k), ["zoom", "close"]);
+  const u = paneHeader({ s: { ...s, usage: { context: 180_000 } }, w: 80 });
+  assert.match(plain(u.text), /^ {2}charlie {2}● working {2}. main {2}ctx 90% +$/, "unfocused: no icons; context only when it's high");
+  assert.deepEqual(u.hits, []);
+  const w = S("billing", { status: "waiting", choices: { question: "Deploy?", options: [{ n: 1, label: "Yes" }, { n: 2, label: "No" }] } });
+  const tw = paneHeader({ s: w, w: 90 });
+  assert.match(plain(tw.text), /^ {2}billing · needs you +y {2}approve {2}x {2}decline $/);
+  assert.deepEqual(tw.hits.map((h) => h.k), ["yes", "yes", "no", "no"]);
+  const tf = paneHeader({ s: w, w: 90, focused: true });
+  assert.deepEqual(tf.hits.map((h) => h.k), ["yes", "yes", "no", "no", "zoom", "close"]);
+  for (const h of tf.hits) assert.match(plain(tf.text).slice(h.x0, h.x1 + 1), { yes: /^( y | approve )$/, no: /^( x | decline )$/, zoom: /^ □ $/, close: /^ ✕ $/ }[h.k]);
+  assert.match(plain(paneHeader({ s: w, w: 90, armed: true }).text), /click again to approve/);
+  assert.match(plain(paneHeader({ kind: "map", w: 40, label: "3 sessions" }).text), /^ {2}live map · 3 sessions/);
+  assert.deepEqual(["waiting", "stuck", "failed", "done", "working", "ready", "exited"].map((st) => statusRole({ status: st })), ["wait", "stuck", "stuck", "done", "text", "dim", "dim"]);
   assert.equal(ctxPct({ context: 500_000, model: "claude-opus-5-5[1m]" }), 50);
   assert.equal(ctxPct({}), null);
 });
 
-test("compose and the tab bar", () => {
-  const rows = compose(10, 2, [{ x: 0, y: 0, w: 3, h: 2, rows: ["aaa", "bbb"] }, { x: 5, y: 0, w: 2, h: 1, rows: ["cc"] }]);
-  assert.deepEqual(rows, ["aaa  cc   ", "bbb       "]);
-  const ws = addTab(normWorkspace({ tabs: [{ panes: [{ kind: "map" }] }] }));
-  const bar = tabsBar(ws, 80);
-  assert.equal(width(plain(bar.text)), 80);
-  assert.deepEqual(bar.hits.map((h) => h.k), [0, 1, "+"]);
-  const p = plain(bar.text);
-  for (const h of bar.hits) assert.match(p.slice(h.x0 - 1, h.x1), h.k === "+" ? /\+/ : new RegExp(String(h.k + 1)));
+test("panes: no boxes; thin dividers (│ on the left, ─ on top) only between panes, ┼ / ├ / ┬ where they meet", () => {
+  const four = paneRects(4, 40, 10);
+  assert.deepEqual(paneParts(four[0]), { c: { x: 0, y: 0, w: 20, h: 5 }, b: { x: 1, y: 1, w: 18, h: 4 }, dl: 0, dt: 0 });
+  assert.deepEqual(paneParts(four[3]), { c: { x: 21, y: 6, w: 19, h: 4 }, b: { x: 22, y: 7, w: 17, h: 3 }, dl: 1, dt: 1 });
+  assert.equal(cornerOf(four[3], four), "┼");
+  const three = paneRects(3, 40, 10);
+  assert.equal(cornerOf(three[2], three), "├");
+  const threeH = paneRects(3, 40, 10, { split: "h" });
+  assert.equal(cornerOf(threeH[2], threeH), "┬");
+  const rows = four.map((r) => { const { c, b } = paneParts(r); return paneBlock(r, four, paneHeader({ s: S("x"), w: c.w }), Array(b.h).fill("·".repeat(b.w))); });
+  const screen = compose(40, 10, four.map((r, i) => ({ ...r, rows: rows[i] }))).map(plain);
+  for (const l of screen) assert.equal(width(l), 40);
+  assert.match(screen[0], /^ {2}x .*│ {2}x /);
+  assert.match(screen[1], /^ ·{18} │ ·{17} $/, "one column of padding each side");
+  assert.equal(screen[5], "─".repeat(20) + "┼" + "─".repeat(19));
+  assert.doesNotMatch(screen.join(""), /[┌┐└┘]/, "no boxes");
+  const one = paneRects(1, 30, 5)[0];
+  assert.deepEqual(paneParts(one).c, { x: 0, y: 0, w: 30, h: 5 }, "a single pane has no dividers");
 });
 
-test("wsHit: what a click hits (tab bar, sidebar, a pane's title buttons, inside a pane, its border)", async () => {
-  const { wsHit, SIDE_W } = await import("../src/tui/workspace.mjs");
+test("top line: layout tabs, the needs-you chip, a dim keys hint (or a note) and the clock, with hit boxes", () => {
+  const ws = addTab(normWorkspace({ tabs: [{ panes: [{ kind: "map" }] }] }));
+  const t = topLine(ws, 120, { needs: 2, clock: "11:30" });
+  const p = plain(t.text);
+  assert.equal(width(p), 120);
+  assert.match(p, /^ ◆ workspace {3}1 {2}2 {2}\+ .* ▲ 2 need you {4}Ctrl-b \? keys {3}11:30 $/);
+  for (const h of t.hits) assert.match(p.slice(h.x0 - 1, h.x1), { home: /◆|workspace/, needs: /need you/, help: /keys/, "+": /\+/, 0: /1/, 1: /2/ }[h.k]);
+  assert.deepEqual(t.hits.map((h) => h.k), ["home", "home", 0, 1, "+", "needs", "help"]);
+  const q = topLine(ws, 120, { needs: 1, note: ["billing: answered \"No\"", "text"] });
+  assert.match(plain(q.text), /▲ 1 needs you {4}billing: answered "No"/);
+  assert.ok(!q.hits.some((h) => h.k === "help"));
+  assert.doesNotMatch(plain(topLine(ws, 120).text), /need/);
+});
+
+test("compose", () => {
+  const rows = compose(10, 2, [{ x: 0, y: 0, w: 3, h: 2, rows: ["aaa", "bbb"] }, { x: 5, y: 0, w: 2, h: 1, rows: ["cc"] }]);
+  assert.deepEqual(rows, ["aaa  cc   ", "bbb       "]);
+});
+
+test("wsHit: what a click hits (top line, sidebar, a pane's header buttons, its body, a divider)", () => {
   const rects = paneRects(2, 100, 20);
   const w = S("b", { status: "waiting", choices: { question: "Go?", options: [{ n: 1, label: "Yes" }, { n: 2, label: "No" }] } });
-  const panes = [{ i: 0, title: paneTitle({ s: S("a"), w: rects[0].w }) }, { i: 1, title: paneTitle({ s: w, w: rects[1].w }) }];
-  const geo = { y0: 4, top: 5, side: [-1, 1, 2], rects, panes, tabHits: [{ k: 0, x0: 15, x1: 19 }, { k: "+", x0: 21, x1: 23 }] };
-  assert.equal(wsHit(geo, 10, 3), null, "above the Workspace");
-  assert.deepEqual(wsHit(geo, 16, 4), { kind: "tab", k: 0 });
-  assert.deepEqual(wsHit(geo, 22, 4), { kind: "tab", k: "+" });
-  assert.deepEqual(wsHit(geo, 60, 4), { kind: "bar" });
-  assert.deepEqual(wsHit(geo, 3, 6), { kind: "side", i: 1 });
-  assert.deepEqual(wsHit(geo, SIDE_W, 5), { kind: "side", i: -1 });
-  // pane 2's title: its y / x / zoom / close buttons, each at the column it's drawn
-  const t = panes[1].title, x0 = SIDE_W + 1 + rects[1].x;
-  for (const h of t.hits) assert.deepEqual(wsHit(geo, x0 + h.x0, 5), { kind: "title", pane: 1, k: h.k });
-  assert.deepEqual(wsHit(geo, x0 + 3, 5), { kind: "title", pane: 1, k: null });
-  assert.deepEqual(wsHit(geo, SIDE_W + 1 + 5, 5 + 3), { kind: "body", pane: 0, ix: 4, iy: 2, inside: true });
-  assert.equal(wsHit(geo, SIDE_W + 1, 5 + 3).inside, false, "the left border");
+  const panes = [{ i: 0, header: paneHeader({ s: S("a"), w: paneParts(rects[0]).c.w, focused: true }) }, { i: 1, header: paneHeader({ s: w, w: paneParts(rects[1]).c.w }) }];
+  const geo = { y0: 1, top: 2, sideW: SIDE_W, side: [-1, 1, 2], rects, panes, tabHits: [{ k: 0, x0: 15, x1: 17 }, { k: "+", x0: 18, x1: 20 }, { k: "needs", x0: 150, x1: 160 }] };
+  assert.equal(wsHit(geo, 10, 0), null);
+  assert.deepEqual(wsHit(geo, 16, 1), { kind: "tab", k: 0 });
+  assert.deepEqual(wsHit(geo, 19, 1), { kind: "tab", k: "+" });
+  assert.deepEqual(wsHit(geo, 155, 1), { kind: "tab", k: "needs" });
+  assert.deepEqual(wsHit(geo, 60, 1), { kind: "bar" });
+  assert.deepEqual(wsHit(geo, 3, 3), { kind: "side", i: 1 });
+  assert.deepEqual(wsHit(geo, SIDE_W, 2), { kind: "side", i: -1 });
+  // each header button at the column it's drawn (pane 2 starts after its divider)
+  for (const [i, p] of panes.entries()) {
+    const x0 = SIDE_W + 1 + paneParts(rects[i]).c.x;
+    for (const h of p.header.hits) assert.deepEqual(wsHit(geo, x0 + h.x0, 2), { kind: "title", pane: i, k: h.k });
+  }
+  assert.deepEqual(wsHit(geo, SIDE_W + 1 + 3, 2), { kind: "title", pane: 0, k: null });
+  assert.deepEqual(wsHit(geo, SIDE_W + 1 + 5, 2 + 3), { kind: "body", pane: 0, ix: 4, iy: 2, inside: true });
+  assert.equal(wsHit(geo, SIDE_W + 1 + rects[1].x, 5).inside, false, "the divider");
+  assert.equal(wsHit(geo, SIDE_W + 1, 5).inside, false, "the padding column");
+  assert.deepEqual(wsHit({ ...geo, sideW: 0 }, 3, 2).kind, "title", "no sidebar: the panes start at column 1");
   assert.equal(wsHit(geo, 500, 8), null);
 });

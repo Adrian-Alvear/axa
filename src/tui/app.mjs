@@ -22,7 +22,7 @@ import { commentable } from "../core/diffcomments.mjs";
 import { LiveView } from "./live.mjs";
 import { agentDetail, agentName, axaStatusLine, controlRows, msgText, selectedText } from "./control.mjs";
 import { laneRows, laneSessions } from "./lanes.mjs";
-import { SIDE_W, wsHit, compose, cycleFocus, inner, messageBody, moveSel, neighbor, normWorkspace, paneAt, paneBox, paneRects, paneTitle, placeRef, pruneTabs, removePane, saveWorkspace, selectable, sidebarLines, sidebarRows, tabsBar, toggleZoom, addTab, closeTab } from "./workspace.mjs";
+import { NEEDS as WS_NEEDS, wsHit, compose, cycleFocus, messageBody, moveSel, neighbor, normWorkspace, paneBlock, paneHeader, paneParts, paneRects, placeRef, pruneTabs, removePane, saveWorkspace, selectable, sideWidth, sidebarLines, sidebarRows, topLine, toggleZoom, addTab, closeTab } from "./workspace.mjs";
 import { FRAME_MS, createAlive, feedEvents, glyphSet } from "./alive.mjs";
 import { copyToClipboard, pasteFile, readClipboard } from "./clipboard.mjs";
 import { hintKey, hitAt, makeArm, overlayHit, segSpans } from "./mouse.mjs";
@@ -72,7 +72,7 @@ export const KEYMAP = {
   chats: [["⏎", "resume"], ["/", "search"]],
   agents: [["⏎", "give a task"], ["/", "search"]],
   projects: [["⏎", "open"], ["g", "goal"], ["r", "review"], ["h", "handoff"], ["N", "new"], ["w", "worktree"], ["s", "shell"], ["/", "filter"]],
-  workspace: [["⏎", "put in a pane"], ["→", "type in the panes"], ["|", "side by side"], ["-", "stacked"], ["z", "zoom"], ["+", "new layout"], ["⌫", "remove the pane"], ["[", "previous layout"], ["]", "next layout"], ["Esc", "back to Control"]],
+  workspace: [["⏎", "put in a pane"], ["→", "type in the panes"], ["|", "side by side"], ["-", "stacked"], ["z", "zoom"], ["+", "new layout"], ["Space", "next that needs you"], ["⌫", "remove the pane"], ["[", "previous layout"], ["]", "next layout"], ["Esc", "back to Control"]],
   global: [["Ctrl+P", "commands: sessions, projects, actions, settings"], ["Space", "the next session that needs you"], ["Tab / 1-6", "switch panel"], ["n", "notifications"], ["L", "review queue"], ["$", "usage"], ["N", "new session"], ["a", "the AXA commander"], [",", "settings"], ["o", "web console"], ["R", "refresh"], ["?", "all keys"], ["q", "quit (sessions keep running)"]],
 };
 export const FOOTER_KEYS = 6;
@@ -517,7 +517,7 @@ export async function runTui() {
     if (screen === "live") return null; // a session keeps every row; notices show in its header
     if (toast && Date.now() < toast.until) return line([[` ${toast.text}`, "text"]], W, [], "bar");
     // (one keymap per screen: KEYMAP; typing to the commander and its chats list have their own few keys)
-    const per = PANELS[focus] === "workspace" && wsPaneFocus() ? wsPaneHints() : PANELS[focus] === "control" && focusInput ? [["⏎", "send to the commander"], ["Esc", "stop typing"]] : PANELS[focus] === "control" && zone === "chats" ? [["⏎", "resume chat"], ["↑↓", "pick"], ["←", "back to the map"]] : KEYMAP[PANELS[focus]].slice(0, FOOTER_KEYS);
+    const per = PANELS[focus] === "control" && focusInput ? [["⏎", "send to the commander"], ["Esc", "stop typing"]] : PANELS[focus] === "control" && zone === "chats" ? [["⏎", "resume chat"], ["↑↓", "pick"], ["←", "back to the map"]] : KEYMAP[PANELS[focus]].slice(0, FOOTER_KEYS);
     const all = [["^P", "commands"], ["?", "all keys"]];
     const right = all.flatMap(([k, t], j) => [[` ${k} `, "keycap"], [j === all.length - 1 ? ` ${t}` : ` ${t}  `, "barDim"]]);
     // the panel's own hints, whole ones only, in the room the right side leaves (see line(): right + 1 gap)
@@ -551,7 +551,6 @@ export async function runTui() {
       rowsOut.push(c ? axaStatusLine(c, data.sessions, W, 1, { mode: ctl.cmdStatus.mode, on: "bar", voice: voiceOn() && (voiceState || true), notifyMode: cfg.notify?.mode, usage: usageInfo && { cost: usageInfo.total_cost, limits: usageInfo.limits_text } })[0] : line([[" AXA is offline · press a to start it", "barDim"]], W, [], "bar"));
       return rowsOut;
     }
-    if (panel === "workspace") return workspaceBody(y0, h);
     if (W < 90) { listArea = { x0: 1, x1: W, y0, y1: y0 + h - 1, panel }; return listRows(panel, 1, y0, W, h); }
     const lw = Math.max(32, Math.min(56, Math.round(W * 0.36))), pw = W - lw - 1;
     listArea = { x0: 1, x1: lw, y0, y1: y0 + h - 1, panel };
@@ -560,7 +559,7 @@ export async function runTui() {
     return L.map((l, i) => l + paint("frame", "│") + R[i]);
   }
   // ---------- the Workspace tab (workspace.mjs): live sessions side by side, the sidebar of spaces and agents ----------
-  let ws = normWorkspace(cfg.workspace), wsSide = true, wsSel = 1, wsGeo = null, wsMapSel = null, wsMapCtx = { mapHits: [] }, wsLastClick = { at: 0, k: null };
+  let ws = normWorkspace(cfg.workspace), wsSide = true, wsSideShown = null, wsSel = 1, wsGeo = null, wsMapSel = null, wsMapCtx = { mapHits: [] }, wsLastClick = { at: 0, k: null };
   const wsViews = new Map(); // session id -> LiveView: only the panes on screen (a hidden tab, or another screen, has none)
   const wsTab = () => ws.tabs[ws.active];
   const saveWs = () => { cfg.workspace = saveWorkspace(ws); saveCfg(); };
@@ -583,53 +582,66 @@ export async function runTui() {
     else v.resize(cols, rows);
     return v;
   }
-  const wsPaneHints = () => { const k = keyName(); return [[`${k} ←→↑↓`, "move"], [`${k} o`, "next pane"], [`${k} z`, "zoom"], [`${k} x`, "remove"], [`${k} h`, "Control"], [`${k} ?`, "keys"]]; };
+  // the focused pane's session (its space shows its agents in the sidebar), whether or not the sidebar has the focus
+  const wsCurrentId = () => { const p = wsTab().panes[wsTab().focus]; return p?.kind === "session" ? p.id : null; };
+  const wsSideRows = () => sidebarRows(data.sessions, wsCurrentId());
+  // the sidebar: full from 120 columns, compact from 90, hidden below (Ctrl-b s shows / hides it; it's always
+  // there while it has the focus)
+  const wsSideW = () => sideWidth(W, wsSide ? true : wsSideShown);
+  const wsNeeds = () => data.sessions.filter((s) => s.alive && WS_NEEDS.includes(s.status)).sort(byUrgency);
+  // ▲ N need you (a click, or Space): the next one that waits goes on screen (its pane gets the focus)
+  function wsJumpNeeds() {
+    const list = wsNeeds(), t = wsTab();
+    if (!list.length) return flash("nothing needs you right now");
+    const cur = wsCurrentId(), i = list.findIndex((s) => s.id === cur), s = list[(i + 1) % list.length];
+    setTab(placeRef(t, { kind: "session", id: s.id }));
+    wsSide = false;
+  }
   function wsEmpty(w, h) {
     const msg = [["Nothing here yet.", "head"], ["", ""], ["Pick a space on the left (↑/↓, Enter or a click) to put its live session in a pane:", "dim"], ["up to 4 side by side; ◫ live map puts the lanes in one.", "dim"], ["", ""], [`→ or a click types in a pane · ${keyName()} then ←↑↓→ / o moves · z zooms · x removes`, "dim"], ["Esc goes back to Control (the sessions keep running).", "dim"]];
     const top = Math.max(0, Math.floor((h - msg.length) / 2)), out = [];
     for (let i = 0; i < h; i++) { const m = msg[i - top]; out.push(m ? line([[" ".repeat(Math.max(2, Math.floor((w - width(m[0])) / 2))) + m[0], m[1]]], w) : " ".repeat(w)); }
     return out;
   }
-  function workspaceBody(y0, h) {
-    const t = wsTab(), side = sidebarRows(data.sessions);
+  // The whole Workspace screen (H rows): one line of chrome, then the sidebar and the panes, no boxes
+  function wsFrame() {
+    const t = wsTab(), side = wsSideRows();
     if (!selectable(side[wsSel])) wsSel = moveSel(side, Math.min(wsSel, side.length - 1), -1);
     if (!selectable(side[wsSel])) wsSel = moveSel(side, 0, 1);
-    const n = t.panes.length;
-    const right = prefix ? [[" waiting for a key… ", "chipWait"]] : [[n === 2 || n === 3 ? `${t.split === "h" ? "stacked" : "side by side"}  ` : "", "barDim"], [t.zoom !== null ? "zoomed  " : "", "accent"], [` ${keyName()} `, "keycap"], [" then ←↑↓→ o z x h ? ", "barDim"]];
-    const bar = tabsBar(ws, W, right);
-    const bh = Math.max(1, h - 1), aw = W - SIDE_W;
-    const shown = new Map();
-    t.panes.forEach((p, i) => { if (p.kind === "session") shown.set(p.id, i + 1); });
-    const sb = sidebarLines(side, SIDE_W, bh, { sel: wsSel, focused: wsSide, shown, mapShown: t.panes.findIndex((p) => p.kind === "map") + 1, nameOf, spin: spinner });
+    const n = t.panes.length, sw = wsSideW();
+    const note = prefix ? [" waiting for a key… ", "chipWait"] : toast && Date.now() < toast.until ? [toast.text, "text"] : null;
+    const top = topLine(ws, W, { needs: wsNeeds().length, clock: clockText(), note, prefix: keyName() });
+    const bh = Math.max(1, H - 1), aw = W - sw;
+    const sb = sw ? sidebarLines(side, sw, bh, { sel: wsSel, focused: wsSide, current: wsCurrentId(), nameOf }) : { lines: [], at: [] };
     const rects = paneRects(n, aw, bh, { split: t.split, zoom: t.zoom });
-    const blocks = [{ x: 0, y: 0, w: SIDE_W, h: bh, rows: sb.lines }], keep = new Set(), panes = [];
+    const blocks = sw ? [{ x: 0, y: 0, w: sw, h: bh, rows: sb.lines }] : [], keep = new Set(), panes = [];
     t.panes.forEach((p, i) => {
       const r = rects[i];
       if (!r) return;
-      const focused = !wsSide && i === t.focus, iw = Math.max(1, r.w - 2), ih = Math.max(1, r.h - 2), zoomed = t.zoom === i;
-      let s = null, body, title;
+      const { c, b } = paneParts(r), focused = !wsSide && i === t.focus, zoomed = t.zoom === i;
+      let s = null, body, header;
       if (p.kind === "map") {
         wsMapCtx = { motion: motionNow(), alive, glyphs, sessions: data.sessions, act, selId: wsMapSel, question, mapHits: [] };
-        body = laneRows(wsMapCtx, iw, ih);
+        body = laneRows(wsMapCtx, b.w, b.h);
         const ls = laneSessions(data.sessions, wsMapSel);
-        title = paneTitle({ kind: "map", w: r.w, focused, zoomed, n: i + 1, label: `${ls.sessions} session${ls.sessions === 1 ? "" : "s"}` });
+        header = paneHeader({ kind: "map", w: c.w, focused, zoomed, label: `${ls.sessions} session${ls.sessions === 1 ? "" : "s"}` });
       } else {
         s = data.sessions.find((x) => x.id === p.id && x.alive) || null;
-        if (s) { const v = wsView(s, iw, ih); keep.add(s.id); body = v.dead ? messageBody(v.dead, iw, ih) : v.rowsAnsi(); }
-        else body = messageBody(`this session has ended · ${keyName()} x takes the pane away`, iw, ih);
-        title = paneTitle({ s, w: r.w, focused, zoomed, armed: !!s?.choices && approveArm.armed(armKey(s)), n: i + 1, nameOf });
+        if (s) { const v = wsView(s, b.w, b.h); keep.add(s.id); body = v.dead ? messageBody(v.dead, b.w, b.h) : v.rowsAnsi(); }
+        else body = messageBody(`this session has ended · ${keyName()} x takes the pane away`, b.w, b.h);
+        header = paneHeader({ s, w: c.w, focused, zoomed, armed: !!s?.choices && approveArm.armed(armKey(s)), nameOf });
       }
-      panes.push({ i, r, s, kind: p.kind, title });
-      blocks.push({ x: SIDE_W + r.x, y: r.y, w: r.w, h: r.h, rows: paneBox(title, body, r.w, r.h, title.role) });
+      panes.push({ i, r, b, s, kind: p.kind, header });
+      blocks.push({ x: sw + r.x, y: r.y, w: r.w, h: r.h, rows: paneBlock(r, rects, header, body) });
     });
-    if (!n) blocks.push({ x: SIDE_W, y: 0, w: aw, h: bh, rows: wsEmpty(aw, bh) });
+    if (!n) blocks.push({ x: sw, y: 0, w: aw, h: bh, rows: wsEmpty(aw, bh) });
     wsCloseViews(keep);
-    wsGeo = { y0, top: y0 + 1, side: sb.at, rects, panes, tabHits: bar.hits };
-    return [bar.text, ...compose(W, bh, blocks)];
+    wsGeo = { y0: 1, top: 2, sideW: sw, side: sb.at, rects, panes, tabHits: top.hits };
+    return [top.text, ...compose(W, bh, blocks)];
   }
   // the sidebar's selected row: a space goes on screen (a new pane while there are fewer than 4, else in the
   // focused one), the map too; an agent opens its detail
-  function wsPlace(row = sidebarRows(data.sessions)[wsSel]) {
+  function wsPlace(row = wsSideRows()[wsSel]) {
     if (!row) return;
     if (row.kind === "agent") return openAgent(row.s.id, row.h.id);
     const ref = row.kind === "map" ? { kind: "map" } : row.kind === "space" ? { kind: "session", id: row.s.id } : null;
@@ -654,7 +666,7 @@ export async function runTui() {
   }
   // keys while the sidebar has the focus (the hub's other keys still work: Tab, 1-6, Ctrl+P, q...)
   function wsKey(k) {
-    const side = sidebarRows(data.sessions), t = wsTab();
+    const side = wsSideRows(), t = wsTab();
     if (k === prefixByte()) { prefix = true; return true; }
     switch (k) {
       case "\x1b[A": case "k": wsSel = moveSel(side, wsSel, -1); return true;
@@ -669,6 +681,7 @@ export async function runTui() {
       case "[": wsSwitchTab(ws.active - 1); return true;
       case "]": wsSwitchTab(ws.active + 1); return true;
       case "W": wsCloseTab(); return true;
+      case " ": wsJumpNeeds(); return true;
       case ESC: focus = 0; return true;
     }
     return false;
@@ -695,7 +708,13 @@ export async function runTui() {
     if (/^[1-9]$/.test(k)) return wsSwitchTab(Number(k) - 1);
     switch (k) {
       case "o": if (t.panes.length) { wsSide = false; setTab(cycleFocus(t, 1)); } return;
-      case "s": wsSide = true; return;
+      case "s":
+        // toggles the sidebar: from a pane, show it and go there; from it, hide it (below 90 columns it's hidden by default)
+        if (wsSide) { wsSideShown = false; if (t.panes.length) wsFocus(Math.max(0, t.focus)); }
+        else { wsSideShown = true; wsSide = true; }
+        prevRows = [];
+        return;
+      case " ": return wsJumpNeeds();
       case "z": return t.focus >= 0 && setTab(toggleZoom(t));
       case "x": return wsRemove();
       case "|": return setTab({ ...t, split: "v" });
@@ -739,10 +758,14 @@ export async function runTui() {
     const g = wsGeo, h = wsHit(g, x, y);
     if (!h) return false;
     const press = b === 0 && !up;
-    if (h.kind === "tab") { if (press) { if (h.k === "+") wsNewTab(); else wsSwitchTab(h.k); } return true; }
+    if (h.kind === "tab") {
+      if (!press) return true;
+      if (h.k === "+") wsNewTab(); else if (h.k === "home") focus = 0; else if (h.k === "needs") wsJumpNeeds(); else if (h.k === "help") help(); else wsSwitchTab(h.k);
+      return true;
+    }
     if (h.kind === "bar") return true;
     if (h.kind === "side") {
-      const side = sidebarRows(data.sessions);
+      const side = wsSideRows();
       if (b === 64 || b === 65) { wsSel = moveSel(side, wsSel, b === 64 ? -1 : 1); return true; }
       if (!press) return true;
       wsSide = true;
@@ -784,6 +807,14 @@ export async function runTui() {
 
   function frame() {
     if (!onWorkspace()) { wsGeo = null; if (wsViews.size) wsCloseViews(); } // only the panes on screen are live
+    else {
+      // the Workspace: one line of chrome, no hub tabs, yellow bar or footer (its top line has the needs-you chip)
+      alertY = 0; alertHits = []; footY = 0; footHits = []; titleHits = []; tabHits = []; hits = []; listArea = null;
+      const rows = wsFrame();
+      rows.length = H;
+      if (overlay) drawOverlay(rows);
+      return rows;
+    }
     const rows = [titleBar()];
     if (screen === "hub") rows.push(tabBar());
     const alert = waitingOthers()[0];
@@ -817,7 +848,7 @@ export async function runTui() {
     else if (screen === "live" && live && !live.dead && !overlay) { const c = live.cursor(); if (c) o += `${ESC}[${c.y + 1 + live.top};${c.x + 1}H${ESC}[?25h`; }
     else if (wsTyping() && wsGeo) {
       const v = wsFocusedView(), pn = wsGeo.panes.find((p) => p.i === wsTab().focus), c = v.cursor();
-      if (c && pn) { const ir = inner(pn.r); if (c.y < ir.h && c.x < ir.w) o += `${ESC}[${wsGeo.top + ir.y + c.y};${SIDE_W + ir.x + c.x + 1}H${ESC}[?25h`; }
+      if (c && pn) { const b = pn.b; if (c.y < b.h && c.x < b.w) o += `${ESC}[${wsGeo.top + b.y + c.y};${wsGeo.sideW + b.x + c.x + 1}H${ESC}[?25h`; }
     }
     out.write(syncFrame(o, syncOutput));
     if (wsHeld) setImmediate(wsFlushHeld); // keys held for a pane whose view this frame made
@@ -1324,9 +1355,10 @@ export async function runTui() {
       { text: "           ◫ live map puts the lanes in a pane · an agent row opens its detail · → or a click on a pane types in it" },
       { text: "           | side by side · - stacked · z zoom · ⌫ remove the pane · + new layout · [ ] switch layouts · W close it · Esc Control" },
       { text: `  In a pane everything you type goes to its session; ${k} then:` },
-      { text: `    ←↑↓→ move between panes (← from the leftmost: the sidebar) · o next pane · s the sidebar · z zoom · x remove the pane` },
+      { text: `    ←↑↓→ move between panes (← from the leftmost: the sidebar) · o next pane · s show / hide the sidebar · z zoom · x remove the pane` },
       { text: `    | / - split · c new layout · 1-9 or [ ] switch layouts · y / n answer its prompt · Enter full screen · a the commander · h Control` },
       { text: "  A pane that waits on you turns amber: click y twice to approve, x once to decline (as in the yellow bar)" },
+      { text: `  ▲ N need you (top right; Space, ${k} Space or a click) puts the next one on screen · below 120 columns the sidebar is compact, below 90 hidden` },
       { text: "  Removing a pane never closes its session. The layouts are saved with your settings." },
       { text: "" },
       { text: "Voice", role: "head" },
@@ -1621,6 +1653,7 @@ export async function runTui() {
       if (live && y > live.top && !live.dead) live.mouse(b, x, y - live.top, up);
       return;
     }
+    if (onWorkspace()) { wsMouse(b, x, y, up); return schedule(); }
     if (footY && y === footY) { const h = press && hitAt(footHits, x, y); if (h) footerClick(h.k); return schedule(); }
     // a click outside the commander panel stops typing to it
     if (press && focusInput && !(onControl() && inCommander(x, y - ctl.y0))) focusInput = false;
@@ -1631,7 +1664,6 @@ export async function runTui() {
       return schedule();
     }
     if (y === 2) { const t = tabHits.find((h) => x >= h.x0 && x <= h.x1); if (t && press) focus = t.i; return schedule(); }
-    if (onWorkspace()) { wsMouse(b, x, y, up); return schedule(); }
     if (PANELS[focus] === "control" && ctl.y0) {
       const by = y - ctl.y0; // body row (0-based)
       if ((b === 64 || b === 65) && inCommander(x, by)) { cmdScroll = Math.max(0, cmdScroll + (b === 64 ? 3 : -3)); cmdSel = null; return schedule(); }
