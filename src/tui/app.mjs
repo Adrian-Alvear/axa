@@ -72,6 +72,10 @@ export const KEYMAP = {
   global: [["Ctrl+P", "commands: sessions, projects, actions, settings"], ["Space", "the next session that needs you"], ["Tab / 1-5", "switch panel"], ["n", "notifications"], ["L", "review queue"], ["$", "usage"], ["N", "new session"], ["a", "the AXA commander"], [",", "settings"], ["o", "web console"], ["R", "refresh"], ["?", "all keys"], ["q", "quit (sessions keep running)"]],
 };
 export const FOOTER_KEYS = 6;
+// The key a keymap entry stands for, as the hub's key handler receives it ("⏎" -> Enter, "→" -> the arrow), or
+// null for what isn't one key the palette can press (↑↓, drag, y/x, PgUp, Tab / 1-5, Ctrl+P itself, Esc)
+const GLYPH_KEYS = { "⏎": "\r", "→": "\x1b[C", "←": "\x1b[D", Space: " " };
+export const paletteKey = (k) => GLYPH_KEYS[k] ?? ([...k].length === 1 && /^[\x21-\x7e]$/.test(k) ? k : null);
 // Synchronized output (mode 2026): a frame between BSU and ESU is shown at once, never half-drawn. Probed once
 // (DECRQM); the reply "CSI ? 2026 ; Ps $ y" with Ps 1 or 2 means supported. No reply: never used.
 export const SYNC_PROBE = "\x1b[?2026$p";
@@ -683,8 +687,7 @@ export async function runTui() {
   }
   // ---------- Ctrl+P: one searchable list of sessions, projects, actions (with their keys) and settings ----------
   function paletteEntries() {
-    const keyed = (k) => ({ Space: " " })[k] ?? ([...k].length === 1 ? k : null);
-    const actions = [...KEYMAP.global, ...KEYMAP[PANELS[focus]]].map(([k, t]) => ({ kind: "action", label: t, key: k, k: keyed(k) })).filter((e) => e.k);
+    const actions = [...KEYMAP.global, ...KEYMAP[PANELS[focus]]].map(([k, t]) => ({ kind: "action", label: t, key: k, k: paletteKey(k) })).filter((e) => e.k);
     return [
       ...orderedSessions().filter((s) => s.alive).map((s) => ({ kind: "session", label: nameOf(s), hint: look(s)[1], run: () => openLive(s) })),
       ...data.projects.map((p) => ({ kind: "project", label: p.name, hint: where(p.path), run: () => { focus = PANELS.indexOf("projects"); sel.projects = Math.max(0, items("projects").findIndex((it) => it.p?.path === p.path)); } })),
@@ -1215,7 +1218,7 @@ export async function runTui() {
       case "x": return answerAlert("no");
       case "!": { const w = waitingOthers()[0]; return w ? openLive(w) : flash("nothing is waiting on you"); }
       case "R": return pollHub().then(() => flash("refreshed"));
-      case "\r": case " ":
+      case "\r":
         if (!it) return;
         if (it.kind === "commander-off") return openCommander();
         if (it.kind === "session") return openLive(it.s);

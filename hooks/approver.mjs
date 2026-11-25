@@ -68,16 +68,18 @@ export async function run(raw, { ask = askClaude, judgeMs = JUDGE_MS + 5000 } = 
   // (a chain is judged part by part too: `a && b | c`, what $(...) and backticks run; the most restrictive wins)
   const chain = tool === "Bash" ? chainParts(cmd) : null;
   const partDoor = chain && chain.parts.length > 1 ? chain.parts.map((p) => oneWayDoor(tool, { command: p }, ctx) || userEscalate(settings, tool, { command: p })).find(Boolean) : null;
-  const door = oneWayDoor(tool, input, ctx) || userEscalate(settings, tool, input) || oneWayDoor(tool, bare, ctx) || userEscalate(settings, tool, bare) || partDoor;
+  // ...and a part that matches with its quotes taken out is a real door, never "text inside quotes"
+  const partReal = chain && chain.parts.length > 1 ? chain.parts.map((p) => { const b = { command: unquote(p).replace(/\\([^\n])/g, "$1") }; return oneWayDoor(tool, b, ctx) || userEscalate(settings, tool, b); }).find(Boolean) : null;
+  const door = oneWayDoor(tool, input, ctx) || userEscalate(settings, tool, input) || oneWayDoor(tool, bare, ctx) || userEscalate(settings, tool, bare) || partReal || partDoor;
   // A rule that only matched words inside quotes ("npm publish" in an echo or test data) isn't a
   // one-way door by itself: the approver judges it, told what matched. Commands that could run
   // quoted text (sh -c, eval, xargs...) never get this, nor heredocs (a heredoc's text can be fed to
   // an interpreter: heredocs only get the narrower data-only check below).
-  const quotedOnly = door && tool === "Bash" && !RUNS_TEXT.test(cmd) && !cmd.includes("<<") && !oneWayDoor(tool, bare, ctx) && !userEscalate(settings, tool, bare);
+  const quotedOnly = door && tool === "Bash" && !partReal && !RUNS_TEXT.test(cmd) && !cmd.includes("<<") && !oneWayDoor(tool, bare, ctx) && !userEscalate(settings, tool, bare);
   // Likewise a rule that matched only inside the text of a heredoc / inline Python that the command
   // just writes to a project file: the command without its text must match no rule
   const data = door && !quotedOnly && tool === "Bash" ? heredocWrite(cmd, ctx) : null;
-  const dataOnly = !!data && !oneWayDoor(tool, { command: data.stripped }, ctx) && !userEscalate(settings, tool, { command: data.stripped });
+  const dataOnly = !!data && !partReal && !oneWayDoor(tool, { command: data.stripped }, ctx) && !userEscalate(settings, tool, { command: data.stripped });
   if (door && !quotedOnly && !dataOnly) { log(e, "escalate", `one-way door: ${door}`, "rule", what); return null; }
   // the commander and AXA's own folder: only reading its event log, session list and console token
   // is left to the rules below; anything else there is the user's call, never the model's
@@ -93,6 +95,11 @@ export async function run(raw, { ask = askClaude, judgeMs = JUDGE_MS + 5000 } = 
   // what the session is doing now (its latest /goal, else its latest prompt): a remembered decision only
   // holds for the task it was made under, so a new /goal is judged afresh
   const ins = taskOf(e, state), task = ins.current ? sha(ins.current).slice(0, 16) : "";
+  // The circuit breaker: after 3 declines in a row or 20 in all under one task, AXA stops deciding for that
+  // session (remembered decisions included) until the user gives it a new instruction (a new task)
+  if (state && state.denials?.task !== task) state.denials = { consecutive: 0, total: 0, task };
+  const why = breakerTripped(state?.denials);
+  if (why) { log(e, "escalate", why, "breaker", what, false, { breaker: true }); return null; }
   const key = door ? null : decisionKey(e, tool, input, settings);
   const known = key && state?.decisions[key];
   if (known && (known.task || "") === task && (known.decision === "allow" || known.decision === "deny")) {
@@ -101,10 +108,6 @@ export async function run(raw, { ask = askClaude, judgeMs = JUDGE_MS + 5000 } = 
     return output(known, tool, input);
   }
 
-  // The circuit breaker: after 3 declines in a row or 20 in all in this session, AXA stops deciding for it and
-  // the user does (a declining loop means the goal and the session disagree: that's the user's call)
-  const why = breakerTripped(state?.denials);
-  if (why) { log(e, "escalate", why, "breaker", what, false, { breaker: true }); return null; }
 
   const note = quotedOnly ? { door, where: "quotes" } : dataOnly ? { door, where: data.kind, targets: data.targets } : null;
   const v = await judge(e, settings, what, note, ask, ins, judgeMs, chain);
@@ -123,7 +126,7 @@ export async function run(raw, { ask = askClaude, judgeMs = JUDGE_MS + 5000 } = 
 
 // ---------- the circuit breaker ----------
 export const BREAKER = { consecutive: 3, total: 20 };
-export const countDenial = (d = {}, decision) => ({ consecutive: decision === "deny" ? (d.consecutive || 0) + 1 : decision === "allow" ? 0 : d.consecutive || 0, total: (d.total || 0) + (decision === "deny" ? 1 : 0) });
+export const countDenial = (d = {}, decision) => ({ ...(d.task !== undefined ? { task: d.task } : {}), consecutive: decision === "deny" ? (d.consecutive || 0) + 1 : decision === "allow" ? 0 : d.consecutive || 0, total: (d.total || 0) + (decision === "deny" ? 1 : 0) });
 export function breakerTripped(d) {
   if (!d) return null;
   if (d.consecutive >= BREAKER.consecutive) return `AXA declined ${d.consecutive} steps in a row in this session: the user decides from here`;
@@ -568,7 +571,7 @@ function log(e, decision, reason, by, what, cached = false, extra = {}) {
 export function auditEntry(e, decision, by, reason = "", cached = false, extra = {}, now = Date.now()) {
   const cmd = e.tool_name === "Bash" ? String(e.tool_input?.command || "") : "";
   const programs = cmd ? [...new Set(chainParts(cmd).parts.map((p) => basename(String(p).trim().replace(/^(?:[A-Za-z_]\w*=\S*\s+)+/, "").split(/\s+/)[0] || "")).filter((w) => /^[\w.+-]{1,40}$/.test(w)))] : [];
-  const door = /^one-way door: /.test(reason) ? reason.slice(15, 60) : undefined;
+  const door = /^one-way door: /.test(reason) ? reason.slice("one-way door: ".length, 120) : undefined;
   return { ts: now, session: e.session_id ? sha(String(e.session_id)).slice(0, 12) : null, role: process.env.AXA_ROLE || null, tool: e.tool_name, decision, by, ...(cached ? { cached: true } : {}), ...(programs.length ? { programs } : {}), ...(door ? { door } : {}), ...(extra.breaker ? { breaker: true } : {}), ...(extra.fallback ? { fallback: extra.fallback } : {}) };
 }
 
